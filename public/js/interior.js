@@ -365,22 +365,39 @@ export class Interior {
     this.ramps.push(r);
     const dz = r.z1 - r.z0, dy = r.y1 - r.y0, len = Math.hypot(dz, dy), w = r.x1 - r.x0;
     const ang = -Math.atan2(dy, dz);
+    const yTop = Math.max(r.y0, r.y1), yBot = Math.min(r.y0, r.y1);
+    // holes: the upper room's floor and the lower room's ceiling where the ramp passes
+    let upper = null, covered = 0;
+    for (const room of this.rooms) {
+      const ix0 = Math.max(room.x0, r.x0 - 0.05), ix1 = Math.min(room.x1, r.x1 + 0.05), iz0 = Math.max(room.z0, r.z0), iz1 = Math.min(room.z1, r.z1);
+      if (ix1 - ix0 < 0.05 || iz1 - iz0 < 0.05) continue;
+      if (Math.abs(room.y - yTop) < 0.3) { room.floorHoles.push({ x0: ix0, x1: ix1, z0: iz0, z1: iz1 }); upper = room; covered += (ix1 - ix0) * (iz1 - iz0); }
+      else if (room.y < yTop - 0.3 && room.y + room.h > yBot) room.ceilHoles.push({ x0: ix0, x1: ix1, z0: iz0, z1: iz1 });
+    }
+    const capH = upper ? (upper.ceiling === false ? upper.h : upper.h) : 2.2;
     const surf = box(w, 0.08, len, M.dark, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2 + 0.02, (r.z0 + r.z1) / 2); surf.rotation.x = ang; g.add(surf);
     const steps = Math.max(3, Math.round(len / 0.3));
     for (let i = 0; i < steps; i++) { const t = (i + 0.5) / steps; const s = box(w - 0.1, 0.03, 0.12, M.rail, (r.x0 + r.x1) / 2, r.y0 + dy * t + 0.06, r.z0 + dz * t); s.rotation.x = ang; g.add(s); }
     const hr = cyl(0.025, len, M.rail, r.x0 + 0.08, (r.y0 + r.y1) / 2 + 0.95, (r.z0 + r.z1) / 2, 8); hr.rotation.x = ang + Math.PI / 2; g.add(hr);
-    const yTop = Math.max(r.y0, r.y1), yBot = Math.min(r.y0, r.y1);
-    // stairwell enclosure: two side walls and the end wall under the upper landing
-    for (const x of [r.x0 - 0.03, r.x1 + 0.03]) g.add(box(0.08, yTop - yBot + 2.2, dz, M.wallDark, x, (yTop + yBot) / 2 + 1.1 - 0.0, (r.z0 + r.z1) / 2));
+    // stairwell enclosure: two side walls up to the upper room's ceiling, the end wall under the upper landing, a roof when nothing covers it
+    const wallTop = yTop + capH;
+    for (const x of [r.x0 - 0.03, r.x1 + 0.03]) g.add(box(0.08, wallTop - yBot, dz, M.wallDark, x, (wallTop + yBot) / 2, (r.z0 + r.z1) / 2));
     const highEnd = r.y1 > r.y0 ? r.z1 : r.z0;
     g.add(box(w + 0.1, yTop - yBot, 0.08, M.wallDark, (r.x0 + r.x1) / 2, (yTop + yBot) / 2, highEnd + (r.y1 > r.y0 ? 0.04 : -0.04)));
-    // holes: the upper room's floor and the lower room's ceiling where the ramp passes
-    for (const room of this.rooms) {
-      const ix0 = Math.max(room.x0, r.x0 - 0.05), ix1 = Math.min(room.x1, r.x1 + 0.05), iz0 = Math.max(room.z0, r.z0), iz1 = Math.min(room.z1, r.z1);
-      if (ix1 - ix0 < 0.05 || iz1 - iz0 < 0.05) continue;
-      if (Math.abs(room.y - yTop) < 0.3) room.floorHoles.push({ x0: ix0, x1: ix1, z0: iz0, z1: iz1 });
-      else if (room.y < yTop - 0.3 && room.y + room.h > yBot) room.ceilHoles.push({ x0: ix0, x1: ix1, z0: iz0, z1: iz1 });
+    if (covered < 0.5 * w * dz) {
+      g.add(box(w + 0.16, 0.06, dz, M.ceil, (r.x0 + r.x1) / 2, wallTop + 0.03, (r.z0 + r.z1) / 2));
+      const lowEnd = r.y1 > r.y0 ? r.z0 : r.z1; // the open lower end leads into the lower room; close the sides above the upper landing
+      g.add(box(w + 0.1, capH, 0.08, M.wallDark, (r.x0 + r.x1) / 2, yTop + capH / 2, highEnd + (r.y1 > r.y0 ? 0.04 : -0.04)));
+      void lowEnd;
     }
+  }
+  /** A short flat corridor piece (floor, two side walls, roof) joining a room's doorway to a stair outside the room. */
+  landing(ctx, x0, x1, z0, z1, y, h = 2.2) {
+    const { g, M } = ctx;
+    g.add(box(x1 - x0, 0.06, z1 - z0, M.floor, (x0 + x1) / 2, y - 0.03, (z0 + z1) / 2));
+    g.add(box(x1 - x0 + 0.16, 0.06, z1 - z0, M.ceil, (x0 + x1) / 2, y + h + 0.03, (z0 + z1) / 2));
+    for (const x of [x0 - 0.03, x1 + 0.03]) g.add(box(0.08, h, z1 - z0, M.wallDark, x, y + h / 2, (z0 + z1) / 2));
+    this.doors.push({ x0: x0 + 0.1, x1: x1 - 0.1, z0: z0 - 0.5, z1: z1 + 0.4, y });
   }
   hotspot(kind, label, x, y, z, r = 1.7) { this.hotspots.push({ kind, label, x, y, z, r }); }
 

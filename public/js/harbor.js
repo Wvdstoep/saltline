@@ -52,7 +52,7 @@ function sceneFromGeom(geom) {
 /** Legacy fallback: a compact quay at the harbour point (ships lie alongside at the point itself). */
 function legacyScene(harbor) {
   const big = harbor.size === 'mega' ? 1.5 : harbor.size === 'major' ? 1.25 : harbor.size === 'minor' ? 0.75 : 1;
-  const QL = 140 * big, QW = 34, QZ = -14 - QW / 2;
+  const QL = 140 * big, QW = 34, QZ = -26 - QW / 2; // quay face 26 m north of the point: the widest hull still clears it
   const quay = [{ x: -QL / 2, z: QZ - QW / 2 }, { x: QL / 2, z: QZ - QW / 2 }, { x: QL / 2, z: QZ + QW / 2 }, { x: -QL / 2, z: QZ + QW / 2 }];
   const shedW = 36 * big, shedD = 14;
   const shed = [{ x: -QL / 2 + 12, z: QZ - 12 }, { x: -QL / 2 + 12 + shedW, z: QZ - 12 }, { x: -QL / 2 + 12 + shedW, z: QZ - 12 + shedD }, { x: -QL / 2 + 12, z: QZ - 12 + shedD }];
@@ -82,18 +82,16 @@ function edgeFrames(ring) {
 }
 /** walk the ring edges and call fn(x, z, ux, uz, nx, nz) every `step` metres (phase offset `off`) */
 function alongEdges(frames, step, off, fn, budget) {
-  let acc = -off, used = 0;
+  if (!(step > 0)) return;
+  let start = 0, next = off;
   for (const e of frames) {
-    let d = acc;
-    while (d + step <= e.len || (d <= e.len && d >= 0 && step <= 0)) {
-      d += step; if (d < 0) continue; if (d > e.len) break;
-      fn(e.ax + e.ux * d, e.az + e.uz * d, e.ux, e.uz, e.nx, e.nz);
-      if (++used >= budget.left) { budget.left = 0; return used; }
+    while (next < start + e.len) {
+      const d = next - start;
+      if (d >= 0) { fn(e.ax + e.ux * d, e.az + e.uz * d, e.ux, e.uz, e.nx, e.nz); if (--budget.left <= 0) return; }
+      next += step;
     }
-    acc = d - e.len;
+    start += e.len;
   }
-  budget.left -= used;
-  return used;
 }
 
 function addHardRing(pb, ring, top, counters, { pier = false } = {}) {
@@ -133,7 +131,8 @@ function groundAt(x, z, hardPts) {
   return Number.isFinite(d) ? Math.min(11, 1.5 + d * 0.012) : 2;
 }
 function addBuilding(pb, b, r, hardPts, counters) {
-  const base = b.base ?? groundAt(...(() => { const c = ringCentroid(b.ring); return [c.x, c.z]; })(), hardPts);
+  const cen = ringCentroid(b.ring);
+  const base = b.base ?? groundAt(cen.x, cen.z, hardPts);
   const h = THREE.MathUtils.clamp(b.height, 3, 90);
   const top = base + h;
   const geo = extrudeRing(b.ring, -2, top);
@@ -188,7 +187,9 @@ function addLight(g, l, counters) {
   const lg = new THREE.Group(); lg.position.set(l.x, 0, l.z);
   const pb = new PartBuilder();
   const h = THREE.MathUtils.clamp(l.height, 3, 70);
-  const base = l.onWater ? 0 : QUAY_H;
+  // a light that stands in open water (fairway beacon) gets a pile base at sea level; others sit on the quay/breakwater top
+  const base = l.onWater ? 0.6 : QUAY_H;
+  if (l.onWater) pb.cyl(1.6, 4.6, M.pile, 0, -1.7, 0, 1.6, 10);
   const big = h > 14;
   pb.cyl(big ? 2.6 : 1.1, h, M.white, 0, base + h / 2, 0, big ? 1.7 : 0.8, 12);
   pb.cyl(big ? 1.8 : 0.9, Math.max(1, h * 0.14), M.red, 0, base + h - h * 0.07, 0, big ? 1.75 : 0.85, 12);
@@ -306,7 +307,12 @@ export function buildHarbor(harbor, geom) {
   pb.build(g);
   const craneMat = r() < 0.5 ? M.craneRed : M.craneBlue;
   for (const c of S.cranes.slice(0, 14)) { try { addGantryCrane(g, c, craneMat); } catch (e) { console.warn('[harbor] crane skipped', e); } }
-  for (const l of S.lights.slice(0, 40)) { try { addLight(g, { ...l, onWater: !hardRings.some((ring) => pointInRing(l.x, l.z, ring)) && S.breakwaters.every((ring) => !pointInRing(l.x, l.z, ring)) ? false : false }, counters); } catch (e) { console.warn('[harbor] light skipped', e); } }
+  for (const l of S.lights.slice(0, 40)) {
+    try {
+      const onStructure = hardRings.some((ring) => pointInRing(l.x, l.z, ring)) || S.breakwaters.some((ring) => pointInRing(l.x, l.z, ring));
+      addLight(g, { ...l, onWater: !onStructure && valid }, counters);
+    } catch (e) { console.warn('[harbor] light skipped', e); }
+  }
   const buoys = [];
   for (const b of S.buoys.slice(0, 80)) { try { buoys.push(addBuoy(g, b)); } catch (e) { console.warn('[harbor] buoy skipped', e); } }
   for (const b of S.berths.slice(0, 40)) { try { addBerthBoard(g, b, hardRings); } catch (e) { console.warn('[harbor] berth board skipped', e); } }

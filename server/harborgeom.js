@@ -452,7 +452,7 @@ function extentAlong(ctx, x, z, dx, dz) {
  * warehouses, cranes and optional dock basins; records mooring faces and vector features. `lay` = {cx, cz, tx, tz,
  * nx, nz} coast frame (t along the coast, n seaward). Returns the u-extent used [uMin, uMax] (local to the frame).
  */
-const ROOT_M = 100, ROOT_P = 190;   // breakwater roots beyond the row ends (−u side / +u marina side)
+const ROOT_M = 100, ROOT_P = 200;   // breakwater roots beyond the row ends (−u side / +u marina side)
 function placeQuayRow(ctx, lay, S, rnd, opts = {}) {
   const { tx, tz, nx, nz } = lay;
   let { cx, cz } = lay;
@@ -658,14 +658,14 @@ export function buildSynthetic(harbor, w = world) {
     if (ring.length >= 3) ctx.features.breakwaters.push({ pts: ring.map((p) => xzToLL(ctx, p[0], p[1])) });
   };
   addBreakwater(mainPts); addBreakwater(leePts);
-  // 6. pontoon marina in the lee corner of the basin
+  // 6. pontoon marina in the lee corner of the basin (each finger moors on both edges)
   for (let f = 0; f < S.fingers; f++) {
-    const u = row.U / 2 + 45 + f * 45;
-    if (u + 20 > uB - 40) break;
+    const u = row.U / 2 + 40 + f * 40;
+    if (u + 20 > uB - 30) break;
     const a = P(u, faceV + 18), b = P(u, faceV + 98);
     strokeXZ(ctx, [a, b], 6, mask, PONTOON, { allow: ALLOW_WATER });
-    ctx.features.pontoons.push({ pts: rectXZ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, nx, nz, 40, 3).map((p) => xzToLL(ctx, p[0], p[1])) });
-    ctx.faces.push({ ax: a[0], az: a[1], bx: b[0], bz: b[1], kind: 'pontoon' });
+    ctx.features.pontoons.push({ pts: rectXZ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, nx, nz, 40, 4).map((p) => xzToLL(ctx, p[0], p[1])) });
+    for (const s of [1, -1]) ctx.faces.push({ ax: a[0] + tx * 5 * s, az: a[1] + tz * 5 * s, bx: b[0] + tx * 5 * s, bz: b[1] + tz * 5 * s, kind: 'pontoon', side: [tx * s, tz * s] });
   }
   // 7. basin dredge, shallows elsewhere
   fillRings(ctx, [ringXZToCells(ctx, [P(uA + 25, faceV), P(uB - 25, faceV), P(uB - 25, faceV + B - 25), P(uA + 25, faceV + B - 25)])], ctx.dredge, S.basinDepth, { max: true, allow: ALLOW_WATER });
