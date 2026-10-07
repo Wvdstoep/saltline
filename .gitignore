@@ -1,0 +1,6 @@
+node_modules/
+data/cache/
+data/state.json
+data/state.json.tmp
+data/osm-harbors.json
+.DS_Store

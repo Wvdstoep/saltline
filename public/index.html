@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Saltline — open-world sailing sim</title>
+<meta name="description" content="Multiplayer 3D maritime survival, trade and navigation on the real globe.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230b2a4a'/%3E%3Cpath d='M6 20h20l-3 5H9z' fill='%23e8e8e8'/%3E%3Cpath d='M15 6v14h8z' fill='%23f2b134'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.min.js" } }</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<!-- Welcome / login -->
+<div id="welcome" class="overlay">
+  <div class="card">
+    <h1>SALTLINE</h1>
+    <p class="tag">Open-world maritime survival, trade &amp; navigation on the real globe.</p>
+    <label>Skipper name <input id="nameInput" maxlength="20" placeholder="e.g. Kapitein Carla" autocomplete="off"></label>
+    <button id="startBtn">Set sail</button>
+    <p id="connStatus" class="muted">Connecting…</p>
+    <div class="help">
+      <b>W/S</b> throttle · <b>A/D</b> rudder · <b>T</b> dock / undock · <b>M</b> chart (click to set waypoint) · <b>P</b> autopilot ·
+      <b>Tab</b> ships nearby · <b>F</b> fish · <b>K</b> damage-control kit · <b>Enter</b> chat · <b>C</b> camera · <b>H</b> help · drag mouse to look, wheel to zoom
+    </div>
+  </div>
+</div>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div id="topbar">
+    <span id="hbName">—</span>
+    <span class="stat"><label>Credits</label><b id="hbMoney">0</b></span>
+    <span class="stat"><label>Fuel</label><b id="hbFuel">0</b></span>
+    <span class="stat"><label>Hull</label><b id="hbCond">100%</b></span>
+    <span class="stat"><label>Cargo</label><b id="hbCargo">0 t</b></span>
+    <span class="stat"><label>Wanted</label><b id="hbWanted">—</b></span>
+    <span class="stat"><label>Sim clock</label><b id="hbClock">00:00</b></span>
+    <span class="stat"><label>Wind</label><b id="hbWind">—</b></span>
+    <span class="stat"><label>Ping</label><b id="hbPing">—</b></span>
+    <span id="hbOnline" class="muted"></span>
+  </div>
+
+  <div id="log"></div>
+
+  <div id="alerts"></div>
+
+  <div id="telemetry">
+    <div class="row"><label>SOG</label><b><span id="tSog">0.0</span> kn</b><label>HDG</label><b><span id="tHdg">000</span>°</b></div>
+    <div class="row"><label>LAT</label><b id="tLat">—</b><label>LON</label><b id="tLon">—</b></div>
+    <div class="row"><label>Depth</label><b><span id="tDepth">—</span> m</b><label>Current</label><b id="tCur">—</b></div>
+    <div class="row"><label>Throttle</label><b id="tThr">0%</b><label>Rudder</label><b id="tRud">0</b></div>
+    <div class="row"><label>Flooding</label><b id="tFlood">0%</b><label>Nearest</label><b id="tNear">—</b></div>
+    <div class="row"><label>Waypoint</label><b id="tWp">none</b><label>ETA</label><b id="tEta">—</b></div>
+    <div class="row"><label>Contracts</label><b id="tJobs">0</b><label>Position</label><b id="tStatus">at sea</b></div>
+    <div id="bars"><div class="bar"><i id="barThr"></i></div><div class="bar rud"><i id="barRud"></i></div></div>
+  </div>
+
+  <div id="radarWrap">
+    <canvas id="radar" width="260" height="260"></canvas>
+    <div id="radarCtl"><button data-r="-">−</button><span id="radarRange">10 km</span><button data-r="+">+</button></div>
+  </div>
+
+  <div id="actions">
+    <button id="btnDock">Dock (T)</button>
+    <button id="btnChart">Chart (M)</button>
+    <button id="btnShips">Ships (Tab)</button>
+    <button id="btnFish">Fish (F)</button>
+    <button id="btnPatch">Kit (K)</button>
+    <button id="btnAuto">Autopilot (P)</button>
+    <button id="btnTow" class="danger">Call tow</button>
+    <button id="btnHelp">Help (H)</button>
+  </div>
+
+  <div id="chatWrap"><div id="chat"></div><input id="chatInput" placeholder="Press Enter to chat…" maxlength="200"></div>
+</div>
+
+<!-- Chart -->
+<div id="chartWrap" class="overlay hidden">
+  <div class="panel wide">
+    <div class="panelHead"><b>Chart</b> <span class="muted">click to set a waypoint · <b>R</b> region / world</span><button class="close" data-close="chartWrap">×</button></div>
+    <canvas id="chart" width="1100" height="725"></canvas>
+    <div id="chartInfo" class="muted"></div>
+  </div>
+</div>
+
+<!-- Harbour -->
+<div id="harborWrap" class="overlay hidden">
+  <div class="panel wide">
+    <div class="panelHead"><b id="hName">Harbour</b> <span id="hSub" class="muted"></span><button class="close" id="btnUndock">Cast off</button><button data-close="harborWrap" title="Stay docked, close panel">×</button></div>
+    <div class="tabs">
+      <button data-tab="jobs" class="on">Contracts</button><button data-tab="services">Fuel &amp; yard</button><button data-tab="market">Market</button>
+      <button data-tab="shady">Look around</button><button data-tab="players">Players here</button><button data-tab="shipyard">Shipyard</button>
+    </div>
+    <div class="tab" id="tab-jobs"></div>
+    <div class="tab hidden" id="tab-services"></div>
+    <div class="tab hidden" id="tab-market"></div>
+    <div class="tab hidden" id="tab-shady"></div>
+    <div class="tab hidden" id="tab-players"></div>
+    <div class="tab hidden" id="tab-shipyard"></div>
+  </div>
+</div>
+
+<!-- Ships nearby / players -->
+<div id="shipsWrap" class="overlay hidden">
+  <div class="panel">
+    <div class="panelHead"><b>Ships on the water</b><button class="close" data-close="shipsWrap">×</button></div>
+    <div id="shipsList"></div>
+  </div>
+</div>
+
+<!-- Help -->
+<div id="helpWrap" class="overlay hidden">
+  <div class="panel">
+    <div class="panelHead"><b>How to play</b><button class="close" data-close="helpWrap">×</button></div>
+    <div class="prose">
+      <p><b>Survive.</b> Fuel burns with throttle³, load and headwind — bunker at harbour fuel docks. Hull condition decays under way; below 30 % steering goes sluggish and leaks start; at 0 % you take on water and sink. Repairs at the yard, or a damage-control kit (K) at sea. Run aground and you lose 5 % per bump.</p>
+      <p><b>Trade.</b> Dock (T, under 3 kn, within 220 m of a harbour) to take freight, passenger and fishing contracts, buy low / sell high on the commodity market, or <i>look around</i> for the black-market contact whose runs pay 5× — with contraband aboard.</p>
+      <p><b>The law.</b> Coast-guard cutters patrol chokepoints and hail ships. Heave to (under 2 kn) within 30 s or become wanted. Caught with contraband: heavy fine, impound if you cannot pay, forced reset for repeat offenders. Port authorities also inspect at the quay.</p>
+      <p><b>Multiplayer.</b> Everyone sails the same persistent ocean. Alongside another ship (150 m) or in the same harbour you can trade cargo, form a convoy (escorts halve boarding odds), or board a slow ship and take half its cargo — which makes you wanted. Sunk ships leave salvageable wrecks.</p>
+      <p><b>Navigation.</b> Radar (bottom right), chart (M), telemetry (bottom left), waypoint + autopilot (P). The map is the real Earth at 1:13; ships move 39× real time so a Rotterdam–Hull run takes ~14 minutes.</p>
+      <p class="muted">Design document: <a href="/docs/GDD.md" target="_blank">GDD.md</a> · Architecture: <a href="/docs/ARCHITECTURE.md" target="_blank">ARCHITECTURE.md</a></p>
+    </div>
+  </div>
+</div>
+
+<!-- Hail / inspection banner -->
+<div id="hail" class="hidden"></div>
+<!-- Trade / convoy prompts -->
+<div id="prompts"></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

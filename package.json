@@ -1,0 +1,21 @@
+{
+  "name": "saltline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Saltline — multiplayer 3D open-world maritime survival, trade and navigation sim on the real globe",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build-world": "node scripts/build-world.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "three": "^0.160.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
