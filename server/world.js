@@ -9,7 +9,7 @@ import { encodePNG } from './png.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.SALTLINE_DATA || path.join(__dirname, '..', 'data');
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 5;
 
 const SOURCES = {
   global: ['ne_50m_land.geojson'],
@@ -157,6 +157,8 @@ export function heightFromDistance(isLand, dCells) {
 
 function carve(land, layer, carvings) {
   const { w, h } = layer;
+  const channelCells = new Set(); // cells carved by a channel: dredged to CHANNEL_DEPTH_M after the depth model
+  let marking = false;
   // rCells is the radius in LATITUDE cells; longitude cells are shorter by cos(lat), so paint an ellipse.
   const setWater = (cx, cy, rCells) => {
     const lat = layer.def.latMax - cy * layer.res;
@@ -166,7 +168,7 @@ function carve(land, layer, carvings) {
       for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
         if (x < 0 || x >= w) continue;
         const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
-        if (dx * dx + dy * dy <= 1) land[y * w + x] = 0;
+        if (dx * dx + dy * dy <= 1) { land[y * w + x] = 0; if (marking) channelCells.add(y * w + x); }
       }
     }
   };
@@ -176,6 +178,7 @@ function carve(land, layer, carvings) {
       const { cx, cy } = layer.cellXY(c.lat, c.lon);
       setWater(cx, cy, Math.max(1, c.radiusM / (layer.res * 110574)));
     } else if (c.type === 'channel') {
+      marking = true;
       const rc = Math.max(1, c.widthM / 2 / (layer.res * 110574));
       for (let i = 0; i + 1 < c.pts.length; i++) {
         const a = c.pts[i], b = c.pts[i + 1];
@@ -187,9 +190,14 @@ function carve(land, layer, carvings) {
           setWater(A.cx + (B.cx - A.cx) * t, A.cy + (B.cy - A.cy) * t, rc);
         }
       }
+      marking = false;
     }
   }
+  return channelCells;
 }
+// Carved channels are dredged fairways: on a coarse grid they are only 1–3 cells wide, so the distance-to-land depth
+// model would leave them a few metres deep. Real ship channels (Nieuwe Waterweg, Elbe, Westerschelde…) are 14–24 m.
+const CHANNEL_DEPTH_M = 16;
 
 function buildLayer(layer, carvings, log) {
   const t0 = Date.now();
@@ -206,7 +214,7 @@ function buildLayer(layer, carvings, log) {
   }
   if (!land) land = new Uint8Array(layer.w * layer.h);
   log(`[world] ${layer.def.name}: ${nRings} rings, grid ${layer.w}x${layer.h}`);
-  carve(land, layer, carvings);
+  const channelCells = carve(land, layer, carvings);
   const dLand = chamfer(land, layer.w, layer.h, 0);   // for land cells: distance to water
   const dWater = chamfer(land, layer.w, layer.h, 1);  // for water cells: distance to land
   const hgt = new Uint8Array(layer.w * layer.h);
@@ -215,6 +223,7 @@ function buildLayer(layer, carvings, log) {
     const d = (isLand ? dLand[i] : dWater[i]) / 3;
     hgt[i] = encodeHeight(heightFromDistance(isLand, d));
   }
+  for (const i of channelCells) hgt[i] = Math.min(hgt[i], encodeHeight(-CHANNEL_DEPTH_M));
   layer.hgt = hgt;
   log(`[world] ${layer.def.name} built in ${Date.now() - t0} ms`);
 }
