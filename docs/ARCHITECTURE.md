@@ -157,3 +157,64 @@ capped at 25 minutes. On arrival the player lands at that harbour with the insur
 Movement plausibility is a distance budget (max speed × elapsed, capped at 5 s of banked distance); every
 rejection answers with `{t:'you', correction:true}` which the client must snap to. All numeric fields are
 sanitised; prototype keys are rejected as goods; hails cannot be escaped by docking, towing or disconnecting.
+
+# v0.3 addendum (real harbours, environment, traffic, interior, chart, mobile)
+
+Contract reference: `docs/V3-CONTRACTS.md` (file ownership, byte layouts, message shapes).
+
+## Harbour geometry (`server/osm.js`, `server/harborgeom.js`, client `harborgeom.js`)
+Every harbour gets a local **patch**: a 448 × 448 raster at 10 m (4.5 km square) in a metre frame centred on the
+harbour point (x east, z south; `patchCellToLatLon/latLonToPatchCell` in `shared/constants.js`). Two Uint8 planes:
+heights (`h = (v − 128) × 0.25 m`) and a **mask** (water, land, quay/pier, breakwater, pontoon, fairway, shallows).
+Served as `GET /api/harbor/:id/patch` (binary `SLHP`, gzip) and `GET /api/harbor/:id/geom` (vector features:
+quays, piers, breakwaters, pontoons, buildings with heights, tanks, cranes, lights, IALA buoys, berths, fairway, anchor).
+Source: OpenStreetMap through Overpass when reachable (coastline ways closed against the patch bbox — land on
+the left of the way — plus `man_made`, `waterway=dock`, `leisure=marina`, `seamark:*`, `building`), cached in
+`data/osm/*.json` and `data/geom/*` ; otherwise a deterministic **synthetic** harbour anchored to the Natural-Earth
+coast (breakwaters, quays cut into the land, dredged basin, fairway, warehouses, lighthouse, lateral buoys).
+`scripts/fetch-osm.mjs` prefetches all harbours (run on the production box; the dev container has no Overpass access).
+
+The client decodes the patch, builds a **signed distance field** from the mask (chamfer transform, metres) and
+uses it for hull collision (`collision.js`: hull sample points pushed out along the SDF gradient, inward velocity
+removed, damage reported with `action: collision {speedKn, kind}`), for depth under keel and for the
+high-resolution terrain mesh (`terrain.addPatch`; the coarse tiles are sunk under the patch footprint, the same
+trick as the region cut-out). `harbor.js` extrudes the vector features; the old floating platform is gone.
+
+## Berthing and tugs
+`dock` now means **moor at a berth**: within 60 m of a berth at ≤ 2 kn the ship is snapped alongside
+(`you.berth`). `you.nearBerth` gives distance/bearing to the nearest berth within 2.5 km. `tug_assist` (within
+1.5 km of the anchor, ≤ 6 kn, paid by displacement) has the server walk the ship to the berth over 45 s
+(`you.assist`; the client suspends its own simulation). Casting off spawns 20 m off the berth face. Harbours
+without built geometry fall back to the v0.2 radius rule. Fees: port dues (dock), pilotage for > 90 m hulls at
+mega/major ports, berth fee per started day (undock), yard `service` every 30 sailing days or wear climbs.
+
+## Environment
+* **Weather** — Open-Meteo forecast + marine endpoints per 0.5° cell, 20-minute TTL, concurrency-limited,
+  offline-safe (`server/weather.js`); `game.weatherAt` merges it with the synthetic storm cells (only when no real
+  data). `you.weather` carries wind/gust, waves, swell, visibility, pressure, temperature, cloud, source.
+* **Tide** — `shared/tide.js`: M2/S2/N2/K1/O1 harmonics with a regional amplitude table and coast-following phase;
+  `you.tide = {height, rate, stream, nextHigh, nextLow}`; the ocean mesh rides the tide, depth under keel includes
+  it, the tidal stream is added to the surface current for every simulation (client, server offline voyages, AI).
+* **AI traffic** — `server/lanes.js` sea-lane graph (land-checked edges, Dijkstra) and `server/traffic.js`
+  (~90 ships with classes, flags, destinations, mooring/anchoring states); snapshots are per-socket with
+  `ai: traffic.near(lat, lon, 40 km)`; `GET /api/ai` lists everything. The client renders them with the same
+  models and ship–ship collision applies.
+
+## Client
+* **Ocean** — 8 wind-sea Gerstner components clustered on the wave direction + 2 swell components scaled to
+  the significant wave height, procedural normal detail, Schlick fresnel, roughness-dependent specular, whitecaps,
+  shore foam, rain ripples; `setSea`, `setLevel` (tide), `setRain`. **Weather FX** — cloud layer, rain streaks,
+  lightning. **Ships** — all 17 classes + cutter, lifeboat, helicopter, derelict; world-space foam wake ribbon;
+  sails that sheet to the wind; nav lights; offshore platforms.
+* **Interior** (`interior.js`) — walkable bridge, passage, engine room, cabins, mess; first person with pointer
+  lock or touch; hotspots (helm, engine panel, bunk, chart table, radio). Child of the ship group, so it rides the sea.
+* **Chart** (`chart.js`) — Web Mercator, pan/zoom/pinch, OSM raster + OpenSeaMap seamarks at zoom ≥ 7 (fetched
+  by the player's browser), every job board, AI/players/cutters/storms/rescues, routes with ETA, lanes, cursor
+  lat/lon/depth/tide.
+* **Mobile** — `touch.js` virtual helm (throttle and rudder sliders, big buttons, interior stick), `body.touch`
+  layout with a bottom action bar, full-screen panels, safe-area insets, pinch camera zoom.
+
+## Not in v0.3 (roadmap)
+Real bathymetry (EMODnet/GEBCO) under the synthetic depth model; GLTF ship models; fully server-authoritative
+movement (the server validates distance budgets and land penetration, the client still integrates); COLREGS
+behaviour for AI traffic; AI captains that trade on the markets.

@@ -1,4 +1,5 @@
 // WebSocket client: hello/welcome handshake, 10 Hz state upload, actions, chat, latency ping, auto-reconnect.
+// v0.3: `fetchPatch(id)` binary helper for the harbour patch route (decoding lives in harborgeom.js).
 const TOKEN_KEY = 'saltline.token';
 
 export class Net {
@@ -12,6 +13,7 @@ export class Net {
     this.reconnectDelay = 1000;
     this.pingTimer = null;
     this.reconnectTimer = null;
+    this.reconnects = 0;
   }
   get token() { try { return localStorage.getItem(TOKEN_KEY) || null; } catch { return null; } }
   set token(t) { try { localStorage.setItem(TOKEN_KEY, t); } catch {} }
@@ -24,8 +26,11 @@ export class Net {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.ws = ws;
     ws.onopen = () => {
-      this.connected = true; this.reconnectDelay = 1000;
+      const wasReconnect = this.reconnects > 0 || this.everConnected;
+      this.connected = true; this.reconnectDelay = 1000; this.everConnected = true;
       this.h.status?.('connected');
+      // main.js re-sends `hello` from its status handler once started; `onReconnect` is an optional extra hook
+      if (wasReconnect) this.h.onReconnect?.();
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => this.send({ t: 'ping', c: performance.now() }), 5000);
     };
@@ -39,7 +44,7 @@ export class Net {
       if (this.ws !== ws) return; // a newer socket superseded this one
       this.connected = false; clearInterval(this.pingTimer);
       this.h.status?.(ev.code === 4001 ? 'replaced' : 'disconnected');
-      if (ev.code !== 4001) this.reconnectTimer = setTimeout(() => this.connect(this.name), this.reconnectDelay = Math.min(15000, this.reconnectDelay * 1.6));
+      if (ev.code !== 4001) { this.reconnects++; this.reconnectTimer = setTimeout(() => this.connect(this.name), this.reconnectDelay = Math.min(15000, this.reconnectDelay * 1.6)); }
     };
     ws.onerror = () => {};
   }
@@ -53,4 +58,18 @@ export class Net {
   // Envelope fields go last so an extra payload field can never clobber `t` / `action`.
   action(action, extra = {}) { this.send({ ...extra, t: 'action', action }); }
   chat(text) { this.send({ t: 'chat', text }); }
+  /** Binary harbour patch (§1 layout). Resolves to an ArrayBuffer, or null on 404 (harbour not built yet). Throws on network errors. */
+  async fetchPatch(id) {
+    const r = await fetch(`/api/harbor/${encodeURIComponent(id)}/patch`);
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`patch ${id}: HTTP ${r.status}`);
+    return r.arrayBuffer();
+  }
+  /** Geometry JSON of a harbour, or null on 404. */
+  async fetchGeom(id) {
+    const r = await fetch(`/api/harbor/${encodeURIComponent(id)}/geom`, { headers: { Accept: 'application/json' } });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`geom ${id}: HTTP ${r.status}`);
+    return r.json();
+  }
 }

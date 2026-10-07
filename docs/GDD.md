@@ -550,3 +550,30 @@ Every failure leaves the player with a ship and a job board within reach; there 
 ---
 
 *End of document. Prototype v0.1 sources: `shared/constants.js`, `shared/physics.js`, `shared/geo.js`, `docs/ARCHITECTURE.md`.*
+
+---
+
+# v0.3 addendum — "Alongside"
+
+**Harbours are places now.** Each port is reconstructed from OpenStreetMap (quays, piers, breakwaters, docks,
+marinas, buildings, cranes, lights, buoys) on a 10 m local grid, or synthesised against the real coastline where
+OSM is unavailable. Ships collide with quays and breakwaters (and each other), moor at numbered berths, request
+tugs, and pay realistic port dues, pilotage, berth fees and yard service. The fairway, lateral buoys and lights
+make a night approach a navigation task in its own right.
+
+**The sea is real.** Wind, gusts, waves, swell, visibility, pressure and rain come from live forecasts
+(Open-Meteo) for the ship's position; the tide rises and falls on harmonic constituents with a realistic
+spring-neap cycle and tidal streams; the water surface, the depth under keel and the ship's speed over ground
+all follow it. Storm cells remain as the offline fallback.
+
+**The sea is busy.** Around ninety AI merchant ships, ferries, trawlers and yachts sail real sea lanes between the
+harbours, moor, anchor and leave again — on the radar, on the chart (AIS-style) and in the 3D world.
+
+**You live on board.** Go below: bridge, passage, engine room with live gauges, cabins, mess and galley, all
+walkable in first person while the ship rides the sea; steer from the helm or plan on the chart table.
+
+**The chart is a tool.** A zoomable Mercator chart with OpenSeaMap seamarks, every harbour's job board with
+earnings per tonne, AI and player traffic, storms, rescues, multi-waypoint routes with ETA, and express passage or
+offline voyages for the long legs — on desktop and on a phone.
+
+Technical detail: `docs/ARCHITECTURE.md` (v0.3 addendum) and `docs/V3-CONTRACTS.md`.

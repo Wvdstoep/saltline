@@ -4,7 +4,7 @@ import { World } from '../server/world.js';
 import { HARBORS, carvingsForWorld } from '../server/harbors.js';
 import { encodeHeight, decodeHeight, TILE } from '../shared/constants.js';
 import { toLocal, fromLocal, bearing, haversine } from '../shared/geo.js';
-import { stepShip, newShipState } from '../shared/physics.js';
+import { stepShip, newShipState, waveSpeedLoss } from '../shared/physics.js';
 
 const world = new World().load(carvingsForWorld(), () => {});
 
@@ -60,4 +60,21 @@ test('worn and flooded ships are slower and steer worse', () => {
   const a = newShipState('coaster', 55, 3, 0), b = newShipState('coaster', 55, 3, 0);
   for (let i = 0; i < 600; i++) { stepShip(a, { throttleCmd: 1, rudderCmd: 0 }, { cond: 100 }, 0.1); stepShip(b, { throttleCmd: 1, rudderCmd: 0 }, { cond: 10, flooding: 0.3 }, 0.1); }
   assert.ok(b.spd < a.spd * 0.7);
+});
+test('tidal stream sets the ship and head seas slow it by up to 25 %', () => {
+  const a = newShipState('coaster', 55, 3, 90), b = newShipState('coaster', 55, 3, 90);
+  for (let i = 0; i < 100; i++) { stepShip(a, { throttleCmd: 0 }, {}, 0.1); stepShip(b, { throttleCmd: 0 }, { tideStream: { u: 1, v: 0 } }, 0.1); }
+  assert.ok(Math.abs(a.lon - 3) < 1e-9 && b.lon > 3, 'the stream sets the ship east');
+  assert.ok(Math.abs(haversine(55, 3, b.lat, b.lon) - 10) < 0.5, 'about 10 m in 10 s at 1 m/s');
+  const c = newShipState('coaster', 55, 3, 0), d = newShipState('coaster', 55, 3, 0), e = newShipState('coaster', 55, 3, 0), f = newShipState('coaster', 55, 3, 0);
+  for (let i = 0; i < 1200; i++) {
+    stepShip(c, { throttleCmd: 1 }, {}, 0.1); stepShip(d, { throttleCmd: 1 }, { waveH: 6, waveDir: 0 }, 0.1);
+    stepShip(e, { throttleCmd: 1 }, { waveH: 6, waveDir: 180 }, 0.1); stepShip(f, { throttleCmd: 1 }, { waveH: 12, waveDir: 0 }, 0.1);
+  }
+  assert.ok(Math.abs(d.spd / c.spd - 0.75) < 0.01, `6 m head seas: ${(d.spd / c.spd).toFixed(3)} of calm speed`);
+  assert.ok(e.spd > d.spd && e.spd < c.spd, 'following seas cost less than head seas');
+  assert.ok(Math.abs(f.spd - d.spd) < 1e-9, 'the penalty caps at 6 m');
+  assert.equal(waveSpeedLoss(0, 12, 0), 0.25); assert.equal(waveSpeedLoss(0, 0, 0), 0); assert.ok(waveSpeedLoss(0, 3, undefined) > 0 && waveSpeedLoss(0, 3, undefined) < 0.125);
+  const n = newShipState('coaster', 55, 3, 0); stepShip(n, { throttleCmd: 1 }, { waveH: NaN, waveDir: 'x', tideStream: { u: NaN } }, 0.1);
+  for (const k of ['lat', 'lon', 'hdg', 'spd']) assert.ok(Number.isFinite(n[k]), k);
 });

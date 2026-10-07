@@ -8,14 +8,25 @@ import { WebSocketServer } from 'ws';
 import { World, DATA_DIR } from './server/world.js';
 import { carvingsForWorld, HARBORS } from './server/harbors.js';
 import { Game } from './server/game.js';
-import { SIM } from './shared/constants.js';
+import { SIM, PATCH } from './shared/constants.js';
+import * as harborgeom from './server/harborgeom.js';
+import { WeatherService } from './server/weather.js';
+import { Traffic } from './server/traffic.js';
+import { LANE_NODES } from './server/lanes.js';
+import { tideAt } from './shared/tide.js';
+import zlib from 'node:zlib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 const world = new World().load(carvingsForWorld(), log);
-const game = new Game(world, log);
+harborgeom.init(world);
+const weather = new WeatherService({ log });
+let game = null;
+const traffic = new Traffic(world, HARBORS, { log, weatherAt: (lat, lon) => (game ? game.weatherAt(lat, lon) : null) });
+game = new Game(world, log, { weather, traffic, harborgeom });
+if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 1500 }).catch((e) => log('[geom] prefetch failed', e.message));
 
 const app = express();
 app.disable('x-powered-by');
@@ -26,7 +37,31 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
 app.get('/api/health', (req, res) => res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime() }));
-app.get('/api/world', (req, res) => res.json(game.worldInfo()));
+app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
+// v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
+const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
+const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
+app.get('/api/harbor/:id/geom', async (req, res) => {
+  const id = req.params.id; if (!validId(id)) return res.status(400).end();
+  try {
+    const g = harborgeom.getHarborGeom(id) || (await withTimeout(harborgeom.ensureHarbor(id), 20000));
+    if (!g) return res.status(404).json({ error: 'not available' });
+    res.setHeader('Cache-Control', 'public, max-age=600'); res.json(g);
+  } catch (e) { log('[geom] route error', e.message); res.status(500).end(); }
+});
+app.get('/api/harbor/:id/patch', async (req, res) => {
+  const id = req.params.id; if (!validId(id)) return res.status(400).end();
+  try {
+    if (!harborgeom.getHarborPatch(id)) await withTimeout(harborgeom.ensureHarbor(id), 20000);
+    const buf = harborgeom.getHarborPatch(id);
+    if (!buf) return res.status(404).end();
+    res.setHeader('Content-Type', 'application/octet-stream'); res.setHeader('Cache-Control', 'public, max-age=600');
+    if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) { res.setHeader('Content-Encoding', 'gzip'); res.end(zlib.gzipSync(buf)); } else res.end(buf);
+  } catch (e) { log('[geom] route error', e.message); res.status(500).end(); }
+});
+app.get('/api/weather', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon; if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).end(); res.json(game.weatherAt(lat, lon)); });
+app.get('/api/tide', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon; if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).end(); res.json(tideAt(lat, lon, Date.now() / 1000)); });
+app.get('/api/ai', (req, res) => res.json(traffic.all()));
 app.get('/api/tile/:level/:tx/:ty', (req, res) => {
   const [level, tx, ty] = [req.params.level, req.params.tx, req.params.ty].map((v) => (/^\d{1,5}$/.test(v) ? +v : NaN));
   if (![level, tx, ty].every(Number.isInteger)) return res.status(400).end();
@@ -80,6 +115,8 @@ let last = Date.now();
 setInterval(() => {
   const now = Date.now();
   const dt = Math.min(1, (now - last) / 1000); last = now;
+  try { weather.tick(); } catch (e) { log('[weather] tick error', e.message); }
+  try { traffic.tick(dt); } catch (e) { log('[traffic] tick error', e.stack || e); }
   try { game.tick(dt); } catch (e) { log('[game] tick error', e.stack || e); }
 }, 1000 / SIM.SERVER_TICK_HZ);
 setInterval(() => { try { game.broadcastSnapshot(); } catch (e) { log('[game] snapshot error', e.stack || e); } }, 1000 / SIM.SNAPSHOT_HZ);

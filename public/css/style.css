@@ -1,18 +1,25 @@
 :root {
-  --bg: #07131f; --panel: rgba(8, 20, 34, 0.82); --line: rgba(140, 190, 230, 0.25); --fg: #dbe9f4; --muted: #8fb0c8;
+  --bg: #07131f; --panel: rgba(8, 20, 34, 0.84); --line: rgba(140, 190, 230, 0.25); --fg: #dbe9f4; --muted: #8fb0c8;
   --accent: #f2b134; --green: #58d68d; --red: #ff6b6b; --cyan: #5ad6ff; --font: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
   --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --sat: env(safe-area-inset-top, 0px); --sar: env(safe-area-inset-right, 0px); --sab: env(safe-area-inset-bottom, 0px); --sal: env(safe-area-inset-left, 0px);
+  --bar: 54px; /* touch bottom action bar height */
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 var(--font); overflow: hidden; }
-canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 var(--font); overflow: hidden; overscroll-behavior: none; }
+body { height: 100dvh; -webkit-text-size-adjust: 100%; }
+canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
-button { font: inherit; color: var(--fg); background: rgba(40, 80, 120, 0.6); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.small { font-size: 12px; }
+.up { color: var(--green); } .down { color: var(--red); }
+button { font: inherit; color: var(--fg); background: rgba(40, 80, 120, 0.6); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
 button:hover { background: rgba(60, 110, 160, 0.8); }
 button.danger { border-color: rgba(255, 100, 100, 0.5); }
 button.primary { background: var(--accent); color: #1a1200; border-color: transparent; font-weight: 600; }
 button:disabled { opacity: 0.45; cursor: default; }
+button.on { background: rgba(88, 214, 141, 0.3); border-color: var(--green); }
+button.small { padding: 2px 8px; font-size: 12px; }
 input { font: inherit; color: var(--fg); background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 a { color: var(--cyan); }
 
@@ -21,111 +28,272 @@ a { color: var(--cyan); }
 #harborWrap { z-index: 20; }
 #chartWrap, #shipsWrap, #helpWrap { z-index: 25; }
 #welcome { z-index: 40; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px 32px; width: min(560px, 100%); backdrop-filter: blur(8px); text-align: center; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px 32px; width: min(600px, 100%); max-height: 100%; overflow: auto; backdrop-filter: blur(8px); text-align: center; }
 .card h1 { margin: 0; letter-spacing: 0.35em; font-weight: 800; color: var(--accent); font-size: 34px; }
 .card .tag { margin: 6px 0 18px; color: var(--muted); }
 .card label { display: block; text-align: left; margin: 12px 0; }
 .card input { width: 100%; margin-top: 6px; font-size: 16px; }
 .card #startBtn { width: 100%; padding: 12px; font-size: 16px; background: var(--accent); color: #1a1200; border: 0; font-weight: 700; }
 .card .help { margin-top: 18px; font-size: 12px; color: var(--muted); text-align: left; }
+.card .help p { margin: 0 0 8px; }
 .card .help b { color: var(--fg); }
 
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: min(720px, 100%); max-height: 92vh; display: flex; flex-direction: column; backdrop-filter: blur(8px); overflow: hidden; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: min(720px, 100%); max-height: 92vh; max-height: 92dvh; display: flex; flex-direction: column; backdrop-filter: blur(8px); overflow: hidden; }
 .panel.wide { width: min(1140px, 100%); }
-.panelHead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 16px; }
-.panelHead .close { margin-left: auto; }
-.tabs { display: flex; gap: 4px; padding: 8px 10px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.panelHead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 16px; flex: none; flex-wrap: wrap; }
+.panelHead .close { margin-left: auto; min-width: 36px; }
+.tabs { display: flex; gap: 4px; padding: 8px 10px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; flex: none; }
 .tabs button { border-radius: 6px 6px 0 0; border-bottom: 0; background: transparent; }
 .tabs button.on { background: rgba(60, 110, 160, 0.5); }
-.tab { padding: 12px 14px; overflow: auto; }
+.tab { padding: 12px 14px; overflow: auto; min-height: 0; -webkit-overflow-scrolling: touch; }
 .prose { padding: 14px 18px; overflow: auto; }
 .prose p { margin: 0 0 10px; }
 table { width: 100%; border-collapse: collapse; }
 td, th { padding: 6px 8px; border-bottom: 1px solid rgba(140, 190, 230, 0.12); text-align: left; vertical-align: top; }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
-td.num, th.num { text-align: right; font-family: var(--mono); }
+tr.cat th { text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); padding-top: 12px; }
+tr.mine td { background: rgba(88, 214, 141, 0.1); }
+td.num, th.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+table.yard td.small { font-size: 12px; color: var(--muted); }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: rgba(90, 214, 255, 0.15); color: var(--cyan); margin-right: 4px; }
 .pill.bad { background: rgba(255, 107, 107, 0.2); color: var(--red); }
 .pill.good { background: rgba(88, 214, 141, 0.18); color: var(--green); }
+.pill.pax { background: rgba(242, 177, 52, 0.18); color: var(--accent); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .box { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .box h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.box.board { margin-bottom: 10px; }
+.box.board h4 { text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--fg); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.box.board h4 button { margin-left: auto; }
 .inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
 .inline input { width: 90px; }
 
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
 #hud > * { pointer-events: auto; }
-#topbar { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 18px; align-items: center; padding: 6px 14px; background: linear-gradient(rgba(4, 12, 20, 0.85), rgba(4, 12, 20, 0)); font-size: 13px; flex-wrap: wrap; }
+#topbar { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 18px; align-items: center; padding: calc(6px + var(--sat)) calc(14px + var(--sar)) 6px calc(14px + var(--sal)); background: linear-gradient(rgba(4, 12, 20, 0.85), rgba(4, 12, 20, 0)); font-size: 13px; flex-wrap: wrap; }
 #topbar #hbName { font-weight: 700; color: var(--accent); letter-spacing: 0.05em; }
 #hbOnline { margin-left: auto; }
 #connPill { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .stat label { color: var(--muted); margin-right: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .stat b { font-family: var(--mono); font-weight: 600; }
-#log { position: absolute; top: 46px; left: 14px; width: min(440px, 60vw); max-height: 32vh; overflow: hidden; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
+#log { position: absolute; top: calc(46px + var(--sat)); left: calc(14px + var(--sal)); width: min(440px, 60vw); max-height: 32vh; overflow: hidden; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
 #log .ev { background: rgba(4, 12, 20, 0.7); border-left: 3px solid var(--cyan); padding: 4px 8px; border-radius: 0 6px 6px 0; font-size: 13px; animation: fadein 0.3s; }
 #log .ev.warn { border-color: var(--accent); } #log .ev.law { border-color: var(--red); } #log .ev.shady { border-color: #b07cff; } #log .ev.pirate { border-color: #ff8c42; }
 @keyframes fadein { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; } }
-#alerts { position: absolute; top: 46px; right: 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+#alerts { position: absolute; top: calc(46px + var(--sat)); right: calc(14px + var(--sar)); display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
 #alerts .alert { background: rgba(140, 30, 30, 0.8); border: 1px solid rgba(255, 107, 107, 0.5); padding: 6px 10px; border-radius: 6px; font-weight: 600; }
 #alerts .alert.warn { background: rgba(120, 80, 10, 0.8); border-color: rgba(242, 177, 52, 0.5); }
 
-#telemetry { position: absolute; left: 14px; bottom: 14px; width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-family: var(--mono); font-size: 12px; backdrop-filter: blur(6px); }
-/* minmax(0, 1fr) lets a value column shrink below its content so a long value truncates instead of overlapping the next label */
-#telemetry .row { display: grid; grid-template-columns: 62px minmax(0, 1fr) 62px minmax(0, 1fr); gap: 2px 6px; align-items: baseline; padding: 1px 0; white-space: nowrap; }
-#telemetry .row > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#telemetry .row span { margin-left: -4px; }
-#telemetry label { color: var(--muted); font-family: var(--font); font-size: 11px; text-transform: uppercase; }
+/* side panels: weather / fishing */
+.sidePanel { position: absolute; right: calc(14px + var(--sar)); top: calc(110px + var(--sat)); width: 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(6px); font-size: 12.5px; }
+.sidePanel .panelHead { padding: 6px 10px; font-size: 14px; }
+.sidePanel table th { width: 34%; font-size: 12px; }
+.sidePanel td, .sidePanel th { padding: 4px 8px; }
+#fishPanel { top: auto; bottom: 300px; left: calc(14px + var(--sal)); right: auto; width: 240px; }
+#fishPanel .rows { display: flex; gap: 12px; padding: 8px 10px; }
+#fishPanel .rows div { display: flex; flex-direction: column; }
+#fishPanel label { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+#fishPanel b { font-family: var(--mono); }
+#fishPanel .warn { margin: 0 10px 8px; padding: 4px 8px; border-radius: 6px; background: rgba(255, 107, 107, 0.2); color: var(--red); font-weight: 600; }
+
+#telemetry { position: absolute; left: calc(14px + var(--sal)); bottom: calc(14px + var(--sab)); width: 400px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-family: var(--mono); font-size: 12px; backdrop-filter: blur(6px); }
+/* minmax(0, 1fr) lets a value column shrink below its content so a long value truncates instead of overlapping the next label.
+   No negative margins on the value: that was what clipped the first character. */
+#telemetry .row { display: grid; grid-template-columns: 62px minmax(0, 1fr) 58px minmax(0, 1fr); gap: 2px 6px; align-items: baseline; padding: 1px 0; white-space: nowrap; }
+#telemetry .row > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; padding-left: 1px; }
+#telemetry label { color: var(--muted); font-family: var(--font); font-size: 11px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; }
 #telemetry b { font-weight: 600; }
-#telemetry span { color: var(--muted); font-size: 11px; }
+#telemetry b span { color: inherit; font-size: inherit; }
+#telToggle { display: none; position: absolute; top: 2px; right: 4px; padding: 0 8px; min-height: 28px; font-size: 14px; background: transparent; border: 0; }
 #bars { display: flex; gap: 8px; margin-top: 6px; }
 .bar { flex: 1; height: 8px; background: rgba(0, 0, 0, 0.4); border-radius: 4px; position: relative; overflow: hidden; }
 .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--green); }
 .bar.rud i { left: 50%; background: var(--cyan); }
+#berthLine { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
+#berthLine #berthText { color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#berthLine button { font-size: 11.5px; padding: 3px 8px; font-family: var(--font); }
 
-#radarWrap { position: absolute; right: 14px; bottom: 14px; width: 260px; }
+#radarWrap { position: absolute; right: calc(14px + var(--sar)); bottom: calc(14px + var(--sab)); width: 260px; }
 #radar { display: block; width: 260px; height: 260px; border-radius: 50%; background: rgba(4, 16, 26, 0.85); border: 1px solid var(--line); }
 #radarCtl { display: flex; justify-content: center; gap: 8px; align-items: center; margin-top: 4px; font-family: var(--mono); font-size: 12px; }
 #radarCtl button { padding: 1px 9px; }
 
-#actions { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 720px); }
+#actions { position: absolute; left: 50%; bottom: calc(14px + var(--sab)); transform: translateX(-50%); display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 740px); }
 #actions button { font-size: 12.5px; padding: 6px 9px; background: rgba(8, 20, 34, 0.82); }
 #actions button.on { background: rgba(88, 214, 141, 0.3); border-color: var(--green); }
+.touchOnly { display: none; }
+#moreSheet { display: none; }
 
-/* Touch helm: throttle −, port (hold), starboard (hold), throttle +. Shown only when a touch device is detected (body.touch). */
-#touch { position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%); display: none; gap: 8px; }
-body.touch #touch { display: flex; }
-#touch button { width: 58px; height: 50px; font-size: 20px; line-height: 1; padding: 0; background: rgba(8, 20, 34, 0.82); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
-#touch button.on { background: rgba(88, 214, 141, 0.3); border-color: var(--green); }
+/* Touch helm (touch.js builds the controls). Hidden until body.touch. */
+#touchHelm { display: none; }
+body.touch #touchHelm { display: block; position: absolute; inset: 0; pointer-events: none; }
+body.touch #touchHelm > * { pointer-events: auto; }
+.touchHelm .thThr { position: absolute; right: calc(8px + var(--sar)); bottom: calc(var(--bar) + 190px + var(--sab)); width: 56px; height: 190px; display: flex; flex-direction: column; align-items: center; }
+.touchHelm .thThr .thTrack { position: relative; width: 44px; flex: 1; border-radius: 22px; background: rgba(4, 12, 20, 0.75); border: 1px solid var(--line); touch-action: none; }
+.touchHelm .thThr .thFill { position: absolute; left: 6px; right: 6px; background: rgba(88, 214, 141, 0.55); border-radius: 4px; }
+.touchHelm .thThr .thFill.astern { background: rgba(242, 177, 52, 0.6); }
+.touchHelm .thThr .thDetent { position: absolute; left: 4px; right: 4px; height: 2px; background: rgba(255, 255, 255, 0.5); }
+.touchHelm .thThr .thKnob { position: absolute; left: 50%; width: 40px; height: 28px; margin-left: -20px; border-radius: 8px; background: #dbe9f4; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.touchHelm .thThr .thVal { font-family: var(--mono); font-size: 12px; margin-top: 4px; color: var(--fg); background: rgba(4, 12, 20, 0.6); padding: 1px 6px; border-radius: 6px; }
+.touchHelm .thThr.astern .thVal { color: var(--accent); }
+.touchHelm .thThr .thLbl { font-size: 10px; color: var(--muted); letter-spacing: 0.1em; }
+.touchHelm .thRud { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--bar) + 10px + var(--sab)); width: min(260px, 52vw); display: flex; flex-direction: column; align-items: center; }
+.touchHelm .thRud .thTrack { position: relative; width: 100%; height: 46px; border-radius: 23px; background: rgba(4, 12, 20, 0.75); border: 1px solid var(--line); touch-action: none; }
+.touchHelm .thRud .thCentre { position: absolute; left: 50%; top: 6px; bottom: 6px; width: 2px; margin-left: -1px; background: rgba(255, 255, 255, 0.5); }
+.touchHelm .thRud .thFill { position: absolute; top: 8px; bottom: 8px; background: rgba(90, 214, 255, 0.5); border-radius: 4px; }
+.touchHelm .thRud .thKnob { position: absolute; top: 50%; width: 28px; height: 40px; margin-top: -20px; border-radius: 8px; background: #dbe9f4; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.touchHelm .thRud .thVal { font-family: var(--mono); font-size: 11px; margin-top: 3px; color: var(--muted); background: rgba(4, 12, 20, 0.6); padding: 1px 6px; border-radius: 6px; }
+.touchHelm .thBtns { position: absolute; right: calc(8px + var(--sar)); bottom: calc(var(--bar) + 392px + var(--sab)); display: flex; flex-direction: column; gap: 10px; }
+.touchHelm .thBtn { width: 56px; height: 56px; border-radius: 50%; padding: 0; font-size: 12px; font-weight: 700; background: rgba(8, 20, 34, 0.85); border: 2px solid var(--line); touch-action: none; user-select: none; -webkit-user-select: none; }
+.touchHelm .thBtn.stop { border-color: var(--red); color: var(--red); }
+.touchHelm .thBtn.auto { border-color: var(--accent); color: var(--accent); }
+.touchHelm .thStick { position: absolute; left: calc(14px + var(--sal)); bottom: calc(var(--bar) + 30px + var(--sab)); width: 150px; height: 150px; touch-action: none; }
+.touchHelm .thStickBase { position: absolute; inset: 10px; border-radius: 50%; background: rgba(4, 12, 20, 0.55); border: 2px solid var(--line); }
+.touchHelm .thStickNub { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%; background: rgba(219, 233, 244, 0.85); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
 
-#chatWrap { position: absolute; left: 14px; bottom: 206px; width: 380px; }
+#chatWrap { position: absolute; left: calc(14px + var(--sal)); bottom: calc(286px + var(--sab)); width: 400px; }
 #chat { max-height: 120px; overflow-y: auto; font-size: 12.5px; display: flex; flex-direction: column-reverse; gap: 2px; }
 #chat div { background: rgba(4, 12, 20, 0.6); padding: 2px 6px; border-radius: 4px; }
 #chat b { color: var(--cyan); }
 #chatInput { width: 100%; margin-top: 4px; font-size: 12.5px; opacity: 0.7; }
 #chatInput:focus { opacity: 1; }
 
-/* width/height auto + both max constraints keep the canvas's intrinsic aspect ratio (so it shrinks on short viewports instead of
-   being clipped); align-self cancels the flex stretch; the click mapping divides by the rendered rect so it stays exact. */
-#chart { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(92vh - 90px); min-height: 0; align-self: center; object-fit: contain; background: #0a2238; cursor: crosshair; }
-#chartInfo { padding: 6px 12px; font-family: var(--mono); font-size: 12px; }
+/* interior (first person) */
+#interiorHud { position: absolute; top: calc(50px + var(--sat)); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+#interiorHud button { min-height: 36px; background: rgba(8, 20, 34, 0.85); }
+#interiorHud #interiorHint { font-size: 12px; background: rgba(4, 12, 20, 0.6); padding: 2px 10px; border-radius: 10px; }
+body.interior #telemetry, body.interior #radarWrap, body.interior #actions, body.interior #chatWrap, body.interior #fishPanel, body.interior #moreSheet { display: none !important; }
 
-#hail { position: fixed; top: 20%; left: 50%; transform: translateX(-50%); z-index: 30; background: rgba(140, 30, 30, 0.9); border: 2px solid var(--red); border-radius: 10px; padding: 12px 20px; font-size: 18px; font-weight: 700; text-align: center; box-shadow: 0 0 30px rgba(255, 60, 60, 0.4); }
+/* chart: full screen */
+#chartWrap { padding: 0; }
+.panel.chartPanel { width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; }
+.chartPanel .panelHead { padding: calc(8px + var(--sat)) calc(12px + var(--sar)) 8px calc(12px + var(--sal)); }
+.chartBody { position: relative; flex: 1; min-height: 0; background: #0a2238; }
+#chart { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
+#chartTools { position: absolute; top: 10px; right: calc(10px + var(--sar)); display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+#chartTools button { min-width: 44px; min-height: 44px; font-size: 18px; background: rgba(8, 20, 34, 0.88); padding: 0 10px; }
+#chartTools button.wide { font-size: 13px; }
+#chartTools button.on { background: rgba(88, 214, 141, 0.3); border-color: var(--green); }
+#chartTools button.primary { background: var(--accent); color: #1a1200; }
+#chartPopup { position: absolute; z-index: 3; width: min(360px, calc(100% - 16px)); max-height: 60%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(8px); font-size: 12.5px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+#chartPopup .popHead { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(8, 20, 34, 0.95); }
+#chartPopup .popHead .close { margin-left: auto; padding: 2px 10px; }
+#chartPopup .popBody { padding: 8px 10px; }
+#chartPopup .popBody > div { margin: 2px 0; }
+#chartPopup table td, #chartPopup table th { padding: 4px 6px; font-size: 12px; }
+#chartPopup .inline button { font-size: 12.5px; }
+#voyageLine { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 12px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px; }
+#voyageLine button { font-family: var(--font); font-size: 12.5px; padding: 4px 10px; }
+#chartInfo { padding: 6px 12px calc(6px + var(--sab)); font-family: var(--mono); font-size: 12px; border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 28px; }
+
+/* rescue overlay */
+#rescueWrap { position: fixed; inset: 0; z-index: 35; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at center, rgba(10, 30, 50, 0.4), rgba(2, 8, 14, 0.8)); padding: 16px; }
+.rescueCard { background: var(--panel); border: 2px solid var(--accent); border-radius: 14px; padding: 24px 28px; width: min(520px, 100%); text-align: center; backdrop-filter: blur(6px); }
+.rescueCard h2 { margin: 0 0 8px; color: var(--red); letter-spacing: 0.3em; }
+.rescueCard p { margin: 6px 0; font-size: 16px; }
+.rescueCard .progress { height: 12px; background: rgba(0, 0, 0, 0.4); border-radius: 6px; overflow: hidden; margin: 12px 0; }
+.rescueCard .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.5s linear; }
+
+#hail { position: fixed; top: 20%; left: 50%; transform: translateX(-50%); z-index: 30; background: rgba(140, 30, 30, 0.9); border: 2px solid var(--red); border-radius: 10px; padding: 12px 20px; font-size: 18px; font-weight: 700; text-align: center; box-shadow: 0 0 30px rgba(255, 60, 60, 0.4); max-width: calc(100vw - 32px); }
 #hail small { display: block; font-size: 13px; font-weight: 400; color: #ffd0d0; }
-#prompts { position: fixed; top: 14%; right: 14px; z-index: 30; display: flex; flex-direction: column; gap: 8px; }
-#prompts .prompt { background: var(--panel); border: 1px solid var(--cyan); border-radius: 10px; padding: 10px 14px; width: 300px; }
+#prompts { position: fixed; top: 14%; right: calc(14px + var(--sar)); z-index: 30; display: flex; flex-direction: column; gap: 8px; }
+#prompts .prompt { background: var(--panel); border: 1px solid var(--cyan); border-radius: 10px; padding: 10px 14px; width: 300px; max-width: calc(100vw - 28px); }
 #prompts .prompt .inline { margin-top: 8px; }
 
+/* ----------------------------------------------------------------------------------------------- narrow desktop windows */
+@media (max-width: 1100px) {
+  #actions { max-width: calc(100vw - 700px); }
+}
 @media (max-width: 900px) {
-  /* bottom-left: telemetry (two columns so values stay readable); bottom-right: radar with the touch helm and the action buttons stacked above it */
-  #telemetry { left: 8px; bottom: 8px; width: 200px; font-size: 10.5px; padding: 6px 8px; }
-  #telemetry .row { grid-template-columns: 50px minmax(0, 1fr); }
-  #radarWrap { right: 8px; bottom: 8px; width: 140px; } #radar { width: 140px; height: 140px; }
-  #touch { left: auto; right: 8px; bottom: 172px; transform: none; display: none; grid-template-columns: 1fr 1fr; gap: 6px; }
-  body.touch #touch { display: grid; }
-  #touch button { width: 54px; height: 46px; }
-  #actions { left: auto; right: 8px; bottom: 14px; transform: none; max-width: 52vw; justify-content: flex-end; }
-  body.touch #actions { bottom: 278px; }
-  body:not(.touch) #actions { bottom: 176px; }
+  #telemetry { width: 300px; font-size: 11px; }
+  #radarWrap { width: 180px; } #radar { width: 180px; height: 180px; }
+  #actions { left: auto; right: 8px; transform: none; max-width: 52vw; justify-content: flex-end; bottom: calc(222px + var(--sab)); }
   #chatWrap { display: none; }
   #log { width: 50vw; }
+  .sidePanel { width: 280px; }
+}
+
+/* ----------------------------------------------------------------------------------------------- touch layout (body.touch) */
+body.touch { --bar: 54px; }
+body.touch #hud { font-size: 13px; }
+body.touch input, body.touch select, body.touch textarea { font-size: 16px; } /* no iOS zoom */
+body.touch button { min-height: 40px; }
+body.touch .tabs button, body.touch button.small, body.touch #radarCtl button, body.touch #berthLine button { min-height: 36px; }
+body.touch .touchOnly { display: inline-block; }
+body.touch #actions { left: 0; right: 0; bottom: 0; transform: none; max-width: none; gap: 4px; flex-wrap: nowrap; justify-content: space-around; padding: 4px calc(4px + var(--sar)) calc(4px + var(--sab)) calc(4px + var(--sal)); background: rgba(4, 12, 20, 0.92); border-top: 1px solid var(--line); height: calc(var(--bar) + var(--sab)); }
+body.touch #actions button { flex: 1 1 0; min-width: 44px; min-height: 44px; padding: 2px 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 8px; }
+body.touch #moreSheet { position: absolute; left: 8px; right: 8px; bottom: calc(var(--bar) + 8px + var(--sab)); display: none; flex-wrap: wrap; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(8px); }
+body.touch #moreSheet.open { display: flex; }
+body.touch #moreSheet button { flex: 1 1 30%; min-height: 44px; font-size: 13px; background: rgba(8, 20, 34, 0.82); }
+body.touch #telemetry { left: calc(8px + var(--sal)); bottom: calc(var(--bar) + 8px + var(--sab)); width: min(250px, 60vw); font-size: 11px; padding: 6px 30px 6px 8px; }
+body.touch #telemetry .row { grid-template-columns: 50px minmax(0, 1fr) 46px minmax(0, 1fr); gap: 1px 4px; }
+body.touch #telemetry label { font-size: 9.5px; }
+body.touch #telToggle { display: block; }
+body.touch #telemetry.collapsed .row:nth-child(n + 5), body.touch #telemetry.collapsed #bars { display: none; }
+body.touch #telemetry.collapsed #telToggle { transform: rotate(180deg); }
+body.touch #radarWrap { right: calc(8px + var(--sar)); bottom: calc(var(--bar) + 8px + var(--sab)); width: 150px; }
+body.touch #radar { width: 150px; height: 150px; }
+body.touch #radarCtl { font-size: 11px; gap: 4px; }
+body.touch #chatWrap { display: none; }
+body.touch #log { top: calc(44px + var(--sat)); width: 62vw; max-height: 22vh; }
+body.touch #log .ev { font-size: 12px; padding: 3px 6px; }
+body.touch #topbar { gap: 10px; font-size: 11.5px; padding-top: calc(4px + var(--sat)); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+body.touch #topbar::-webkit-scrollbar { display: none; }
+body.touch #topbar .stat { white-space: nowrap; }
+body.touch #alerts { top: calc(40px + var(--sat)); }
+body.touch #alerts .alert { font-size: 12px; padding: 4px 8px; }
+body.touch .sidePanel { position: fixed; inset: 0; width: auto; border-radius: 0; z-index: 22; display: flex; flex-direction: column; font-size: 14px; }
+body.touch .sidePanel .panelHead { position: sticky; top: 0; padding: calc(10px + var(--sat)) 14px 10px; font-size: 16px; }
+body.touch .sidePanel .panelHead .close { min-width: 44px; min-height: 44px; }
+body.touch #weatherBody { overflow: auto; padding-bottom: var(--sab); }
+body.touch #fishPanel { inset: auto; left: calc(8px + var(--sal)); bottom: calc(var(--bar) + 8px + var(--sab) + 96px); width: 180px; border-radius: 8px; font-size: 11px; z-index: 11; }
+body.touch #fishPanel .panelHead { position: static; padding: 4px 8px; font-size: 12px; }
+body.touch #fishPanel .rows { gap: 8px; padding: 4px 8px; }
+body.touch #berthLine { font-size: 11px; }
+body.touch #berthLine button { font-size: 12px; min-height: 36px; }
+body.touch #interiorHud button { min-height: 44px; }
+/* overlays are full-screen panels with a sticky header on touch */
+body.touch .overlay { padding: 0; align-items: stretch; }
+body.touch .panel, body.touch .panel.wide { width: 100%; max-height: none; height: 100dvh; border-radius: 0; border: 0; }
+body.touch .panelHead { position: sticky; top: 0; z-index: 2; background: rgba(8, 20, 34, 0.96); padding: calc(10px + var(--sat)) calc(12px + var(--sar)) 10px calc(12px + var(--sal)); }
+body.touch .panelHead .close, body.touch .panelHead [data-close] { min-width: 44px; min-height: 44px; font-size: 20px; }
+body.touch .tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; padding-bottom: 0; }
+body.touch .tabs::-webkit-scrollbar { display: none; }
+body.touch .tabs button { white-space: nowrap; flex: none; }
+body.touch .tab { padding: 10px 12px calc(12px + var(--sab)); }
+body.touch .prose { padding-bottom: calc(14px + var(--sab)); }
+body.touch td, body.touch th { padding: 6px 5px; }
+body.touch .inline input { width: 76px; }
+body.touch .card { padding: 22px 18px; max-height: 100dvh; }
+body.touch .card h1 { font-size: 28px; }
+body.touch .chartHint { display: none; }
+body.touch #chartTools { top: 8px; }
+body.touch #chartTools button { min-width: 48px; min-height: 48px; }
+body.touch #chartTools button.wide { min-width: 112px; }
+body.touch #chartInfo { font-size: 11px; }
+body.touch #voyageLine { font-size: 11.5px; }
+body.touch #voyageLine button { min-height: 40px; }
+body.touch #prompts { top: auto; bottom: calc(var(--bar) + 200px + var(--sab)); left: 8px; right: 8px; align-items: center; }
+body.touch #hail { top: 12%; font-size: 16px; }
+/* the welcome help is long: let the card scroll */
+body.touch .card .help { font-size: 12px; }
+
+/* portrait phones: shorter throttle lever, rudder above the telemetry, stop/AP buttons above the radar */
+@media (orientation: portrait) {
+  body.touch .touchHelm .thThr { bottom: calc(var(--bar) + 190px + var(--sab)); height: 200px; }
+  body.touch .touchHelm .thBtns { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(var(--bar) + 82px + var(--sab)); flex-direction: row; gap: 16px; }
+  body.touch .touchHelm .thRud { bottom: calc(var(--bar) + 150px + var(--sab)); width: 44vw; left: 50%; }
+  body.touch #telemetry { width: min(220px, 56vw); }
+}
+/* landscape phones: everything sits in one row above the bar */
+@media (orientation: landscape) and (max-height: 500px) {
+  body.touch #telemetry { width: 210px; bottom: calc(var(--bar) + 6px + var(--sab)); }
+  body.touch #radarWrap { width: 120px; } body.touch #radar { width: 120px; height: 120px; }
+  body.touch .touchHelm .thThr { right: calc(140px + var(--sar)); bottom: calc(var(--bar) + 6px + var(--sab)); height: 150px; }
+  body.touch .touchHelm .thRud { left: 50%; transform: translateX(-50%); bottom: calc(var(--bar) + 6px + var(--sab)); width: 220px; }
+  body.touch .touchHelm .thBtns { right: calc(210px + var(--sar)); bottom: calc(var(--bar) + 6px + var(--sab)); flex-direction: column-reverse; gap: 8px; }
+  body.touch .touchHelm .thBtn { width: 48px; height: 48px; }
+  body.touch #log { max-height: 30vh; width: 40vw; }
+  body.touch #moreSheet button { flex: 1 1 18%; }
+  body.touch .touchHelm .thStick { width: 120px; height: 120px; }
 }

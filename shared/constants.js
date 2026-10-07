@@ -18,6 +18,7 @@ export const SIM = {
   SERVER_TICK_HZ: 10,
   ORIGIN_RESHIFT_UNITS: 20000,
   EXPRESS_CR_PER_NM: 80,
+  AI_RANGE_U: 40000,
 };
 
 // Raster layers. Level 0 = GLOBAL (whole earth), level 1 = REGION (North Sea detail window).
@@ -90,6 +91,8 @@ export const INTERACT = {
   FISH_RADIUS_U: 1200,
   PLATFORM_RANGE_U: 400,
   TOW_RANGE_U: 150,
+  BERTH_RANGE_U: 60,
+  TUG_RANGE_U: 1500,
 };
 
 export const LAW = {
@@ -107,3 +110,35 @@ export const LAW = {
   INSPECT_COOLDOWN_SEC: 3600,
   IMPOUND_RESET_WANTED: 2,
 };
+
+// v0.3: harbour fees and maintenance (credits per tonne of displacement unless stated). Shown by the HUD, charged by the server.
+export const FEES = {
+  DUES_PER_T: 0.12,            // port dues on docking, × harbour class
+  BERTH_PER_T_DAY: 0.02,       // berth fee per started 24 h alongside, charged on undock
+  PILOTAGE_PER_T: 0.05,        // compulsory pilotage at mega/major ports for ships over PILOTAGE_MIN_LENGTH_M
+  PILOTAGE_MIN_LENGTH_M: 90,
+  TUG_PER_T: 0.35, TUG_MIN: 400,   // tug assist into a berth
+  TUG_SECONDS: 45,
+  SERVICE_FRAC: 0.01,          // yard service costs 1 % of the hull price
+  SERVICE_INTERVAL_DAYS: 30,   // after which wear climbs SERVICE_WEAR_PER_DAY per day, up to SERVICE_WEAR_MAX
+  SERVICE_WEAR_PER_DAY: 0.02, SERVICE_WEAR_MAX: 0.6,
+  COLLISION_MIN_KN: 0.4,       // slower contacts are the fenders doing their job
+};
+
+// v0.3: high-resolution harbour patches (see docs/V3-CONTRACTS.md §1). Cell (i east, j south) ↔ lat/lon helpers are the
+// single definition both the server rasteriser and the client use.
+export const PATCH = {
+  N: 448, RES: 10, H_OFFSET: 128, H_STEP: 0.25,
+  MASK: { WATER: 0, LAND: 1, QUAY: 2, BREAKWATER: 3, PONTOON: 4, FAIRWAY: 5, SHALLOW: 6 },
+};
+export function encodePatchHeight(h) { const v = Math.round(h / PATCH.H_STEP) + PATCH.H_OFFSET; return v < 0 ? 0 : v > 255 ? 255 : v; }
+export function decodePatchHeight(v) { return (v - PATCH.H_OFFSET) * PATCH.H_STEP; }
+export function patchCellToLatLon(i, j, n, res, originLat, originLon) {
+  const x = (i + 0.5 - n / 2) * res, z = (j + 0.5 - n / 2) * res;
+  return { lat: originLat - z / GEO.M_PER_DEG_LAT, lon: originLon + x / (GEO.M_PER_DEG_LON_EQ * Math.cos((originLat * Math.PI) / 180)) };
+}
+/** Continuous (un-rounded) cell coordinates; the cell centre of (i, j) is at i + 0.5, j + 0.5. */
+export function latLonToPatchCell(lat, lon, n, res, originLat, originLon) {
+  const x = (lon - originLon) * GEO.M_PER_DEG_LON_EQ * Math.cos((originLat * Math.PI) / 180), z = -(lat - originLat) * GEO.M_PER_DEG_LAT;
+  return { i: x / res + n / 2, j: z / res + n / 2 };
+}

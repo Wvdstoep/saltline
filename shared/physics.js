@@ -13,10 +13,21 @@ export function newShipState(cls, lat, lon, hdg = 0) {
 /**
  * @param s ship state (mutated)
  * @param input { throttleCmd (-0.3..1), rudderCmd (-1..1) }
- * @param env { cond (0..100), flooding (0..1), loadFrac (0..1), wind {u,v} m/s, current {u,v} m/s, fuelEmpty, grounded }
+ * @param env { cond (0..100), flooding (0..1), loadFrac (0..1), wind {u,v} m/s, current {u,v} m/s, fuelEmpty, grounded,
+ *              sea (0..1), towing, sailsUp, tideStream {u,v} m/s (added to the current), waveH (m, significant wave height),
+ *              waveDir (deg the waves come FROM; omitted = mixed seas) }
  * @param dt real seconds
  */
 const num = (v, d) => (Number.isFinite(v) ? v : d);
+
+/** Speed fraction lost to seas: up to 25 % at 6 m head seas, a third of that running before them. */
+export function waveSpeedLoss(hdgDeg, waveH, waveDir) {
+  const h = Math.max(0, num(waveH, 0));
+  if (h <= 0) return 0;
+  let headF = 0.7;                                   // direction unknown: mixed seas
+  if (Number.isFinite(waveDir)) { const rel = Math.cos((hdgDeg - waveDir) * D2R); headF = 0.33 + 0.67 * (0.5 + 0.5 * rel); }
+  return 0.25 * Math.min(1, h / 6) * headF;
+}
 
 export function stepShip(s, input, env, dt) {
   const C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
@@ -38,7 +49,8 @@ export function stepShip(s, input, env, dt) {
 
   // Speed follows a first-order lag towards the target.
   const sea = Math.max(0, Math.min(1, num(env.sea, 0)));           // 0 calm .. 1 storm
-  const speedPenalty = Math.max(0.1, 1 - 0.35 * (1 - cond) - 0.5 * flooding - 0.15 * loadFrac - 0.35 * sea * sea) * (env.towing ? (C.towPower ? 0.95 : 0.65) : 1);
+  const waveLoss = waveSpeedLoss(s.hdg, env.waveH, env.waveDir);
+  const speedPenalty = Math.max(0.1, 1 - 0.35 * (1 - cond) - 0.5 * flooding - 0.15 * loadFrac - 0.35 * sea * sea - waveLoss) * (env.towing ? (C.towPower ? 0.95 : 0.65) : 1);
   let target;
   if (C.sail) {
     // Sailing yacht: wind drives the hull through a simple polar; the auxiliary engine adds up to auxKn.
@@ -62,6 +74,7 @@ export function stepShip(s, input, env, dt) {
   const v = s.spd * GEO.KN_TO_MS;
   let ve = Math.sin(h) * v, vn = Math.cos(h) * v;
   if (env.current) { ve += num(env.current.u, 0); vn += num(env.current.v, 0); }
+  if (env.tideStream) { ve += num(env.tideStream.u, 0); vn += num(env.tideStream.v, 0); }
   if (env.wind) { ve += 0.02 * num(env.wind.u, 0); vn += 0.02 * num(env.wind.v, 0); }
   if (env.grounded) { ve = 0; vn = 0; }
 

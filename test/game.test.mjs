@@ -1,17 +1,51 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { World } from '../server/world.js';
 import { carvingsForWorld, harborById } from '../server/harbors.js';
 import { Game } from '../server/game.js';
-import { SHIP_CLASSES, LAW, GOODS } from '../shared/constants.js';
+import { SHIP_CLASSES, LAW, GOODS, FEES, INTERACT } from '../shared/constants.js';
+import { haversine, bearing, destination } from '../shared/geo.js';
+import { shipValue, serviceCostFor, portDues, pilotageFee, berthFeePerDay, tugCostFor, priceOf, demandBonus, ECON } from '../server/economy.js';
 
 process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
 const world = new World().load(carvingsForWorld(), () => {});
 function fakeSocket() { const s = { readyState: 1, sent: [], send(m) { this.sent.push(JSON.parse(m)); }, close() {} }; return s; }
-function mkGame() { const g = new Game(world, () => {}, { stateFile: '/nonexistent/saltline-test-state.json' }); g.saveState = () => {}; return g; }
+function mkGame(opts = {}) { const g = new Game(world, () => {}, { stateFile: '/nonexistent/saltline-test-state.json', ...opts }); g.saveState = () => {}; return g; }
 function join(g, name) { const ws = fakeSocket(); const p = g.connect(ws, null, name); return { p, ws }; }
 const last = (ws, t) => [...ws.sent].reverse().find((m) => m.t === t);
 const events = (ws) => ws.sent.filter((m) => m.t === 'event').map((m) => m.text);
+// A freight contract the starter coaster can carry; the random board does not always have one, so plant one.
+function freightJob(g, maxQty = 1000) {
+  const st = g.harbors.rotterdam;
+  let j = st.jobs.find((x) => x.type === 'freight' && x.qty <= maxQty);
+  if (!j) { j = { id: 'jfr' + st.jobs.length, type: 'freight', from: 'rotterdam', to: 'ijmuiden', good: 'grain', qty: 400, pay: 9000, distKm: 60, deadline: g.simTime + 36000, contraband: false, title: 'Freight 400 t of grain to IJmuiden' }; st.jobs.push(j); }
+  return j;
+}
+// ---- fakes implementing the v0.3 contracts of harborgeom / WeatherService / Traffic (docs/V3-CONTRACTS.md) ----
+const ROT = harborById('rotterdam');
+function mkBerth(id, name, brgFromAnchor, distM, extra = {}) { return { id, name, ...destination(ROT.lat, ROT.lon, brgFromAnchor, distM), hdg: 45, length: 200, depth: 12, kind: 'quay', maxLength: 220, ...extra }; }
+function fakeGeom(harborId, berths, opts = {}) {
+  const hb = harborById(harborId);
+  const anchor = opts.anchor || { lat: hb.lat, lon: hb.lon };
+  const geom = { id: harborId, name: hb.name, source: 'synthetic', origin: { lat: hb.lat, lon: hb.lon }, anchor, n: 448, res: 10, berths, fairway: [], features: {} };
+  return {
+    getHarborGeom: (id) => (id === harborId ? geom : null),
+    getHarborPatch: () => null,
+    harborAnchor: (id) => (id === harborId ? anchor : harborById(id) ? { lat: harborById(id).lat, lon: harborById(id).lon } : null),
+    nearestBerth(id, lat, lon) {
+      if (id !== harborId || !berths.length) return null;
+      let best = null;
+      for (const b of berths) { const d = haversine(lat, lon, b.lat, b.lon); if (!best || d < best.distM) best = { berth: b, distM: d, brg: bearing(lat, lon, b.lat, b.lon) }; }
+      return best;
+    },
+    landPenetration: (lat, lon) => (opts.land ? opts.land(lat, lon) : null),
+    sdfAt: (id, lat, lon) => (opts.sdf ? opts.sdf(lat, lon) : null),
+  };
+}
+function fakeTraffic(ships) { return { near: (lat, lon, r) => ships.filter((s) => haversine(lat, lon, s.lat, s.lon) <= r), all: () => ships, tick() {} }; }
 
 test('new players spawn docked at Rotterdam with the starter coaster', () => {
   const g = mkGame(); const { p, ws } = join(g, 'Ann');
@@ -21,22 +55,25 @@ test('new players spawn docked at Rotterdam with the starter coaster', () => {
 });
 test('accepting freight loads cargo, delivering at the destination pays', () => {
   const g = mkGame(); const { p, ws } = join(g, 'Bob');
-  const job = g.harbors.rotterdam.jobs.find((j) => j.type === 'freight' && j.qty <= 1200);
+  const job = freightJob(g, 1200);
   g.onAction(p, { action: 'accept_job', jobId: job.id });
   assert.equal(p.jobs.length, 1); assert.equal(p.cargo[0].qty, job.qty);
   // teleport to destination and dock
   g.onAction(p, { action: 'undock' });
   const dest = harborById(job.to); p.ship.lat = dest.lat; p.ship.lon = dest.lon; p.ship.spd = 0;
+  const bonus = Math.round(job.pay * demandBonus(g.harbors[dest.id], job.good));
   const m0 = p.money; g.onAction(p, { action: 'dock' });
   assert.equal(p.docked, dest.id); assert.equal(p.jobs.length, 0); assert.equal(p.cargo.length, 0);
-  assert.ok(p.money > m0 + job.pay * 0.9 && p.money <= m0 + job.pay, 'paid minus port dues');
+  assert.equal(p.money, m0 + job.pay + bonus - portDues('coaster', dest), 'paid plus the demand bonus, minus port dues');
+  assert.ok(bonus >= 0 && bonus <= job.pay * ECON.DEMAND_BONUS_MAX);
 });
 test('contract cargo cannot be sold; free cargo can', () => {
   const g = mkGame(); const { p } = join(g, 'Cid');
-  g.onAction(p, { action: 'buy_goods', good: 'grain', qty: 10 });
+  const m0 = p.money; g.onAction(p, { action: 'buy_goods', good: 'grain', qty: 10 });
+  assert.ok(p.money < m0 && p.cargo[0].qty === 10);
   const m = p.money; g.onAction(p, { action: 'sell_goods', good: 'grain', qty: 10 });
   assert.ok(p.money > m); assert.equal(p.cargo.length, 0);
-  const job = g.harbors.rotterdam.jobs.find((j) => j.type === 'freight' && j.qty <= 1200);
+  const job = freightJob(g, 1200);
   g.onAction(p, { action: 'accept_job', jobId: job.id });
   g.onAction(p, { action: 'sell_goods', good: job.good, qty: job.qty });
   assert.equal(p.cargo[0].qty, job.qty, 'contract cargo untouched');
@@ -131,7 +168,7 @@ test('state round-trips through JSON persistence', () => {
 
 test('abandoning a contract removes the contract cargo instead of freeing it for sale', () => {
   const g = mkGame(); const { p } = join(g, 'Oz');
-  const job = g.harbors.rotterdam.jobs.find((j) => j.type === 'freight' && j.qty <= 1200);
+  const job = freightJob(g, 1200);
   g.onAction(p, { action: 'accept_job', jobId: job.id });
   const m = p.money; g.onAction(p, { action: 'abandon_job', jobId: job.id });
   assert.equal(p.cargo.length, 0); assert.equal(p.jobs.length, 0); assert.ok(p.money <= m);
@@ -212,4 +249,231 @@ test('storms raise local wind and sea state; offline voyages keep sailing', () =
   g.disconnect(p); const lat0 = p.ship.lat;
   for (let i = 0; i < 600; i++) g.tick(0.1);
   assert.ok(p.ship.lat !== lat0 && p.ship.spd > 1, 'ship moved while offline');
+});
+
+// ------------------------------------------------------------------------------------------ v0.3 (docs/V3-CONTRACTS.md §3)
+test('berthing: moor only alongside a berth within 60 m under 2 kn; the ship snaps to the berth and casts off beside it', () => {
+  const b1 = mkBerth('rotterdam-b1', 'Berth 1', 90, 300);
+  const g = mkGame({ harborgeom: fakeGeom('rotterdam', [b1]) }); const { p, ws } = join(g, 'Ann');
+  g.onAction(p, { action: 'undock' });
+  assert.ok(Math.abs(p.ship.lat - ROT.lat) < 1e-9 && Math.abs(p.ship.lon - ROT.lon) < 1e-9, 'legacy-free spawn at the built anchor');
+  const far = destination(b1.lat, b1.lon, 180, 200); p.ship.lat = far.lat; p.ship.lon = far.lon; p.ship.spd = 1;
+  g.onAction(p, { action: 'dock' });
+  assert.ok(!p.docked); assert.ok(events(ws).some((t) => /alongside a berth/.test(t)), 'guidance when not at a berth');
+  const nearPt = destination(b1.lat, b1.lon, 180, 30); p.ship.lat = nearPt.lat; p.ship.lon = nearPt.lon; p.ship.spd = 3;
+  g.onAction(p, { action: 'dock' }); assert.ok(!p.docked, 'too fast');
+  p.ship.spd = 1; p.ship.hdg = 200; g.rnd = () => 0.99; g.onAction(p, { action: 'dock' });
+  assert.equal(p.docked, 'rotterdam'); assert.equal(p.berth.id, 'rotterdam-b1'); assert.equal(p.berth.name, 'Berth 1');
+  assert.equal(p.ship.lat, b1.lat); assert.equal(p.ship.lon, b1.lon); assert.equal(p.ship.hdg, 225, 'lies along the quay the way she was pointing');
+  const hv = last(ws, 'harbor').harbor;
+  assert.equal(hv.berths.length, 1); assert.ok(hv.anchor.lat && hv.tugCost === tugCostFor('coaster') && hv.fees.berthPerDay === berthFeePerDay('coaster') && hv.fees.dues === portDues('coaster', ROT));
+  assert.ok(hv.econ.stock.grain >= 0 && hv.econ.target.grain > 0 && hv.shipyard[0].specs.length > 0 && hv.shipyard[0].cat);
+  assert.equal(last(ws, 'you').you.berth.id, 'rotterdam-b1');
+  g.onAction(p, { action: 'undock' });
+  const d = haversine(p.ship.lat, p.ship.lon, b1.lat, b1.lon);
+  assert.ok(d > 15 && d < 25, `cast off ${d.toFixed(1)} m off the berth point`); assert.equal(p.berth, null); assert.ok(last(ws, 'you').correction);
+  // a shallow berth or a pontoon refuses a freighter
+  const shallow = mkBerth('rotterdam-b2', 'Berth 2', 270, 300, { depth: 3 }), pont = mkBerth('rotterdam-b3', 'Pontoon', 0, 300, { kind: 'pontoon', depth: 4, length: 30 });
+  g.geom = fakeGeom('rotterdam', [shallow, pont]);
+  p.ship.lat = shallow.lat; p.ship.lon = shallow.lon; p.ship.spd = 0; g.onAction(p, { action: 'dock' }); assert.ok(!p.docked && events(ws).some((t) => /m of water/.test(t)));
+  p.ship.lat = pont.lat; p.ship.lon = pont.lon; g.onAction(p, { action: 'dock' }); assert.ok(!p.docked && events(ws).some((t) => /pontoon/.test(t)));
+  // legacy rule when no geometry is built: within DOCK_RADIUS_U of the anchor at ≤ 3 kn
+  g.geom = fakeGeom('ijmuiden', []); p.ship.lat = ROT.lat; p.ship.lon = ROT.lon; p.ship.spd = 2.5; g.onAction(p, { action: 'dock' }); assert.equal(p.docked, 'rotterdam'); assert.equal(p.berth, null);
+});
+test('tug assist charges the fee, takes control of the ship and moors it at a fitting berth', () => {
+  const b1 = mkBerth('rotterdam-b1', 'Berth 1', 90, 300), small = mkBerth('rotterdam-b2', 'Dinghy pontoon', 60, 100, { kind: 'pontoon', depth: 2, length: 20 });
+  const g = mkGame({ harborgeom: fakeGeom('rotterdam', [small, b1]) }); const { p, ws } = join(g, 'Bo'); g.rnd = () => 0.99;
+  g.onAction(p, { action: 'undock' });
+  const start = destination(ROT.lat, ROT.lon, 270, 800); p.ship.lat = start.lat; p.ship.lon = start.lon; p.ship.spd = 4; p.ship.hdg = 90;
+  const m = p.money; g.onAction(p, { action: 'tug_assist' });
+  assert.ok(p.assist, 'assist started'); assert.equal(p.assist.berthId, 'rotterdam-b1', 'the pontoon does not fit a coaster'); assert.equal(p.money, m - Math.max(400, Math.round(3200 * 0.35)));
+  assert.ok(last(ws, 'you').you.assist.until > Date.now());
+  g.onState(p, { lat: start.lat + 0.001, lon: start.lon, hdg: 0, spd: 0 }); assert.equal(p.ship.lat, start.lat, 'client state ignored under tow');
+  p.assist.start = Date.now() - 22500; p.assist.until = Date.now() + 22500; g.tick(0.1);
+  const mid = haversine(p.ship.lat, p.ship.lon, start.lat, start.lon);
+  assert.ok(p.assist && mid > 300 && mid < 800, `halfway (${mid.toFixed(0)} m from the start)`);
+  p.assist.until = Date.now() - 1; g.tick(0.1);
+  assert.equal(p.assist, null); assert.equal(p.docked, 'rotterdam'); assert.equal(p.berth.id, 'rotterdam-b1'); assert.equal(p.ship.lat, b1.lat); assert.equal(p.ship.hdg, 45);
+  assert.ok(events(ws).some((t) => /Tugs cast off/.test(t)) && events(ws).some((t) => /Port dues/.test(t)));
+  // refusals: too far from the anchor, too fast, hailed
+  g.onAction(p, { action: 'undock' });
+  const farPt = destination(ROT.lat, ROT.lon, 270, 3000); p.ship.lat = farPt.lat; p.ship.lon = farPt.lon; p.ship.spd = 2;
+  g.onAction(p, { action: 'tug_assist' }); assert.equal(p.assist, null);
+  p.ship.lat = start.lat; p.ship.lon = start.lon; p.ship.spd = 8; g.onAction(p, { action: 'tug_assist' }); assert.equal(p.assist, null);
+  p.ship.spd = 2; p.hail = { cutter: 'x', cutterId: 'x', until: 0, state: 'hailed' }; g.onAction(p, { action: 'tug_assist' }); assert.equal(p.assist, null);
+  p.hail = null; p.money = 10; g.onAction(p, { action: 'tug_assist' }); assert.equal(p.assist, null, 'cannot pay');
+});
+test('positions inside harbour structures are rejected with a correction and a rate-limited warning', () => {
+  const wall = destination(ROT.lat, ROT.lon, 0, 40);
+  const g = mkGame({ harborgeom: fakeGeom('rotterdam', [], { land: (lat, lon) => (haversine(lat, lon, wall.lat, wall.lon) < 15 ? 3 : 0) }) });
+  const { p, ws } = join(g, 'Cy'); g.onAction(p, { action: 'undock' });
+  const lat0 = p.ship.lat;
+  g.onState(p, { lat: wall.lat, lon: wall.lon, hdg: 0, spd: 2, throttle: 0.3, rudder: 0 });
+  assert.equal(p.ship.lat, lat0, 'stays at the last good position'); assert.ok(last(ws, 'you').correction);
+  const warns = () => events(ws).filter((t) => /inside the harbour/.test(t)).length;
+  assert.equal(warns(), 1);
+  g.onState(p, { lat: wall.lat, lon: wall.lon, hdg: 0, spd: 2, throttle: 0.3, rudder: 0 }); assert.equal(warns(), 1, 'warning rate-limited');
+  const ok = destination(ROT.lat, ROT.lon, 90, 30);
+  g.onState(p, { lat: ok.lat, lon: ok.lon, hdg: 90, spd: 2, throttle: 0.3, rudder: 0 }); assert.equal(p.ship.lat, ok.lat, 'open water inside the patch is accepted');
+});
+test('collision damage is clamped to 0.5–12 %, ×0.6 for ships, floods above 8 kn and is rate-limited', () => {
+  const g = mkGame(); const { p, ws } = join(g, 'Di'); g.onAction(p, { action: 'undock' });
+  g.onAction(p, { action: 'collision', speedKn: 30, kind: 'quay' });
+  assert.equal(p.cond, 88); assert.ok(Math.abs(p.flooding - 0.05) < 1e-9); assert.equal(p.stats.collisions, 1);
+  g.onAction(p, { action: 'collision', speedKn: 30, kind: 'quay' }); assert.equal(p.cond, 88, 'one report per 3 s');
+  p.lastCollision = 0; g.onAction(p, { action: 'collision', speedKn: 0.5, kind: 'breakwater' }); assert.equal(p.cond, 87.5, 'floor 0.5');
+  p.lastCollision = 0; g.onAction(p, { action: 'collision', speedKn: 10, kind: 'ship' }); assert.ok(Math.abs(p.cond - 82.1) < 1e-9, 'ship ×0.6'); assert.ok(Math.abs(p.flooding - 0.1) < 1e-9);
+  p.lastCollision = 0; g.onAction(p, { action: 'collision', speedKn: 0.2, kind: 'quay' }); assert.ok(Math.abs(p.cond - 82.1) < 1e-9, 'fenders absorb a nudge');
+  p.lastCollision = 0; g.onAction(p, { action: 'collision', speedKn: 'x', kind: {} }); assert.ok(Number.isFinite(p.cond) && Math.abs(p.cond - 82.1) < 1e-9);
+  assert.equal(p.stats.collisions, 3); assert.ok(events(ws).some((t) => /Heavy contact/.test(t)));
+});
+test('sell_ship pays shipValue and leaves a 60 % pilot boat; the pilot boat itself cannot be sold', () => {
+  const g = mkGame(); const { p } = join(g, 'Ed');
+  p.ship.cls = 'feeder'; p.cond = 80; p.fuel = 200; const m = p.money; const v = shipValue('feeder', 80);
+  p.cargo.push({ good: 'steel', qty: 50, contraband: false, jobId: null });
+  g.onAction(p, { action: 'sell_ship' }); assert.equal(p.ship.cls, 'feeder', 'cargo aboard: refused');
+  p.cargo = []; g.onAction(p, { action: 'sell_ship' });
+  assert.equal(p.money, m + v); assert.equal(p.ship.cls, 'pilot'); assert.equal(p.cond, 60); assert.ok(p.fuel <= SHIP_CLASSES.pilot.fuelCap);
+  g.onAction(p, { action: 'sell_ship' }); assert.equal(p.money, m + v); assert.equal(p.ship.cls, 'pilot');
+});
+test('supply and demand: buying raises the price, selling lowers it, stock caps purchases, deliveries earn a demand bonus', () => {
+  const g = mkGame(); const { p, ws } = join(g, 'Fy'); p.money = 1e9; g.rnd = () => 0.99;
+  const st = g.harbors.rotterdam; const p0 = st.market.grain, s0 = st.stock.grain;
+  assert.equal(p0, priceOf(ROT, 'grain', s0, st.target.grain), 'price is a function of stock/target');
+  g.onAction(p, { action: 'buy_goods', good: 'grain', qty: 1000 });
+  assert.equal(st.stock.grain, s0 - 1000); assert.ok(st.market.grain > p0, `price ${p0} → ${st.market.grain}`);
+  g.onAction(p, { action: 'sell_goods', good: 'grain', qty: 1000 });
+  assert.equal(st.stock.grain, s0); assert.equal(st.market.grain, p0);
+  st.stock.grain = 1; st.target.grain = 30000; g.sendHarbor(p);
+  assert.ok(st.market.grain <= Math.round(GOODS.grain.base * ECON.PRICE_MAX * 1.3) && st.market.grain >= GOODS.grain.base, 'shortage clamps at 1.9×');
+  st.stock.grain = 1e9; g.sendHarbor(p); assert.ok(st.market.grain <= Math.round(GOODS.grain.base * ECON.PRICE_MIN * 1.3) + 1, 'glut clamps at 0.55×');
+  st.stock.grain = s0;
+  const econ = last(ws, 'harbor').harbor.econ;
+  assert.ok(econ.stock.grain >= 0 && econ.target.grain > 0 && [-1, 0, 1].includes(econ.trend.grain));
+  st.stock.steel = 5; g.onAction(p, { action: 'buy_goods', good: 'steel', qty: 100 });
+  assert.equal(p.cargo.find((c) => c.good === 'steel').qty, 5, 'cannot buy more than the harbour holds');
+  g.onAction(p, { action: 'buy_goods', good: 'steel', qty: 100 }); assert.ok(events(ws).some((t) => /sold out/.test(t)));
+  // demand bonus at a destination short of the good; the delivery restocks it
+  const job = freightJob(g, 900); g.onAction(p, { action: 'accept_job', jobId: job.id }); assert.equal(p.jobs.length, 1);
+  const dest = harborById(job.to), ds = g.harbors[dest.id]; ds.stock[job.good] = 0;
+  g.onAction(p, { action: 'undock' }); p.ship.lat = dest.lat; p.ship.lon = dest.lon; p.ship.spd = 0; const m = p.money;
+  g.onAction(p, { action: 'dock' });
+  assert.equal(p.docked, dest.id); assert.equal(p.jobs.length, 0);
+  assert.equal(p.money, m + job.pay + Math.round(job.pay * ECON.DEMAND_BONUS_MAX) - portDues('coaster', dest) - pilotageFee('coaster', dest));
+  assert.equal(ds.stock[job.good], job.qty, 'delivered cargo restocks the destination');
+});
+test('markets drift toward target between visits and over a restart', () => {
+  const g = mkGame(); const st = g.harbors.rotterdam;
+  st.stock.grain = 1000; st.target.grain = 30000; g.lastEcon = Date.now() - 2 * 3600e3; g.driftMarkets();
+  assert.ok(st.stock.grain > 1000 && st.stock.grain < 30000, `drifted to ${st.stock.grain}`);
+  assert.ok(Math.abs(st.stock.grain - (1000 + 29000 * (1 - 0.95 ** 2))) < 0.03 * 30000, 'about 5 %/h');
+  assert.equal(st.market.grain, priceOf(ROT, 'grain', st.stock.grain, st.target.grain), 'prices refreshed');
+});
+test('berth fee per started day on undock, pilotage for big ships at big ports, service resets the wear ramp', () => {
+  const g = mkGame(); g.rnd = () => 0.99; const { p, ws } = join(g, 'Gi'); p.money = 100000;
+  p.dockedAt = g.simTime - 2 * 86400 - 10; let m = p.money;
+  g.onAction(p, { action: 'undock' }); assert.equal(p.money, m - 3 * berthFeePerDay('coaster')); assert.ok(events(ws).some((t) => /Berth fee: 3 days/.test(t)));
+  p.ship.cls = 'feeder'; p.ship.lat = ROT.lat; p.ship.lon = ROT.lon; p.ship.spd = 0; m = p.money;
+  g.onAction(p, { action: 'dock' });
+  assert.equal(pilotageFee('feeder', ROT), Math.round(14000 * 0.05)); assert.equal(pilotageFee('coaster', ROT), 0, '90 m is not over 90 m'); assert.equal(pilotageFee('feeder', harborById('ostend')), 0, 'minor port');
+  assert.equal(p.money, m - portDues('feeder', ROT) - pilotageFee('feeder', ROT));
+  m = p.money; g.onAction(p, { action: 'undock' }); assert.equal(p.money, m - berthFeePerDay('feeder'), 'one started day');
+  p.ship.lat = ROT.lat; p.ship.lon = ROT.lon; g.onAction(p, { action: 'dock' });
+  const cost = serviceCostFor('feeder'); assert.equal(cost, Math.round(950000 * FEES.SERVICE_FRAC)); m = p.money;
+  g.onAction(p, { action: 'service' }); assert.equal(p.money, m - cost); assert.ok(Math.abs(p.serviceDue - (g.simTime + FEES.SERVICE_INTERVAL_DAYS * 86400)) < 2);
+  assert.equal(last(ws, 'harbor').harbor.fees.service, cost); assert.equal(last(ws, 'you').you.serviceDue, p.serviceDue);
+  p.money = 0; g.onAction(p, { action: 'service' }); assert.equal(p.money, 0, 'cannot afford: nothing charged');
+  // wear ramp: 30 days overdue wears 1.6× as fast (the cap)
+  const a = join(g, 'Ha').p, b = join(g, 'Ia').p;
+  for (const q of [a, b]) { g.onAction(q, { action: 'undock' }); q.ship.throttle = 1; q.ship.spd = 14; }
+  a.serviceDue = g.simTime + 1e6; b.serviceDue = g.simTime - 30 * 86400;
+  g.tick(1);
+  assert.ok(a.cond < 100 && b.cond < 100); assert.ok(Math.abs((100 - b.cond) / (100 - a.cond) - 1.6) < 0.01, `ratio ${(100 - b.cond) / (100 - a.cond)}`);
+  assert.equal(g.privateState(b).serviceMul, 1.6);
+});
+test('snapshots carry nearby AI per player; you carries tide, extended weather and nearBerth', () => {
+  const b1 = mkBerth('rotterdam-b1', 'Berth 1', 90, 300);
+  const ai = [{ id: 'ai1', name: 'Nordic Trader', cls: 'feeder', flag: 'NL', lat: ROT.lat + 0.05, lon: ROT.lon, hdg: 0, spd: 12, dest: 'hull', destName: 'Hull', state: 'underway', eta: 0 },
+    { id: 'ai2', name: 'Far Away', cls: 'bulker', flag: 'PA', lat: 30, lon: -40, hdg: 0, spd: 12, dest: 'new_york', destName: 'New York', state: 'underway', eta: 0 }];
+  const g = mkGame({ harborgeom: fakeGeom('rotterdam', [b1]), traffic: fakeTraffic(ai) });
+  const { p, ws } = join(g, 'Jo');
+  assert.equal(last(ws, 'welcome').ai.length, 1);
+  g.broadcastSnapshot(); const snap = last(ws, 'snap');
+  assert.equal(snap.ai.length, 1); assert.equal(snap.ai[0].id, 'ai1'); assert.ok(Array.isArray(snap.players) && Array.isArray(snap.storms) && snap.simTime > 0);
+  const you = last(ws, 'you').you;
+  assert.ok(Number.isFinite(you.tide.height) && ['flood', 'ebb'].includes(you.tide.state) && Number.isFinite(you.tide.stream.u) && you.tide.nextHigh > 0);
+  for (const k of ['windDir', 'windSpd', 'gust', 'sea', 'storm', 'rain', 'waveH', 'waveDir', 'wavePeriod', 'swellH', 'swellDir', 'swellPeriod', 'visibility', 'pressure', 'temp', 'cloud']) assert.ok(Number.isFinite(you.weather[k]), k);
+  assert.equal(you.weather.source, 'synthetic'); assert.equal(you.nearBerth, null, 'docked: no berth guidance'); assert.equal(you.assist, null);
+  g.onAction(p, { action: 'undock' }); const y2 = last(ws, 'you').you;
+  assert.equal(y2.nearBerth.id, 'rotterdam-b1'); assert.ok(y2.nearBerth.distM > 250 && y2.nearBerth.distM < 350 && y2.nearBerth.hdg === 45 && y2.nearBerth.depth === 12);
+  p.ship.lat = 55; p.ship.lon = 3; g.sendYou(p); assert.equal(last(ws, 'you').you.nearBerth, null, 'beyond 2500 m');
+  // a Game without traffic still produces valid snapshots
+  const g2 = mkGame(); const { ws: ws2 } = join(g2, 'Ko'); g2.broadcastSnapshot(); assert.deepEqual(last(ws2, 'snap').ai, []);
+});
+test('weatherAt uses real samples when the service has the cell, requests missing cells, and keeps synthetic storms as a fallback only', () => {
+  const requested = [];
+  const sample = { wind: { spd: 20, dir: 270, gust: 28 }, waves: { height: 3, dir: 280, period: 7 }, swell: { height: 1, dir: 250, period: 11 }, pressure: 998, temp: 9, precip: 2, visibility: 6000, cloud: 0.9, fetchedAt: Date.now(), source: 'open-meteo' };
+  const weather = { sample: (lat) => (lat > 54 ? sample : null), request: (lat, lon) => requested.push([lat, lon]), tick() {}, stats: () => ({}) };
+  const g = mkGame({ weather });
+  const w = g.weatherAt(55, 3);
+  assert.equal(w.source, 'open-meteo'); assert.equal(w.wind.spd, 20); assert.equal(w.wind.dir, 270); assert.ok(w.wind.u > 19.9, 'a westerly blows east'); assert.equal(w.wind.gust, 28);
+  assert.equal(w.storm, 0.5); assert.equal(w.sea, 0.5); assert.equal(w.rain, 0.5); assert.equal(w.waves.height, 3); assert.equal(w.swell.period, 11); assert.equal(w.visibility, 6000);
+  g.storms.push({ id: 's1', name: 'Test', lat: 55, lon: 3, radiusKm: 100, peak: 1, intensity: 1, driftDir: 90, driftMs: 5, born: g.simTime, dies: g.simTime + 3600 });
+  assert.equal(g.weatherAt(55, 3).storm, 0.5, 'synthetic storms do not overlay real data');
+  const s = g.weatherAt(50, -5);
+  assert.equal(s.source, 'synthetic'); assert.ok(s.waves.height > 0 && s.visibility > 0 && Number.isFinite(s.temp));
+  assert.ok(requested.some(([la, lo]) => la === 50 && lo === -5), 'missing cell requested lazily');
+  const { p } = join(g, 'Lu'); assert.ok(requested.some(([la, lo]) => Math.abs(la - p.ship.lat) < 1e-6), 'player cell requested on connect');
+  // marine data missing: waves are synthesised from the wind
+  weather.sample = () => ({ wind: { spd: 10, dir: 0 }, waves: null, swell: null, pressure: 1015, temp: 14, precip: 0, visibility: 20000, cloud: 0.2, fetchedAt: 1, source: 'open-meteo' });
+  const w2 = g.weatherAt(55, 3); assert.ok(w2.waves.height > 1 && w2.waves.height < 4 && w2.storm === 0 && w2.rain === 0);
+});
+test('old state files load with v0.3 defaults; new harbour and player fields survive a save/load round trip', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'saltline-')); const file = path.join(dir, 'state.json');
+  const old = {
+    savedAt: new Date().toISOString(), wrecks: [], storms: [], harbors: { rotterdam: { jobs: [], market: { grain: 250, fish: 700 }, contact: null, lastRegen: -1e9 } },
+    players: [{ id: 'p1', token: 't1', name: 'Old', ship: { cls: 'coaster', lat: 51.98, lon: 4.03, hdg: 0, spd: 0, throttle: 0, rudder: 0 }, cond: 90, flooding: 0, fuel: 50, cargo: [], money: 1000, wanted: 0, wantedAt: 0, kits: 0, jobs: [], convoyId: null, docked: 'rotterdam', stats: { delivered: 1 } }],
+  };
+  fs.writeFileSync(file, JSON.stringify(old));
+  const g = new Game(world, () => {}, { stateFile: file });
+  const st = g.harbors.rotterdam; assert.ok(st.stock.grain > 0 && st.target.grain > 0 && st.market.grain > 0 && st.used.length >= 1);
+  const p = g.players.get('t1');
+  assert.equal(p.berth, null); assert.ok(p.serviceDue > g.simTime); assert.equal(p.stats.collisions, 0); assert.equal(p.stats.delivered, 1); assert.ok(p.dockedAt > 0);
+  p.berth = { harbor: 'rotterdam', id: 'rotterdam-b1', name: 'Berth 1' }; p.stats.collisions = 2; p.serviceDue = 123456789;
+  g.saveState();
+  const g2 = new Game(world, () => {}, { stateFile: file });
+  const q = g2.players.get('t1'); assert.equal(q.berth.id, 'rotterdam-b1'); assert.equal(q.stats.collisions, 2); assert.equal(q.serviceDue, 123456789);
+  assert.ok(Math.abs(g2.harbors.rotterdam.stock.grain - st.stock.grain) <= 1); assert.deepEqual(g2.harbors.rotterdam.target, st.target);
+  // an assist interrupted by a restart completes at its berth
+  const b1 = mkBerth('rotterdam-b1', 'Berth 1', 90, 300);
+  q.docked = null; q.berth = null; q.assist = { harbor: 'rotterdam', berthId: 'rotterdam-b1', from: { lat: 51.98, lon: 4.0, hdg: 90 }, to: { lat: b1.lat, lon: b1.lon, hdg: 45 }, start: 0, until: 1 };
+  g2.saveState();
+  const g3 = new Game(world, () => {}, { stateFile: file, harborgeom: fakeGeom('rotterdam', [b1]) });
+  const r = g3.players.get('t1'); assert.equal(r.assist, null); assert.equal(r.docked, 'rotterdam'); assert.equal(r.berth.id, 'rotterdam-b1'); assert.equal(r.ship.lat, b1.lat);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+test('public job boards carry pay per tonne, destination names, deadlines and harbour positions', () => {
+  const g = mkGame(); const jobs = g.publicJobs();
+  const r = jobs.harbors.find((h) => h.id === 'rotterdam');
+  assert.ok(r.harbor.lat === ROT.lat && r.harbor.name === ROT.name && r.harbor.size === 'mega' && r.lat === ROT.lat && r.name === ROT.name);
+  assert.ok(r.jobs.length >= 3 && r.fuel > 0 && r.trend);
+  for (const j of r.jobs) {
+    for (const k of ['pay', 'payPerT', 'type', 'distKm', 'to', 'toName', 'deadline', 'needsCat', 'good', 'qty', 'pax', 'title']) assert.ok(k in j, `${j.type} has ${k}`);
+    assert.equal(j.toName, harborById(j.to).name);
+    if (j.qty) assert.equal(j.payPerT, Math.round(j.pay / j.qty)); else if (j.pax) assert.equal(j.payPerT, Math.round(j.pay / j.pax));
+  }
+});
+test('used-ship listings refresh every 6 h and carry specs; rescues and tows use the harbour anchor', () => {
+  const anchor = destination(ROT.lat, ROT.lon, 180, 1500);
+  const g = mkGame({ harborgeom: fakeGeom('rotterdam', [], { anchor }) }); const { p } = join(g, 'Mo');
+  const st = g.harbors.rotterdam; const first = st.used.map((u) => u.id).join();
+  assert.ok(st.used.length >= 1 && st.used.length <= 4 && st.used[0].specs.maxKn > 0);
+  g.regenHarbor(ROT, st, false); assert.equal(st.used.map((u) => u.id).join(), first, 'no refresh inside 6 h');
+  st.usedAt = g.simTime - 7 * 3600; g.regenHarbor(ROT, st, false); assert.notEqual(st.used.map((u) => u.id).join(), first, 'refreshed after 6 h');
+  g.onAction(p, { action: 'undock' });
+  assert.ok(Math.abs(p.ship.lat - anchor.lat) < 1e-9, 'undock at the geometry anchor');
+  p.cond = 0; p.flooding = 1; p.money = 5000; g.tick(0.1);
+  assert.ok(Math.abs(g.rescues[0].lat - anchor.lat) < 1e-9, 'lifeboat launches from the anchor');
+  g.rescues[0].eta = Date.now() - 1; g.updateRescues(0.1);
+  assert.equal(p.docked, 'rotterdam'); assert.ok(Math.abs(p.ship.lat - anchor.lat) < 1e-9, 'landed at the anchor');
 });
