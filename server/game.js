@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { GEO, SIM, SHIP_CLASSES, GOODS, INTERACT, LAW, LAYERS, FEES } from '../shared/constants.js';
+import { GEO, SIM, SHIP_CLASSES, GOODS, INTERACT, LAW, LAYERS, FEES, WARP } from '../shared/constants.js';
 import { haversine, bearing, destination, unitsBetween, normDeg, angleDiff, wrapLon, clampLat } from '../shared/geo.js';
 import { fuelBurnPerSimHour, wearPerSimHour, currentAt, headwindFactor, stepShip } from '../shared/physics.js';
 import { tideAt } from '../shared/tide.js';
@@ -96,6 +96,8 @@ export class Game {
   }
   // v0.3 player fields default safely for players saved by older versions.
   migratePlayer(p) {
+    // Never resume warped (docs/V4-CONTRACTS.md §1): every load starts the ship back in real time.
+    p.warp = 1; p.warpRouted = false; p.warpGraceUntil = 0; p.warpGraceFactor = 1;
     if (p.berth === undefined) p.berth = null;
     if (!(p.serviceDue > 0)) p.serviceDue = this.simTime + SERVICE_INTERVAL_S;
     if (!p.stats) p.stats = {};
@@ -115,7 +117,7 @@ export class Game {
       fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
       const s = {
         savedAt: new Date().toISOString(), simTime: this.simTime, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
-        players: [...this.players.values()].map((p) => ({ ...p, hail: null, fishing: false, online: false })),
+        players: [...this.players.values()].map((p) => ({ ...p, hail: null, fishing: false, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1 })),
       };
       const tmp = this.stateFile + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(s));
@@ -182,6 +184,7 @@ export class Game {
         kits: 1, jobs: [], convoyId: null, docked: START_HARBOR, dockedAt: this.simTime, berth: null, assist: null, serviceDue: this.simTime + SERVICE_INTERVAL_S, lastInspected: -1e9, lastSeen: Date.now(),
         stats: { delivered: 0, earned: 0, sunk: 0, inspected: 0, fined: 0, caught: 0, boarded: 0, pirated: 0, distanceKm: 0, collisions: 0 },
         lastValid: { lat: spawn.lat, lon: spawn.lon }, shallowSince: 0, log: [],
+        warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1,
       };
       this.players.set(p.token, p); this.byId.set(p.id, p);
       this.log(`[game] new player ${p.name} (${p.id})`);
@@ -231,6 +234,7 @@ export class Game {
       id: p.id, name: p.name, cls: s.cls, lat: round6(s.lat), lon: round6(s.lon), hdg: Math.round(s.hdg * 10) / 10,
       spd: Math.round(s.spd * 10) / 10, cond: Math.round(p.cond), flooding: Math.round(p.flooding * 100) / 100,
       convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.flooding >= 1 || !!p.rescue, towing: !!p.towing, offline: !p.online,
+      warp: this.warpOf(p),
     };
   }
   privateState(p) {
@@ -243,6 +247,7 @@ export class Game {
       berth: p.berth || null, assist: p.assist ? { harbor: p.assist.harbor, berthId: p.assist.berthId, berthName: p.assist.berthName, until: p.assist.until, from: p.assist.from, to: p.assist.to } : null,
       nearBerth: this.nearBerthFor(p), serviceDue: p.serviceDue, serviceMul: round2(serviceWearMul(p.serviceDue, this.simTime)),
       stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
+      warp: this.warpOf(p), warpLimit: this.warpLimit(p),
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
     };
   }
@@ -259,7 +264,7 @@ export class Game {
   worldInfo() {
     return {
       harbors: HARBORS.map((h) => ({ id: h.id, name: h.name, country: h.country, lat: h.lat, lon: h.lon, size: h.size })),
-      fishing: FISHING_GROUNDS, platforms: PLATFORMS, classes: SHIP_CLASSES, goods: GOODS, layers: LAYERS, interact: INTERACT, law: LAW, fees: FEES,
+      fishing: FISHING_GROUNDS, platforms: PLATFORMS, classes: SHIP_CLASSES, goods: GOODS, layers: LAYERS, interact: INTERACT, law: LAW, fees: FEES, warp: WARP,
       scale: GEO.SCALE, motionScale: SIM.MOTION_SCALE, clockScale: SIM.CLOCK_SCALE,
     };
   }
@@ -305,6 +310,8 @@ export class Game {
     if (old && old !== ws) { try { old.close(4001, 'replaced'); } catch {} }
     this.sockets.set(p.id, ws);
     p.online = true; p.lastSeen = Date.now(); p.lastTick = Date.now();
+    // A (re)connecting client starts in real time: it has no route yet and its clock mirrors you.warp.
+    this.resetWarp(p);
     ws.send(JSON.stringify({
       t: 'welcome', token: p.token, you: this.privateState(p), world: this.worldInfo(),
       players: [...this.byId.values()].filter((o) => o.online && o.id !== p.id).map((o) => this.publicState(o)),
@@ -320,6 +327,7 @@ export class Game {
   disconnect(p) {
     if (this.sockets.get(p.id)) this.sockets.delete(p.id);
     p.online = false; p.lastSeen = Date.now();
+    this.resetWarp(p); // offline voyages run in real time
     if (p.hail) {
       const c = this.cutters.find((x) => x.id === p.hail.cutterId);
       this.bumpWanted(p, 1); p.hail = null;
@@ -343,8 +351,9 @@ export class Game {
     const C = SHIP_CLASSES[s.cls];
     // Distance budget: the ship may cover at most max speed (plus current/leeway margin) for the elapsed time.
     // Unused budget carries over for a few seconds so network jitter does not trigger rejections, but cannot
-    // be banked indefinitely (no speed hacks by message spamming).
-    const perSec = C.maxKn * 1.35 * GEO.KN_TO_MS * SIM.MOTION_SCALE + 1.5 * SIM.MOTION_SCALE;
+    // be banked indefinitely (no speed hacks by message spamming). Time warp multiplies the budget by the factor (for
+    // GRACE_MS after a drop the old factor still applies to states the client sent before it heard of the drop).
+    const perSec = (C.maxKn * 1.35 * GEO.KN_TO_MS * SIM.MOTION_SCALE + 1.5 * SIM.MOTION_SCALE) * this.warpBudgetFactor(p, now);
     p.moveBudget = Math.min(perSec * 5, (p.moveBudget == null ? perSec * 5 : p.moveBudget) + perSec * dt);
     const moved = haversine(s.lat, s.lon, lat, lon);
     if (moved > p.moveBudget + 5) {
@@ -392,6 +401,7 @@ export class Game {
         case 'dock': return this.dock(p);
         case 'undock': return this.undock(p);
         case 'tug_assist': return this.tugAssist(p);
+        case 'set_warp': return this.setWarp(p, m);
         case 'collision': return this.collision(p, m);
         case 'sell_ship': return this.sellShip(p);
         case 'service': return this.service(p);
@@ -446,6 +456,7 @@ export class Game {
   }
   // Common "ship is now in harbour" state: used by docking, tows, impounds, resets and rescues.
   setDocked(p, harborId, berth) {
+    this.dropWarp(p, 'In harbour.', false); // every caller sends `you` afterwards
     p.docked = harborId; p.dockedAt = this.simTime; p.berth = berth || null; p.assist = null;
     p.ship.spd = 0; p.ship.throttle = 0; p.ship.rudder = 0; p.fishing = false;
   }
@@ -595,6 +606,7 @@ export class Game {
     p.ship.spd *= 0.4;
     const what = kind === 'ship' ? 'another ship' : kind === 'breakwater' ? 'the breakwater' : 'the quay';
     this.event(p, 'warn', `${speedKn >= 8 ? 'Heavy contact' : speedKn >= 3 ? 'Collision' : 'Bumped'} with ${what} at ${speedKn.toFixed(1)} kn: hull −${dmg} %${speedKn > 8 ? ', taking water' : ''}. Condition ${Math.round(p.cond)} %.`);
+    this.dropWarp(p, `Contact with ${what}.`, false);
     this.sendYou(p);
   }
   // Sell the current hull at shipValue; the yard leaves you a well-used pilot boat so the market is a real buy/sell market.
@@ -839,6 +851,7 @@ export class Game {
     p.cond = Math.max(0, p.cond - 5);
     if (p.cond < 20) p.flooding = Math.min(1, p.flooding + 0.05);
     this.event(p, 'warn', `Grounding! Hull condition ${Math.round(p.cond)} %.`);
+    this.dropWarp(p, 'Aground.', false);
     this.sendYou(p);
   }
 
@@ -953,6 +966,7 @@ export class Game {
     p.lastHailAt = Date.now();
     p.hail = { cutter: c.name, cutterId: c.id, until: Date.now() + LAW.HAIL_SECONDS * 1000, state: 'hailed' };
     c.state = 'hail'; c.targetId = p.id; c.timer = LAW.HAIL_SECONDS;
+    this.dropWarp(p, `${c.name} is hailing you.`, false);
     this.event(p, 'law', `${c.name} on channel 16: "Vessel ${p.name}, this is the coast guard. Heave to for inspection. You have ${LAW.HAIL_SECONDS} seconds."`);
     this.sendYou(p);
   }
@@ -970,6 +984,9 @@ export class Game {
     this.updateRescues(dt);
     this.requestWeather();
     for (const p of this.byId.values()) {
+      // Time warp: drop back to real time the moment a condition stops holding (before anything else, so a docked,
+      // assisted or rescued player is caught too).
+      if (p.warp !== 1) this.checkWarp(p);
       if (p.rescue) continue;
       if (p.docked) continue;
       if (p.assist) { this.stepAssist(p); continue; }
@@ -979,10 +996,12 @@ export class Game {
       const load = cargoMass(p.cargo) / C.capacity;
       const underway = Math.abs(s.throttle) > 0.03 || Math.abs(s.spd) > 0.5;
       const wx = this.weatherAt(s.lat, s.lon);
+      // The ship's own clock: warp multiplies everything that happens aboard per hour (the world clock stays real time).
+      const hrs = simHours * this.warpOf(p);
       if (!(p.serviceDue > 0)) p.serviceDue = this.simTime + SERVICE_INTERVAL_S;
-      if (underway && C.crewCost) p.money = Math.max(0, p.money - C.crewCost * simHours * (p.towing ? 1.2 : 1));
+      if (underway && C.crewCost) p.money = Math.max(0, p.money - C.crewCost * hrs * (p.towing ? 1.2 : 1));
       if (p.fuel > 0 && Math.abs(s.throttle) > 0.01) {
-        const burn = fuelBurnPerSimHour(s.cls, s.throttle, load, headwindFactor(s.hdg, wx.wind), p.cond) * simHours * (p.towing ? 1.3 : 1);
+        const burn = fuelBurnPerSimHour(s.cls, s.throttle, load, headwindFactor(s.hdg, wx.wind), p.cond) * hrs * (p.towing ? 1.3 : 1);
         p.fuel = Math.max(0, p.fuel - burn);
         if (p.fuel === 0) this.event(p, 'warn', 'Fuel exhausted. Engine stopped. You are drifting — call a tow or wait for a kind soul.');
         else if (p.fuel < C.fuelCap * 0.1 && !p.lowFuelWarned) { p.lowFuelWarned = true; this.event(p, 'warn', 'Low fuel: under 10 % remaining.'); }
@@ -991,17 +1010,17 @@ export class Game {
       if (underway && p.cond > 0) {
         // Overdue maintenance ramps the wear multiplier (+2 %/day past serviceDue, up to +60 %).
         const svc = serviceWearMul(p.serviceDue, this.simTime);
-        p.cond = Math.max(0, p.cond - wearPerSimHour(s.throttle, wx.wind.spd, C.wearMul) * svc * simHours);
+        p.cond = Math.max(0, p.cond - wearPerSimHour(s.throttle, wx.wind.spd, C.wearMul) * svc * hrs);
         if (svc > 1 && !p.serviceWarned) { p.serviceWarned = true; this.event(p, 'warn', 'Service overdue: the engineer reports rising wear. Book a service at the next yard (1 % of the hull price).'); }
         if (svc <= 1) p.serviceWarned = false;
         if (p.cond < 30 && !p.condWarned) { p.condWarned = true; this.event(p, 'warn', 'Hull condition under 30 %: steering is getting sluggish, leaks likely. Find a yard.'); }
         if (p.cond > 50) p.condWarned = false;
       }
       if (p.cond <= 0) {
-        p.flooding = Math.min(1, p.flooding + (1.2 + 2 * wx.sea) * simHours);
+        p.flooding = Math.min(1, p.flooding + (1.2 + 2 * wx.sea) * hrs);
         if (!p.floodWarned) { p.floodWarned = true; this.event(p, 'warn', 'Hull failed: taking on water! Use a damage-control kit (K) or make for the nearest harbour.'); }
       } else if (p.flooding > 0 && p.cond > 30) {
-        p.flooding = Math.max(0, p.flooding - 0.3 * simHours); // pumps keep up on a sound hull
+        p.flooding = Math.max(0, p.flooding - 0.3 * hrs); // pumps keep up on a sound hull
       }
       if (p.flooding < 0.2) p.floodWarned = false;
       if (p.fishing) {
@@ -1009,8 +1028,8 @@ export class Game {
         if (!g) { p.fishing = false; this.event(p, 'info', 'Left the fishing ground; nets hauled in.'); this.sendYou(p); }
         else if (Math.abs(s.spd) < 3) {
           const free = C.capacity - cargoMass(p.cargo);
-          const rate = C.fishRate * g.richness * 5 * (this.weatherAt(s.lat, s.lon).storm > 0.5 ? 0.4 : 1);
-          const add = Math.min(free, rate * simHours);
+          const rate = C.fishRate * g.richness * 5 * (wx.storm > 0.5 ? 0.4 : 1);
+          const add = Math.max(0, Math.min(free, rate * hrs));
           p.fishInfo = { ground: g.name, rate: Math.round(rate * 10) / 10, caught: Math.round(((p.fishInfo && p.fishInfo.caught) || 0) + add), tooFast: false };
           if (add > 0) {
             const stack = p.cargo.find((c) => c.good === 'fish' && c.caught && !c.jobId);
@@ -1054,6 +1073,7 @@ export class Game {
   }
   sink(p) {
     const s = p.ship;
+    this.dropWarp(p, 'Abandon ship.', false);
     p.stats.sunk++;
     if (p.cargo.length) {
       this.wrecks.push({ id: 'w' + shortId(), lat: s.lat, lon: s.lon, cargo: p.cargo, owner: p.name, cls: s.cls, simTime: this.simTime, time: Date.now() });
@@ -1206,6 +1226,138 @@ export class Game {
     this.sendYou(p);
   }
 
+  // ------------------------------------------------------------------ v0.4: time warp (docs/V4-CONTRACTS.md §1)
+  // The world clock stays real time for everyone. Warp speeds up one ship: the client integrates dt × factor, the server
+  // multiplies the movement budget and everything consumed aboard (fuel, wear, wages, catch, flooding) by the factor.
+  warpOf(p) { return WARP.LEVELS.includes(p.warp) ? p.warp : 1; }
+  // Movement budget factor: the current level, or the level just dropped from while states sent before the drop arrive.
+  warpBudgetFactor(p, now = Date.now()) { return Math.max(this.warpOf(p), p.warpGraceUntil > now && WARP.LEVELS.includes(p.warpGraceFactor) ? p.warpGraceFactor : 1); }
+  // `action: set_warp {factor, route}`. 1× is always accepted; higher levels only while every condition holds.
+  setWarp(p, m) {
+    const f = Number(m && m.factor);
+    if (!WARP.LEVELS.includes(f)) return this.event(p, 'warn', `Time warp levels are ${WARP.LEVELS.map((l) => `${l}×`).join(', ')}.`);
+    const was = this.warpOf(p);
+    if (f === 1) {
+      if (was > 1) { this.endWarp(p, was); this.event(p, 'info', 'Time warp off — back to real time.'); }
+      this.sendYou(p);
+      return;
+    }
+    // A route supplied now, or (stepping down) the one the higher level was engaged with.
+    const routed = validWarpRoute(m.route) || (f <= was && !!p.warpRouted);
+    const why = this.warpBlock(p, f, routed);
+    if (why) { this.event(p, 'warn', `Time warp ${f}× refused: ${why}`); this.sendYou(p); return; }
+    if (f < was) this.startGrace(p, was);
+    p.warp = f; p.warpRouted = routed;
+    this.event(p, 'info', `Time warp ${f}×: your ship's clock runs ${f} times faster — fuel, wear, wages and catch too. It drops back to real time near harbours, land, other skippers, storms and the coast guard.`);
+    this.sendYou(p);
+  }
+  // Why the ship cannot (keep) warp(ing) at factor f right now, or null. Order = what the skipper should fix first.
+  warpBlock(p, f, routed) {
+    const why = this.warpConditions(p);
+    if (why) return why;
+    if (f > WARP.MAX_NO_ROUTE && !routed) return `above ${WARP.MAX_NO_ROUTE}× the crew needs a route to follow — plot one on the chart and sail it.`;
+    if (f > WARP.LAND_CHECK_ABOVE) {
+      const sh = this.shallowAhead(p, this.warpLookahead(p, f));
+      if (sh) return this.landAheadReason(sh);
+    }
+    return null;
+  }
+  // The factor-independent conditions (contract list): ship state, harbours, other players, weather.
+  warpConditions(p) {
+    if (!p.online) return 'you are offline.';
+    if (p.docked) return 'you are in harbour — cast off first.';
+    if (p.assist) return 'the tugs have you.';
+    if (p.hail) return 'the coast guard is hailing you.';
+    if (p.rescue || p.flooding >= 1) return 'you are in the life raft.';
+    const s = p.ship, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
+    // Out of fuel = no propulsion; a sailing yacht with her sails set is still driven by the wind.
+    if (!(p.fuel > 0) && !(C.sail && p.sailsUp !== false)) return 'out of fuel.';
+    if (p.flooding > WARP.MAX_FLOODING) return `taking water (${Math.round(p.flooding * 100)} %) — patch the hull or let the pumps catch up first.`;
+    const { harbor, units } = this.nearestHarbor(s.lat, s.lon);
+    if (harbor && units <= WARP.HARBOR_RADIUS_M) return `${harbor.name} is ${dist1(units)} away — warp needs ${km1(WARP.HARBOR_RADIUS_M)} km clear of any harbour.`;
+    const other = this.nearestOtherSkipper(p, WARP.PLAYER_RADIUS_M);
+    if (other) return `${other.player.name} is ${dist1(other.distM)} away — warp needs ${km1(WARP.PLAYER_RADIUS_M)} km of sea to yourself.`;
+    const wx = this.weatherAt(s.lat, s.lon);
+    if (wx.storm > WARP.MAX_STORM) return `heavy weather here (wind ${Math.round(wx.wind.spd)} m/s) — no warp in a storm.`;
+    return null;
+  }
+  // The closest other online player at sea (docked ships and life rafts do not count) within rangeM.
+  nearestOtherSkipper(p, rangeM) {
+    const s = p.ship, dLat = rangeM / GEO.M_PER_DEG_LAT;
+    let best = null, bd = rangeM;
+    for (const o of this.byId.values()) {
+      if (o === p || !o.online || o.docked || o.rescue || o.flooding >= 1) continue;
+      if (Math.abs(o.ship.lat - s.lat) > dLat) continue;
+      const d = haversine(s.lat, s.lon, o.ship.lat, o.ship.lon);
+      if (d <= bd) { bd = d; best = o; }
+    }
+    return best ? { player: best, distM: bd } : null;
+  }
+  // Look-ahead distance for factor f: MIN_LAND_M, longer when LOOKAHEAD_S real seconds of warped travel cover more.
+  warpLookahead(p, f) {
+    const v = Math.abs(num(p.ship.spd, 0)) * GEO.KN_TO_MS * SIM.MOTION_SCALE * f;
+    return clamp(v * WARP.LOOKAHEAD_S, WARP.MIN_LAND_M, Math.max(WARP.MIN_LAND_M, WARP.MAX_LOOKAHEAD_M));
+  }
+  // First point along the course (heading, reversed when going astern) within rangeM where the water is shallower than
+  // draft + KEEL_MARGIN_M; samples every SAMPLE_M up to and including rangeM. Inside a built harbour patch the patch
+  // mask decides (its basins are dredged where the coarse raster says land); elsewhere world.depthAt at low water.
+  shallowAhead(p, rangeM) {
+    const s = p.ship, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
+    const need = C.draft + WARP.KEEL_MARGIN_M;
+    const course = num(s.spd, 0) < 0 ? normDeg(num(s.hdg, 0) + 180) : normDeg(num(s.hdg, 0));
+    let tide = 0;
+    try { tide = Math.min(0, num(tideAt(s.lat, s.lon, this.simTime).height, 0)); } catch { tide = 0; }
+    const step = Math.max(50, WARP.SAMPLE_M), n = Math.max(1, Math.ceil(rangeM / step));
+    for (let k = 1; k <= n; k++) {
+      const d = Math.min(rangeM, k * step);
+      const pt = destination(s.lat, s.lon, course, d);
+      const pen = this.landPenetration(pt.lat, pt.lon);
+      const depth = pen != null ? (pen > 0 ? -pen : Infinity) : this.world.depthAt(pt.lat, pt.lon) + tide;
+      if (!(depth >= need)) return { distM: d, depth: Number.isFinite(depth) ? depth : -1 };
+    }
+    return null;
+  }
+  landAheadReason(sh) {
+    return `${sh.depth <= 0 ? 'land' : `shallows (${sh.depth.toFixed(1)} m)`} ${dist1(sh.distM)} ahead — above ${WARP.LAND_CHECK_ABOVE}× you need ${km1(WARP.MIN_LAND_M)} km of deep water ahead.`;
+  }
+  // Every tick while warped: back to 1× (with the reason) as soon as the level is no longer allowed.
+  checkWarp(p) {
+    const f = this.warpOf(p);
+    if (f <= 1) { p.warp = 1; return; }
+    const why = this.warpBlock(p, f, !!p.warpRouted);
+    if (why) this.dropWarp(p, capitalise(why));
+  }
+  // Drop to 1× with a 'warn' event; `send` = false when the caller sends `you` itself. Returns whether it was warped.
+  dropWarp(p, reason, send = true) {
+    const was = this.warpOf(p);
+    if (was <= 1) { p.warp = 1; return false; }
+    this.endWarp(p, was);
+    this.event(p, 'warn', `Time warp off (${was}× → 1×): ${reason}`);
+    if (send) this.sendYou(p);
+    return true;
+  }
+  endWarp(p, was) { p.warp = 1; p.warpRouted = false; this.startGrace(p, was); }
+  startGrace(p, was) {
+    const now = Date.now();
+    const prev = p.warpGraceUntil > now && WARP.LEVELS.includes(p.warpGraceFactor) ? p.warpGraceFactor : 1;
+    p.warpGraceFactor = Math.max(prev, was); p.warpGraceUntil = now + WARP.GRACE_MS;
+  }
+  // Silent reset (connect, disconnect): no event, no grace — the client starts over in real time.
+  resetWarp(p) { p.warp = 1; p.warpRouted = false; p.warpGraceUntil = 0; p.warpGraceFactor = 1; }
+  // For the HUD (you.warpLimit): the highest level the server would accept right now given a route, and why not higher.
+  warpLimit(p) {
+    const top = WARP.LEVELS[WARP.LEVELS.length - 1];
+    const why = this.warpConditions(p);
+    if (why) return { max: 1, reason: capitalise(why), routeAbove: WARP.MAX_NO_ROUTE };
+    const sh = this.shallowAhead(p, this.warpLookahead(p, top));
+    if (!sh) return { max: top, reason: null, routeAbove: WARP.MAX_NO_ROUTE };
+    let max = 1;
+    for (let i = WARP.LEVELS.length - 1; i >= 0; i--) {
+      const l = WARP.LEVELS[i];
+      if (l <= WARP.LAND_CHECK_ABOVE || sh.distM > this.warpLookahead(p, l)) { max = l; break; }
+    }
+    return { max, reason: max < top ? capitalise(this.landAheadReason(sh)) : null, routeAbove: WARP.MAX_NO_ROUTE };
+  }
 
   // ------------------------------------------------------------------ v0.2: contracts at sea
   towPickup(p, jobId) {
@@ -1488,5 +1640,19 @@ function round2(v) { return Number.isFinite(v) ? Math.round(v * 100) / 100 : 0; 
 function round1(v) { return Number.isFinite(v) ? Math.round(v * 10) / 10 : 0; }
 function num(v, d) { return Number.isFinite(v) ? v : d; }
 function fmt(n) { return Math.round(n).toLocaleString('en-US'); }
+function km1(m) { return (Math.round(m / 100) / 10).toFixed(1); }
+function dist1(m) { return m < 1000 ? `${Math.round(m / 10) * 10} m` : `${km1(m)} km`; }
+function capitalise(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
+// The route a client sails under warp > MAX_NO_ROUTE: a non-empty array of finite {lat, lon} (or [lat, lon]) points.
+// The server only checks it is there and sane; the client's autopilot follows it.
+function validWarpRoute(route) {
+  if (!Array.isArray(route) || route.length < 1 || route.length > 1000) return false;
+  for (const pt of route) {
+    const lat = Array.isArray(pt) ? pt[0] : pt && typeof pt === 'object' ? pt.lat : NaN;
+    const lon = Array.isArray(pt) ? pt[1] : pt && typeof pt === 'object' ? pt.lon : NaN;
+    if (typeof lat !== 'number' || typeof lon !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 540) return false;
+  }
+  return true;
+}
 const CONTACT_NAMES = ['a man in an oilskin', 'Big Tomas', 'the woman with the dog', 'a kid on a scooter', 'Old Henk', 'the crane operator', 'Mister Lindqvist', 'the harbour master\'s cousin'];
 function contactName(rnd) { return CONTACT_NAMES[Math.floor(rnd() * CONTACT_NAMES.length)]; }

@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { SHIP_CLASSES } from '/shared/constants.js';
 import * as ShipMod from './ship.js';
+import { makeAvatar } from './avatar.js';
 
 const EYE = 1.65;
 const WALK = 1.7, RUN = 3.3;
@@ -68,7 +69,7 @@ export class Interior {
     document.body.appendChild(this.prompt);
     this.isTouch = (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1;
     // third-person view: a crew member you walk around with (V / C or the button), camera kept inside the room
-    this.view = 'third'; this.camDist = 2.6; this.avatar = null; this.walkT = 0;
+    this.view = 'third'; this.camDist = 2.6; this.avatar = null;
     this.viewBtn = document.createElement('button'); this.viewBtn.id = 'interiorView'; this.viewBtn.type = 'button';
     this.viewBtn.style.cssText = 'position:fixed;right:16px;top:calc(64px + env(safe-area-inset-top));z-index:16;min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid rgba(140,190,230,.45);background:rgba(4,12,20,.8);color:#dbe9f4;font:14px "Segoe UI",system-ui,sans-serif;display:none;cursor:pointer';
     this.viewBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleView(); this.viewBtn.blur(); });
@@ -112,23 +113,8 @@ export class Interior {
     this.app.hud.event?.({ kind: 'info', text: this.view === 'third' ? 'Third-person view: you see yourself walking through the ship.' : 'First-person view.' });
   }
   updateViewBtn() { this.viewBtn.textContent = this.view === 'third' ? '👁 First person (V)' : '🧍 Third person (V)'; this.viewBtn.style.display = this._active ? 'block' : 'none'; }
-  /** A simple crew member in a high-visibility jacket; faces -z (the bow) at yaw 0. */
-  makeAvatar() {
-    const g = new THREE.Group(); g.name = 'crew';
-    const jacket = new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.7 }), trousers = new THREE.MeshStandardMaterial({ color: 0x1f2a3a, roughness: 0.8 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 }), boots = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
-    const stripe = new THREE.MeshStandardMaterial({ color: 0xd8e0e6, roughness: 0.4, metalness: 0.4, emissive: 0x333333 });
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 10), jacket); torso.position.y = 1.2; g.add(torso);
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.205, 0.05, 14), stripe); band.position.y = 1.12; g.add(band);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 14, 10), skin); head.position.y = 1.62; g.add(head);
-    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.125, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x14305a, roughness: 0.8 })); cap.position.y = 1.66; g.add(cap);
-    const limb = (r, len, mat, x, y) => { const pivot = new THREE.Group(); pivot.position.set(x, y, 0); const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 3, 8), mat); m.position.y = -len / 2 - r; pivot.add(m); g.add(pivot); return pivot; };
-    this.legL = limb(0.085, 0.62, trousers, -0.1, 0.86); this.legR = limb(0.085, 0.62, trousers, 0.1, 0.86);
-    this.armL = limb(0.06, 0.48, jacket, -0.27, 1.43); this.armR = limb(0.06, 0.48, jacket, 0.27, 1.43);
-    for (const leg of [this.legL, this.legR]) { const b = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.08, 0.24), boots); b.position.set(0, -0.85, -0.05); leg.add(b); }
-    g.traverse((o) => { if (o.isMesh) o.castShadow = false; });
-    return g;
-  }
+  /** The crew member (avatar.js): faces -z (the bow) at yaw 0. */
+  makeAvatar() { return makeAvatar(); }
   /** Hide the ship's exterior parts that overlap the interior volume (superstructure blocks, masts, funnels, hatches):
    *  seen from inside they would z-fight with the floors or stand in the middle of a room. The hull, labels and the
    *  wake stay, so the deck and the sea outside the windows are still there. Restored on exit. */
@@ -298,12 +284,9 @@ export class Interior {
     const third = this.view === 'third' && !this.atHelm;
     if (!this.avatar || this.avatar.parent !== this.group) { this.avatar = this.makeAvatar(); this.group.add(this.avatar); }
     const moving = !this.atHelm && (this.keys.size > 0 || app.touchHelm?.stick?.active);
-    this.walkT += moving ? dt * (this.run ? 11 : 7) : 0;
-    const swing = moving ? Math.sin(this.walkT) * (this.run ? 0.7 : 0.45) : 0;
-    this.legL.rotation.x += (swing - this.legL.rotation.x) * Math.min(1, dt * 12); this.legR.rotation.x += (-swing - this.legR.rotation.x) * Math.min(1, dt * 12);
-    this.armL.rotation.x += (-swing * 0.8 - this.armL.rotation.x) * Math.min(1, dt * 12); this.armR.rotation.x += (swing * 0.8 - this.armR.rotation.x) * Math.min(1, dt * 12);
+    const bob = this.avatar.userData.animate(dt, moving, this.run);
     this.avatar.visible = third;
-    this.avatar.position.set(this.pos.x, this.y + (moving ? Math.abs(Math.sin(this.walkT)) * 0.03 : 0), this.pos.z);
+    this.avatar.position.set(this.pos.x, this.y + bob, this.pos.z);
     this.avatar.rotation.y = -this.yaw;
     const bobY = third ? 0 : Math.sin(this.bob) * 0.03;
     const dirL = new THREE.Vector3(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));

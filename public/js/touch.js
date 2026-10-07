@@ -1,6 +1,7 @@
-// Touch helm (docs/V3-CONTRACTS.md §7): a vertical throttle lever (−30 … 100 % with a detent at 0), a horizontal rudder
-// slider that auto-centres on release with the same rate limits as the keys, big round action buttons and a left-thumb
-// virtual stick for the interior walker. Pointer events only, `touch-action: none` everywhere, no dependencies.
+// Touch helm (docs/V3-CONTRACTS.md §7, V4 §2): a vertical throttle lever (−30 … 100 % with a detent at 0), a horizontal
+// rudder slider that auto-centres on release with the same rate limits as the keys, round STOP / autopilot buttons and a
+// left-thumb virtual stick for walking (interior and ashore). Pointer events only, `touch-action: none` everywhere, no
+// dependencies. Round buttons call `onAction(name)`, else an `on<Name>()` handler, else `window.app.hud.action(name)`.
 
 export function isTouch() {
   try { return (window.matchMedia && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1; } catch { return false; }
@@ -9,7 +10,9 @@ export function isTouch() {
 const THR_MIN = -0.3, THR_MAX = 1, THR_DETENT = 0.05;
 const RUD_RATE = 1.4;      // rudder follows the finger at the keys' rate (units per second)
 const RUD_RECENTRE = 2.5;  // exponential recentre rate on release (same as main.js)
-const LABELS = { dock: 'Dock', chart: 'Chart', interior: 'Walk', camera: 'Cam', stop: 'STOP', auto: 'AP', ships: 'Ships', more: '…' };
+const LABELS = { dock: 'Dock', chart: 'Chart', interior: 'Walk', camera: 'Cam', stop: 'STOP', auto: 'AP', ships: 'Ships', more: '…', ashore: 'Shore' };
+const TITLES = { stop: 'All stop', auto: 'Autopilot (follow the route)', dock: 'Moor / harbour', chart: 'Chart', interior: 'Walk your ship', camera: 'Camera', ships: 'Ships nearby', ashore: 'Go ashore' };
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 export class TouchHelm {
@@ -22,7 +25,8 @@ export class TouchHelm {
     this.stick = { x: 0, y: 0, active: false };
     this.throttle = 0; this.rudder = 0; this.rudderTarget = 0;
     this.throttleActive = false; this.rudderActive = false; this.stickPointer = null;
-    this.buttons = handlers.buttons || ['dock', 'chart', 'interior', 'camera'];
+    // The bottom bar of the HUD carries dock / chart / walk / camera; the helm keeps only the two helm buttons.
+    this.buttons = handlers.buttons || ['stop', 'auto'];
     this.visible = true;
     this.build();
     this.lastT = performance.now();
@@ -47,11 +51,7 @@ export class TouchHelm {
     this.rudVal = mk('thVal', this.rud); this.rudVal.textContent = 'rudder 0';
     // round buttons
     this.btns = mk('thBtns');
-    for (const name of this.buttons) {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'thBtn ' + name; b.dataset.action = name; b.textContent = LABELS[name] || name;
-      b.addEventListener('click', (e) => { e.preventDefault(); b.blur(); if (name === 'stop') { this.setThrottle(0); this.h.onAllStop?.(); } else this.h.onAction?.(name); });
-      this.btns.appendChild(b);
-    }
+    this.renderButtons();
     // virtual stick (interior walker)
     this.stickEl = mk('thStick'); this.stickEl.classList.add('hidden');
     this.stickBase = mk('thStickBase', this.stickEl); this.stickNub = mk('thStickNub', this.stickBase);
@@ -130,6 +130,33 @@ export class TouchHelm {
     z.addEventListener('pointerup', end); z.addEventListener('pointercancel', end); z.addEventListener('lostpointercapture', end);
   }
   showStick(on) { this.stickEl?.classList.toggle('hidden', !on); if (!on) { this.stick.active = false; this.stick.x = this.stick.y = 0; this.stickPointer = null; } }
+
+  // ------------------------------------------------------------------ round buttons
+  renderButtons() {
+    if (!this.btns) return;
+    this.btns.innerHTML = '';
+    for (const name of this.buttons) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'thBtn ' + name; b.dataset.action = name; b.textContent = LABELS[name] || name;
+      b.title = TITLES[name] || name; b.setAttribute('aria-label', TITLES[name] || name);
+      b.addEventListener('click', (e) => { e.preventDefault(); b.blur(); this.fire(name); });
+      this.btns.appendChild(b);
+    }
+  }
+  fire(name) {
+    if (name === 'stop') { this.setThrottle(0); this.rudderTarget = 0; this.h.onAllStop?.(); return; }
+    if (typeof this.h.onAction === 'function') return this.h.onAction(name);
+    const fn = this.h['on' + cap(name)];
+    if (typeof fn === 'function') return fn();
+    try { window.app?.hud?.action?.(name); } catch (e) { console.warn('[touch] action failed', name, e); }
+  }
+  /** Replace the round buttons (names from LABELS). */
+  setButtons(list) {
+    const next = (Array.isArray(list) ? list : []).filter((n) => typeof n === 'string' && n);
+    if (next.join() === this.buttons.join()) return;
+    this.buttons = next; this.renderButtons();
+  }
+  /** Highlight a round button (e.g. the autopilot while it steers). */
+  setButtonOn(name, on) { this.btns?.querySelector(`[data-action="${name}"]`)?.classList.toggle('on', !!on); }
 
   // ------------------------------------------------------------------ visibility / loop
   show(on) { this.visible = !!on; this.root?.classList.toggle('hidden', !on); }

@@ -15,6 +15,7 @@ import { Traffic } from './server/traffic.js';
 import { LANE_NODES } from './server/lanes.js';
 import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
+import { getTile } from './server/maptiles.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -62,6 +63,16 @@ app.get('/api/harbor/:id/patch', async (req, res) => {
 app.get('/api/weather', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon; if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).end(); res.json(game.weatherAt(lat, lon)); });
 app.get('/api/tide', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon; if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).end(); res.json(tideAt(lat, lon, Date.now() / 1000)); });
 app.get('/api/ai', (req, res) => res.json(traffic.all()));
+// v0.4: cached map tile proxy (OSM raster + OpenSeaMap seamarks) for the chart and the street-level terrain drape
+app.get('/api/maptile/:layer/:z/:x/:y.png', async (req, res) => {
+  const { layer } = req.params; const [z, x, y] = [req.params.z, req.params.x, req.params.y].map((v) => (/^\d{1,7}$/.test(v) ? +v : NaN));
+  if (!['osm', 'seamark'].includes(layer) || ![z, x, y].every(Number.isInteger) || z < 2 || z > 18 || x >= 2 ** z || y >= 2 ** z) return res.status(400).end();
+  try {
+    const t = await getTile(layer, z, x, y);
+    if (!t) return res.status(404).end();
+    res.setHeader('Content-Type', t.type || 'image/png'); res.setHeader('Cache-Control', 'public, max-age=86400'); res.end(t.buf);
+  } catch (e) { res.status(502).end(); }
+});
 app.get('/api/tile/:level/:tx/:ty', (req, res) => {
   const [level, tx, ty] = [req.params.level, req.params.tx, req.params.ty].map((v) => (/^\d{1,5}$/.test(v) ? +v : NaN));
   if (![level, tx, ty].every(Number.isInteger)) return res.status(400).end();

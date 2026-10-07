@@ -1,5 +1,6 @@
-// Interactive Web-Mercator chart (docs/V3-CONTRACTS.md §7): pan / zoom / pinch, our equirectangular chart PNGs warped per row
-// as the base, OSM raster + OpenSeaMap seamark tiles from zoom 7, every overlay (harbours + job boards, jobs, fishing grounds,
+// Interactive Web-Mercator chart (docs/V3-CONTRACTS.md §7, V4 §2/§4): pan / zoom / pinch down to street level (z 18), our
+// equirectangular chart PNGs warped per row as the base, OSM raster + OpenSeaMap seamark tiles from zoom 7 — fetched through
+// the server's caching tile proxy (/api/maptile/{osm|seamark}/z/x/y.png), never from the public tile servers — every overlay (harbours + job boards, jobs, fishing grounds,
 // platforms, storms, AI, players, convoy, cutters, wrecks, rescues, own ship + track, route, lanes), cursor lat/lon/depth/tide,
 // scale bar, route planning (route mode) and selection popups (select mode). Everything is drawn in CSS pixels on a
 // devicePixelRatio-scaled canvas that follows its container.
@@ -7,9 +8,11 @@ import { haversine, bearing, fmtDMS, fmtDistance, wrapLon } from '/shared/geo.js
 import { LAYERS, SHIP_CLASSES, SIM, GEO } from '/shared/constants.js';
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI, TILE = 256, NM = 1852, EARTH_CIRC = 40075016.686;
-export const ZOOM_MIN = 2, ZOOM_MAX = 16, TILE_ZOOM = 7, MAX_TILES = 256;
-const OSM_URL = (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-const SEA_URL = (z, x, y) => `https://tiles.openseamap.org/seamark/${z}/${x}/${y}.png`;
+export const ZOOM_MIN = 2, ZOOM_MAX = 18, TILE_ZOOM = 7, TILE_ZOOM_MAX = 18, MAX_TILES = 256;
+/** Tile URL through the server proxy (cached on disk, rate-limited upstream, offline-safe). */
+export function tileUrl(kind, z, x, y) { return `/api/maptile/${kind === 'sea' || kind === 'seamark' ? 'seamark' : 'osm'}/${z}/${x}/${y}.png`; }
+const OSM_URL = (z, x, y) => tileUrl('osm', z, x, y);
+const SEA_URL = (z, x, y) => tileUrl('seamark', z, x, y);
 const TILE_RETRY_MS = 300000;
 
 const clampLat = (v) => Math.max(-85.05, Math.min(85.05, v));
@@ -304,7 +307,7 @@ export class Chart {
   }
   drawTiles(kind) {
     const ctx = this.ctx, W = this.W, H = this.H;
-    const zi = clamp(Math.round(this.zoom), TILE_ZOOM, 18), n = Math.pow(2, zi);
+    const zi = clamp(Math.round(this.zoom), TILE_ZOOM, TILE_ZOOM_MAX), n = Math.pow(2, zi);
     const sc = Math.pow(2, this.zoom - zi), size = TILE * sc;
     const cx = mx(this.center.lon) * n, cy = my(this.center.lat) * n;              // centre in tile units
     const tx0 = Math.floor(cx - W / 2 / size), tx1 = Math.floor(cx + W / 2 / size);
@@ -807,7 +810,13 @@ export class Chart {
   }
   syncButtons() {
     const q = (id) => (this.wrap || document).querySelector('#' + id);
-    const m = q('chartModeBtn'); if (m) { m.textContent = this.mode === 'route' ? 'Route mode' : 'Select mode'; m.classList.toggle('on', this.mode === 'route'); }
+    const m = q('chartModeBtn');
+    if (m) {
+      const label = this.mode === 'route' ? 'Route mode' : 'Select mode';
+      const l = m.querySelector('.lbl'); if (l) l.textContent = label; else m.textContent = label;
+      m.title = this.mode === 'route' ? 'Route mode: tap open water to add waypoints (tap to switch to select mode)' : 'Select mode: tap harbours and ships for details (tap to switch to route mode)';
+      m.classList.toggle('on', this.mode === 'route');
+    }
     const s = q('chartSeamarks'); if (s) s.classList.toggle('on', this.layers.seamarks);
     const b = q('chartBase'); if (b) b.classList.toggle('on', this.layers.base);
     const t = q('chartTilesBtn'); if (t) t.classList.toggle('on', this.layers.tiles);

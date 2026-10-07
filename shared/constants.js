@@ -142,3 +142,23 @@ export function latLonToPatchCell(lat, lon, n, res, originLat, originLon) {
   const x = (lon - originLon) * GEO.M_PER_DEG_LON_EQ * Math.cos((originLat * Math.PI) / 180), z = -(lat - originLat) * GEO.M_PER_DEG_LAT;
   return { i: x / res + n / 2, j: z / res + n / 2 };
 }
+
+// v0.4: time warp (docs/V4-CONTRACTS.md §1). The world clock stays real time for everyone; warp speeds up ONE ship:
+// its motion and its consumption (fuel, hull wear, crew wages, fishing catch, flooding/pumps) scale with the factor.
+// The server checks the conditions when warp is engaged (`action: set_warp {factor, route}`) and drops back to 1× by
+// itself every tick one of them stops holding. Sent to clients as `worldInfo().warp`.
+export const WARP = {
+  LEVELS: [1, 5, 20, 100, 400],
+  MIN_LAND_M: 3000,          // above LAND_CHECK_ABOVE× the water must stay deeper than draft + KEEL_MARGIN_M this far ahead
+  PLAYER_RADIUS_M: 20000,    // no other online player at sea within this
+  HARBOR_RADIUS_M: 4000,     // no harbour anchor within this
+  MAX_STORM: 0.6,            // weather storm index (0..1) above which warp is off
+  MAX_NO_ROUTE: 20,          // factors above this need a route the client is following
+  MAX_FLOODING: 0.2,         // flooding fraction above which warp is off
+  LAND_CHECK_ABOVE: 5,       // the land/shallows-ahead check applies to factors above this
+  KEEL_MARGIN_M: 2,          // water needed under the keel along the look-ahead
+  LOOKAHEAD_S: 1.5,          // the look-ahead also covers this many REAL seconds of warped travel (fast hulls at 400×) …
+  MAX_LOOKAHEAD_M: 12000,    // … capped at this
+  SAMPLE_M: 250,             // spacing of the depth samples along the look-ahead (catches spits and islands before MIN_LAND_M)
+  GRACE_MS: 2000,            // after a drop the movement budget keeps the old factor this long (states already in flight)
+};

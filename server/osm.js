@@ -15,12 +15,24 @@ export const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-export const USER_AGENT = 'Saltline/0.3 (harbour geometry; one request at a time)';
+export const USER_AGENT = 'Saltline/0.4 (harbour geometry; one request at a time)';
 export const OSM_TTL_MS = 30 * 24 * 3600e3;          // re-fetch after 30 days
 export const OSM_EMPTY_TTL_MS = 24 * 3600e3;         // an empty answer is retried after a day
 export const DEFAULT_RADIUS_M = 3200;                // covers the 4.48 km patch square (half diagonal 3168 m)
 export const DEFAULT_TIMEOUT_MS = 45_000;
 export const BUILDING_CAP = 300;
+// v0.4 (docs/V4-CONTRACTS.md §3): the street layer. Bump OSM_SCHEMA whenever the Overpass query gains data, so caches
+// fetched by an older query are refreshed (they are still used as a fallback while Overpass is unreachable).
+export const OSM_SCHEMA = 2;
+export const ROAD_CAP = 1500;                        // highway ways kept per harbour (major classes first, then nearest)
+export const SHOP_CAP = 300;                         // shop nodes kept per harbour (nearest first)
+export const AREA_CAP = 400;                         // land use / park / wood / beach / parking areas kept (largest first)
+export const PLACE_CAP = 120;                        // named shops / tourism / other amenities kept as street signs
+export const ROAD_KINDS = ['motorway', 'primary', 'secondary', 'tertiary', 'residential', 'service', 'footway', 'track'];
+export const AREA_KINDS = ['grass', 'park', 'wood', 'sand', 'industrial', 'residential', 'port', 'parking'];
+export const POI_KINDS = ['harbourmaster', 'shipyard', 'chandler', 'fuel', 'market', 'bar', 'police', 'cafe'];
+/** Default carriageway widths (m) by road kind when the way has no usable width / lanes tag. */
+export const ROAD_WIDTH = { motorway: 20, primary: 12, secondary: 10, tertiary: 8, residential: 6.5, service: 4.5, footway: 2.5, track: 3 };
 
 const D2R = Math.PI / 180;
 let osmDir = path.join(DATA_DIR, 'osm');
@@ -348,6 +360,8 @@ export function parseHeight(tags = {}, fallback = 8) {
   return fallback;
 }
 
+const HIGHWAY_RE = '^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|road|residential|living_street|service|pedestrian|footway|path|cycleway|steps|bridleway|track)$';
+
 export function buildOverpassQuery(lat, lon, radiusM = DEFAULT_RADIUS_M, timeoutS = 60) {
   const at = `around:${Math.round(radiusM)},${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
   return [
@@ -359,10 +373,22 @@ export function buildOverpassQuery(lat, lon, radiusM = DEFAULT_RADIUS_M, timeout
     `  way["waterway"="dock"](${at});`,
     `  relation["waterway"="dock"](${at});`,
     `  way["leisure"="marina"](${at});`,
-    `  way["landuse"~"^(port|industrial|harbour)$"](${at});`,
+    `  way["landuse"](${at});`,
     `  way["natural"="water"](${at});`,
     `  nwr["seamark:type"](${at});`,
     `  way["building"](${at});`,
+    // v0.4 street layer: roads, rails, green / sand / parking areas, and the amenities the ashore world turns into doors
+    `  way["highway"~"${HIGHWAY_RE}"](${at});`,
+    `  way["railway"="rail"](${at});`,
+    `  way["leisure"~"^(park|garden)$"](${at});`,
+    `  way["natural"~"^(wood|scrub|grassland|heath|beach|sand)$"](${at});`,
+    `  way["amenity"="parking"](${at});`,
+    `  nwr["amenity"~"^(bar|pub|restaurant|cafe|fuel|police|harbourmaster|marketplace)$"](${at});`,
+    `  nwr["industrial"="shipyard"](${at});`,
+    `  nwr["craft"~"^(boatbuilder|shipwright|sailmaker)$"](${at});`,
+    `  nwr["waterway"="fuel"](${at});`,
+    `  node["shop"](${at});`,
+    `  node["tourism"](${at});`,
     ');',
     'out geom;',
   ].join('\n');
@@ -382,18 +408,51 @@ function geomToPts(geometry) {
 }
 function isClosedPts(pts) { return pts.length >= 4 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]; }
 
-const RELEVANT = (t) => t && (t.natural === 'coastline' || t.natural === 'water' || t.man_made || t.waterway === 'dock' || t.leisure === 'marina' || t.landuse || t['seamark:type'] || t.building);
+const NATURAL_AREAS = new Set(['wood', 'scrub', 'grassland', 'heath', 'beach', 'sand']);
+const RELEVANT = (t) => t && (t.natural === 'coastline' || t.natural === 'water' || t.man_made || t.waterway === 'dock' || t.leisure === 'marina' || t.landuse || t['seamark:type'] || t.building
+  || t.highway || t.railway === 'rail' || NATURAL_AREAS.has(t.natural) || t.leisure === 'park' || t.leisure === 'garden'
+  || t.amenity || t.shop || t.tourism || t.industrial === 'shipyard' || t.craft || t.waterway === 'fuel');
+
+/** Rank of an OSM highway value for the road cap (lower = kept first); null for values the street layer ignores. */
+export function highwayRank(hw) {
+  switch (String(hw || '')) {
+    case 'motorway': case 'motorway_link': case 'trunk': case 'trunk_link': return 0;
+    case 'primary': case 'primary_link': return 1;
+    case 'secondary': case 'secondary_link': return 2;
+    case 'tertiary': case 'tertiary_link': case 'unclassified': case 'road': return 3;
+    case 'residential': case 'living_street': return 4;
+    case 'service': return 5;
+    case 'pedestrian': case 'footway': case 'path': case 'cycleway': case 'steps': case 'bridleway': return 6;
+    case 'track': return 7;
+    default: return null;
+  }
+}
+/** True for tags the ashore world turns into a door (amenity/shop/craft/industrial match one of POI_KINDS). */
+const isPoiTagged = (t) => !!poiKindOf(t || {});
+
+/** Squared distance in m² from a [lat,lon] point to the nearest vertex of a polyline / ring (cheap ranking metric). */
+function nearestVertexD2(pts, lat, lon) {
+  const k = Math.cos(lat * D2R) * GEO.M_PER_DEG_LON_EQ;
+  let best = Infinity;
+  for (const p of pts) { const dx = (p[1] - lon) * k, dy = (p[0] - lat) * GEO.M_PER_DEG_LAT, d = dx * dx + dy * dy; if (d < best) best = d; }
+  return best;
+}
 
 /**
  * Overpass JSON → { coastline: [[[lat,lon],…]], features: [raw tagged ways/nodes] }. Ways keep `geometry` as
  * [[lat,lon],…] (closing point removed, `closed` flag set), nodes keep lat/lon. Relations are flattened into their
- * outer rings. Buildings are capped to the `buildingCap` largest by footprint area.
+ * outer rings. Caps: buildings to the `buildingCap` largest by footprint (buildings tagged as a game amenity first),
+ * highway ways to `roadCap` (major classes first, then nearest to `origin` {lat, lon} when given, else longest), shop
+ * nodes to `shopCap` (nearest first).
  */
-export function parseOverpass(json, { buildingCap = BUILDING_CAP } = {}) {
+export function parseOverpass(json, { buildingCap = BUILDING_CAP, roadCap = ROAD_CAP, shopCap = SHOP_CAP, origin = null } = {}) {
   const coastline = [];
   const features = [];
   const buildings = [];
+  const roads = [];
+  const shops = [];
   const elements = Array.isArray(json?.elements) ? json.elements : [];
+  const oLat = Number.isFinite(origin?.lat) ? origin.lat : null, oLon = Number.isFinite(origin?.lon) ? origin.lon : null;
   const pushWay = (id, tags, pts, closedHint) => {
     if (!tags || pts.length < 2) return;
     const closed = closedHint || isClosedPts(pts);
@@ -402,7 +461,16 @@ export function parseOverpass(json, { buildingCap = BUILDING_CAP } = {}) {
     if (!RELEVANT(tags)) return;
     const el = { type: 'way', id, tags: compactTags(tags), geometry, closed };
     if (tags.building && tags.building !== 'no' && !tags.man_made) {
-      if (closed && geometry.length >= 3) { el.area = Math.round(ringAreaM2(geometry)); buildings.push(el); }
+      if (closed && geometry.length >= 3) { el.area = Math.round(ringAreaM2(geometry)); el.poi = isPoiTagged(tags); buildings.push(el); }
+      return;
+    }
+    if (tags.highway && !tags.man_made) {
+      if (tags.area === 'yes') { if (closed && geometry.length >= 3) features.push(el); return; }   // paved squares → areas
+      const rank = highwayRank(tags.highway);
+      if (rank == null) return;
+      el.rank = rank;
+      el.d2 = oLat != null ? nearestVertexD2(geometry, oLat, oLon) : -polylineLengthM(geometry);
+      roads.push(el);
       return;
     }
     features.push(el);
@@ -411,7 +479,13 @@ export function parseOverpass(json, { buildingCap = BUILDING_CAP } = {}) {
     if (!el || typeof el !== 'object') continue;
     if (el.type === 'node') {
       if (!el.tags || !RELEVANT(el.tags) || !Number.isFinite(el.lat) || !Number.isFinite(el.lon)) continue;
-      features.push({ type: 'node', id: el.id, tags: compactTags(el.tags), lat: round6(el.lat), lon: round6(el.lon) });
+      const node = { type: 'node', id: el.id, tags: compactTags(el.tags), lat: round6(el.lat), lon: round6(el.lon) };
+      if (el.tags.shop && !isPoiTagged(el.tags)) {
+        node.d2 = oLat != null ? nearestVertexD2([[node.lat, node.lon]], oLat, oLon) : 0;
+        shops.push(node);
+        continue;
+      }
+      features.push(node);
     } else if (el.type === 'way') {
       pushWay(el.id, el.tags, geomToPts(el.geometry), false);
     } else if (el.type === 'relation' && Array.isArray(el.members) && el.tags) {
@@ -422,13 +496,18 @@ export function parseOverpass(json, { buildingCap = BUILDING_CAP } = {}) {
       }
     }
   }
-  buildings.sort((a, b) => b.area - a.area);
-  for (const b of buildings.slice(0, buildingCap)) features.push(b);
+  buildings.sort((a, b) => (b.poi - a.poi) || (b.area - a.area));
+  for (const b of buildings.slice(0, buildingCap)) { delete b.poi; features.push(b); }
+  roads.sort((a, b) => (a.rank - b.rank) || (a.d2 - b.d2));
+  for (const r of roads.slice(0, Math.max(0, roadCap))) { delete r.rank; delete r.d2; features.push(r); }
+  shops.sort((a, b) => a.d2 - b.d2);
+  for (const s of shops.slice(0, Math.max(0, shopCap))) { delete s.d2; features.push(s); }
   return { coastline, features };
 }
 
 const KEEP_TAGS = ['natural', 'water', 'man_made', 'waterway', 'leisure', 'landuse', 'building', 'height', 'building:levels', 'name', 'width', 'area',
-  'floating', 'crane:type', 'seamark:type', 'seamark:name', 'amenity', 'mooring', 'diameter', 'content'];
+  'floating', 'crane:type', 'seamark:type', 'seamark:name', 'amenity', 'mooring', 'diameter', 'content',
+  'highway', 'railway', 'lanes', 'bridge', 'tunnel', 'layer', 'service', 'ref', 'shop', 'tourism', 'craft', 'industrial', 'brand', 'operator'];
 function compactTags(tags) {
   const out = {};
   for (const k of Object.keys(tags)) if (KEEP_TAGS.includes(k) || k.startsWith('seamark:')) out[k] = tags[k];
@@ -509,15 +588,87 @@ function longestEdgeBearing(pts) {
   return brg;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// v0.4 street layer classification: roads, areas, rails, game POIs (doors) and decorative street signs (places)
+// ---------------------------------------------------------------------------------------------------------------
+const HM_RE = /harbou?r[ _-]?master|havenmeester|havendienst|hafenmeister|hafenamt|havnefoged|havnekontor|hamnkapten|hamnkontor|capitainerie|capitaneria|port authority|port office|havenkantoor/i;
+const SHIPYARD_RE = /shipyard|dockyard|scheepswerf|\bwerf\b|werft|værft|verft|varv|chantier naval|astillero|cantiere|boatyard|jachtwerf/i;
+const CHANDLER_RE = /chandler|scheepsbehoeften|schiffsausrüster|skipshandel|shipshandel|watersport|bootsbedarf|marine supplies/i;
+const isTunnel = (t) => t.tunnel != null && t.tunnel !== 'no' && t.tunnel !== 'building_passage';
+const isBridge = (t) => t.bridge != null && t.bridge !== 'no';
+
+/** OSM highway tags → {kind (ROAD_KINDS), width (m)} for the street layer, or null for values it ignores. */
+export function roadKindOf(tags = {}) {
+  const hw = String(tags.highway || '');
+  const rank = highwayRank(hw);
+  if (rank == null) return null;
+  const kind = ROAD_KINDS[rank];
+  let width = parseLength(tags.width);
+  if (!(width >= 1.2 && width <= 45)) {
+    const lanes = parseInt(tags.lanes, 10);
+    if (Number.isFinite(lanes) && lanes >= 1 && lanes <= 10 && rank <= 5) width = lanes * 3.3 + (rank <= 3 ? 1 : 0.5);
+    else width = ROAD_WIDTH[kind];
+    if (/_link$/.test(hw)) width = Math.min(width, 6.5);
+    if (hw === 'pedestrian') width = 6;
+    else if (hw === 'cycleway') width = 2.5;
+    else if (hw === 'path' || hw === 'steps' || hw === 'bridleway') width = Math.min(width, 2);
+    else if (hw === 'living_street') width = 5.5;
+    if (hw === 'service' && /parking_aisle|driveway|drive-through/.test(String(tags.service || ''))) width = Math.min(width, 4);
+  }
+  return { kind, width: round1(width) };
+}
+
+/** Closed-way tags → AREA_KINDS value, or null (water, basins and unknown land use are not drawn). */
+export function areaKindOf(tags = {}) {
+  const lu = tags.landuse, le = tags.leisure, na = tags.natural, am = tags.amenity;
+  if (am === 'parking' || (tags.highway && tags.area === 'yes')) return 'parking';
+  if (le === 'park' || le === 'garden' || lu === 'recreation_ground' || lu === 'village_green' || lu === 'cemetery') return 'park';
+  if (na === 'wood' || na === 'scrub' || lu === 'forest') return 'wood';
+  if (na === 'beach' || na === 'sand') return 'sand';
+  if (na === 'grassland' || na === 'heath' || /^(grass|meadow|farmland|orchard|allotments|vineyard|greenfield|plant_nursery|flowerbed)$/.test(lu || '')) return 'grass';
+  if (lu === 'port' || lu === 'harbour') return 'port';
+  if (/^(industrial|railway|construction|brownfield|depot|landfill|quarry)$/.test(lu || '')) return 'industrial';
+  if (/^(residential|commercial|retail|education|institutional|military|religious|farmyard)$/.test(lu || '')) return 'residential';
+  return null;
+}
+
+/** Tags → the game POI kind (POI_KINDS) the ashore world can open a harbour panel for, or null. */
+export function poiKindOf(tags = {}) {
+  const a = String(tags.amenity || ''), s = String(tags.shop || ''), c = String(tags.craft || ''), name = String(tags.name || '');
+  if (a === 'harbourmaster' || /harbour_?master/i.test(String(tags['seamark:harbour:category'] || '')) || (name && HM_RE.test(name))) return 'harbourmaster';
+  if (a === 'fuel' || tags.waterway === 'fuel') return 'fuel';
+  if (a === 'police') return 'police';
+  if (a === 'bar' || a === 'pub') return 'bar';
+  if (a === 'cafe' || a === 'restaurant') return 'cafe';
+  if (tags.industrial === 'shipyard' || c === 'boatbuilder' || c === 'shipwright' || (name && SHIPYARD_RE.test(name) && (tags.building || tags.landuse || tags.man_made || tags.industrial))) return 'shipyard';
+  if (s === 'boat' || s === 'ship_chandler' || s === 'marine' || s === 'fishing' || c === 'sailmaker' || (name && CHANDLER_RE.test(name) && (s || tags.building))) return 'chandler';
+  if (a === 'marketplace' || s === 'wholesale' || s === 'seafood' || s === 'fishmonger') return 'market';
+  return null;
+}
+
+/** Named shop / tourism / amenity nodes that are not game POIs → a street sign {kind, sub, name}, or null. */
+function placeOf(tags) {
+  const name = String(tags.name || '').trim();
+  if (!name || name.length > 48) return null;
+  if (tags.shop) return { kind: 'shop', sub: String(tags.shop), name };
+  if (tags.tourism && !/^(information|viewpoint|artwork|picnic_site|camp_pitch|yes)$/.test(String(tags.tourism))) return { kind: 'tourism', sub: String(tags.tourism), name };
+  if (tags.amenity && /^(bank|pharmacy|post_office|fast_food|ice_cream|ferry_terminal|townhall|library|theatre|cinema|hospital|clinic|bus_station|car_rental|bicycle_rental)$/.test(String(tags.amenity))) return { kind: 'amenity', sub: String(tags.amenity), name };
+  return null;
+}
+
 /**
  * Raw tagged elements → structured feature lists (all in lat/lon):
  *   quays/piers/breakwaters/pontoons: [{pts, closed, width}]   (closed = ring; open = centre line with a width)
  *   docks/marinas/landuse: [{pts}] rings
- *   buildings: [{pts, height, kind, area}], tanks: [{lat, lon, radius, height}], cranes: [{lat, lon, hdg}],
+ *   buildings: [{pts, height, kind, area, poi?}], tanks: [{lat, lon, radius, height}], cranes: [{lat, lon, hdg}],
  *   lights: [{lat, lon, height, color, period}], buoys: [{lat, lon, kind, color, color2, shape}]
+ *   v0.4: roads: [{pts, kind, width, name, bridge}], areas: [{pts, kind}], rails: [{pts, bridge}],
+ *         pois: [{kind, name, lat, lon, ring|null, building}], places: [{kind, sub, name, lat, lon}]
+ * `origin` ({lat, lon}, optional) ranks the capped lists (places nearest first).
  */
 export function classifyFeatures(features, origin = null) {
-  const out = { quays: [], piers: [], breakwaters: [], pontoons: [], docks: [], marinas: [], landuse: [], water: [], buildings: [], tanks: [], cranes: [], lights: [], buoys: [] };
+  const out = { quays: [], piers: [], breakwaters: [], pontoons: [], docks: [], marinas: [], landuse: [], water: [], buildings: [], tanks: [], cranes: [], lights: [], buoys: [],
+    roads: [], areas: [], rails: [], pois: [], places: [] };
   const marinaRings = [];
   const list = Array.isArray(features) ? features : [];
   for (const el of list) if (el?.type === 'way' && el.closed && el.tags?.leisure === 'marina' && el.geometry?.length >= 3) marinaRings.push(el.geometry);
@@ -527,6 +678,9 @@ export function classifyFeatures(features, origin = null) {
       const lat = el.lat, lon = el.lon;
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
       const st = String(t['seamark:type'] || '');
+      const pk = poiKindOf(t);
+      if (pk) out.pois.push({ kind: pk, name: String(t.name || '').slice(0, 60), lat, lon, ring: null, building: false });
+      else { const pl = placeOf(t); if (pl) out.places.push({ ...pl, lat, lon }); }
       const buoy = classifyBuoy(t, lat, lon);
       if (buoy) { out.buoys.push({ lat, lon, ...buoy }); continue; }
       if (t.man_made === 'lighthouse' || /^light(_major|_minor|_vessel|_float)?$/.test(st)) { out.lights.push({ lat, lon, ...lightFrom(t, t.man_made === 'lighthouse' ? 15 : 8) }); continue; }
@@ -539,13 +693,23 @@ export function classifyFeatures(features, origin = null) {
     const width = parseLength(t.width);
     const st = String(t['seamark:type'] || '');
     const mm = t.man_made;
+    // ---- v0.4 street layer (a way can be a road AND a structure, e.g. a pier tagged highway=footway)
+    if (t.highway && t.area !== 'yes' && !isTunnel(t)) {
+      const r = roadKindOf(t);
+      if (r) out.roads.push({ pts, kind: r.kind, width: r.width, name: String(t.name || t.ref || '').slice(0, 60), bridge: isBridge(t) });
+    }
+    if (t.railway === 'rail') { if (!isTunnel(t)) out.rails.push({ pts, bridge: isBridge(t) }); continue; }
+    const ak = closed ? areaKindOf(t) : null;
+    if (ak) out.areas.push({ pts, kind: ak, area: Math.round(ringAreaM2(pts)) });
+    const pk = poiKindOf(t);
+    if (pk) { const c = centroid(pts); out.pois.push({ kind: pk, name: String(t.name || '').slice(0, 60), lat: round6(c[0]), lon: round6(c[1]), ring: closed ? pts : null, building: !!(t.building && t.building !== 'no') }); }
     if (t.building && t.building !== 'no' && !mm) {
       if (!closed) continue;
       const b = String(t.building).toLowerCase();
       const kind = b === 'storage_tank' || b === 'silo' ? 'tank' : /warehouse|hangar|shed/.test(b) ? 'warehouse' : /industrial|factory|manufacture|works/.test(b) ? 'industrial' : 'building';
       const area = el.area || Math.round(ringAreaM2(pts));
       if (kind === 'tank') { const c = centroid(pts); out.tanks.push({ lat: c[0], lon: c[1], radius: round1(Math.sqrt(area / Math.PI)), height: parseHeight(t, 12) }); continue; }
-      out.buildings.push({ pts, height: parseHeight(t, 8), kind, area });
+      out.buildings.push({ pts, height: parseHeight(t, 8), kind, area, poi: !!pk });
       continue;
     }
     if (mm === 'storage_tank' || st === 'tank') {
@@ -572,9 +736,22 @@ export function classifyFeatures(features, origin = null) {
     if ((t.landuse === 'port' || t.landuse === 'industrial') && closed) { out.landuse.push({ pts }); continue; }
     if (/^(buoy|beacon)_/.test(st)) { const c = centroid(pts); const b = classifyBuoy(t, c[0], c[1]); if (b) out.buoys.push({ lat: c[0], lon: c[1], ...b }); }
   }
-  out.buildings.sort((a, b) => b.area - a.area);
+  // buildings that carry a game amenity survive the cap; the rest are the largest footprints
+  out.buildings.sort((a, b) => ((b.poi ? 1 : 0) - (a.poi ? 1 : 0)) || (b.area - a.area));
   if (out.buildings.length > BUILDING_CAP) out.buildings.length = BUILDING_CAP;
-  void origin;
+  out.areas.sort((a, b) => b.area - a.area);
+  if (out.areas.length > AREA_CAP) out.areas.length = AREA_CAP;
+  if (out.roads.length > ROAD_CAP) {
+    out.roads.sort((a, b) => ROAD_KINDS.indexOf(a.kind) - ROAD_KINDS.indexOf(b.kind));
+    out.roads.length = ROAD_CAP;
+  }
+  if (origin && Number.isFinite(origin.lat) && Number.isFinite(origin.lon)) {
+    const d2 = (p) => nearestVertexD2([[p.lat, p.lon]], origin.lat, origin.lon);
+    out.places.sort((a, b) => d2(a) - d2(b));
+    out.pois.sort((a, b) => d2(a) - d2(b));
+  }
+  if (out.places.length > PLACE_CAP) out.places.length = PLACE_CAP;
+  if (out.pois.length > 200) out.pois.length = 200;
   return out;
 }
 
@@ -592,8 +769,11 @@ export function loadCachedOSM(id) {
     return j;
   } catch { return null; }
 }
+/** True when the payload came from the current Overpass query (older caches lack the street layer). */
+export function osmHasStreets(osm) { return !!osm && (osm.schema || 1) >= OSM_SCHEMA; }
 export function isOSMFresh(osm, now = Date.now()) {
   if (!osm || !Number.isFinite(osm.fetchedAt)) return false;
+  if (!osmHasStreets(osm)) return false;
   const empty = osm.coastline.length === 0 && osm.features.length === 0;
   return now - osm.fetchedAt < (empty ? OSM_EMPTY_TTL_MS : OSM_TTL_MS);
 }
@@ -635,7 +815,8 @@ async function postOverpass(endpoint, query, timeoutMs, fetchImpl) {
 
 /**
  * Fetch (or reuse a fresh cache of) the OSM data around a harbour. Resolves
- * `{id, fetchedAt, radiusM, endpoint, coastline, features}` or null on any failure — never throws.
+ * `{id, schema, fetchedAt, radiusM, endpoint, coastline, features}` or null on any failure — never throws. A cache
+ * written by an older query (schema < OSM_SCHEMA) is refetched, and returned as-is when the network fails.
  *   opts: radiusM, timeoutMs, fetchImpl (default global fetch), force (ignore a fresh cache), log, endpoints
  */
 export async function fetchHarborOSM(harbor, opts = {}) {
@@ -657,8 +838,8 @@ export async function fetchHarborOSM(harbor, opts = {}) {
       const endpoint = endpoints[attempt];
       try {
         const json = await postOverpass(endpoint, query, timeoutMs, fetchImpl);
-        const { coastline, features } = parseOverpass(json, { buildingCap: opts.buildingCap });
-        const payload = { id: harbor.id, fetchedAt: Date.now(), radiusM, endpoint, coastline, features };
+        const { coastline, features } = parseOverpass(json, { buildingCap: opts.buildingCap, origin: { lat: harbor.lat, lon: harbor.lon } });
+        const payload = { id: harbor.id, schema: OSM_SCHEMA, fetchedAt: Date.now(), radiusM, endpoint, coastline, features };
         saveCachedOSM(harbor.id, payload);
         return payload;
       } catch (err) {

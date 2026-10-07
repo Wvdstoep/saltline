@@ -11,7 +11,7 @@ import { HARBORS, harborById } from './harbors.js';
 import { DATA_DIR } from './world.js';
 import * as osm from './osm.js';
 
-export const GEOM_VERSION = 3;
+export const GEOM_VERSION = 5;          // v4/v5: street layer (features.roads / areas / rails / pois / places)
 export const PATCH_N = PATCH.N;
 export const PATCH_RES = PATCH.RES;
 export const MASK = PATCH.MASK;
@@ -719,7 +719,8 @@ export function buildFromOSM(harbor, osmData, w = world) {
   const defaultLand = w ? !w.isWater(harbor.lat, harbor.lon) : false;
   const landPolys = osm.landPolygonsFromCoastline(osmData?.coastline || [], bbox, { defaultLand });
   fillRings(ctx, landPolys.map((r) => ringLLToCells(ctx, r)), mask, LAND);
-  const cls = osm.classifyFeatures(osmData?.features || []);
+  const cls = osm.classifyFeatures(osmData?.features || [], { lat: harbor.lat, lon: harbor.lon });
+  ctx.street = { roads: cls.roads, areas: cls.areas, rails: cls.rails, pois: cls.pois, places: cls.places, hasStreets: osm.osmHasStreets(osmData) };
   for (const f of cls.landuse) fillRings(ctx, [ringLLToCells(ctx, f.pts)], mask, LAND, { allow: ALLOW_WATER });
   for (const f of cls.water || []) fillRings(ctx, [ringLLToCells(ctx, f.pts)], mask, WATER, { allow: ALLOW_LAND });
   for (const f of cls.marinas) fillRings(ctx, [ringLLToCells(ctx, f.pts)], mask, WATER, { allow: ALLOW_LAND });
@@ -971,6 +972,670 @@ function emergencyPier(ctx, anchor) {
   ctx.faces.push({ ax: a[0] - (-tz) * 15, az: a[1] - tx * 15, bx: b[0] - (-tz) * 15, bz: b[1] - tx * 15, kind: 'quay', side: [tz, -tx] });
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Street layer (v0.4, docs/V4-CONTRACTS.md §3): roads, areas, rails, the six game POIs with doors on land, and
+// decorative street signs. OSM data is used when the payload has it (query schema ≥ 2); otherwise — synthetic harbours
+// and old OSM caches — a road network is generated on the raster: quay roads behind the berths, links between them,
+// a grid of streets behind the warehouses and connector roads (Dijkstra over the land cells, buildings blocked) to
+// the patch edge. Everything runs in the local metre frame and is emitted in lat/lon.
+// ---------------------------------------------------------------------------------------------------------------
+const WALK = new Uint8Array([0, 1, 1, 0, 1, 0, 0]);         // LAND, QUAY, PONTOON are walkable; breakwaters are rubble
+const STREET_GRID_M = 50;
+const POI_ORDER = ['harbourmaster', 'market', 'shipyard', 'chandler', 'bar', 'fuel', 'police', 'cafe'];
+const REQUIRED_POIS = ['harbourmaster', 'shipyard', 'chandler', 'fuel', 'market', 'bar'];
+const BAR_NAMES = ['The Anchor', 'The Salty Dog', "The Mariner's Rest", 'The Lantern', 'The Rusty Hook', 'The Old Bollard', 'The Fog Bell', 'The Bosun', 'The Tide Inn', 'The Crow\'s Nest', 'The Harbour Light', 'The Last Ferry'];
+const CAFE_NAMES = ['Quayside Café', 'Harbour Café', 'The Galley', 'Dock Coffee', 'The Tea Shed'];
+
+/** Binary min-heap on typed arrays (Dijkstra over ~200 k cells without per-push allocations). */
+class MinHeap {
+  constructor(cap = 4096) { this.k = new Float64Array(cap); this.v = new Int32Array(cap); this.n = 0; this.topKey = 0; }
+  push(key, val) {
+    if (this.n === this.k.length) { const k2 = new Float64Array(this.n * 2), v2 = new Int32Array(this.n * 2); k2.set(this.k); v2.set(this.v); this.k = k2; this.v = v2; }
+    let i = this.n++;
+    while (i > 0) { const p = (i - 1) >> 1; if (this.k[p] <= key) break; this.k[i] = this.k[p]; this.v[i] = this.v[p]; i = p; }
+    this.k[i] = key; this.v[i] = val;
+  }
+  pop() {
+    const top = this.v[0]; this.topKey = this.k[0];
+    const n = --this.n;
+    if (n > 0) {
+      const key = this.k[n], val = this.v[n];
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1; if (l >= n) break;
+        const r = l + 1, c = r < n && this.k[r] < this.k[l] ? r : l;
+        if (this.k[c] >= key) break;
+        this.k[i] = this.k[c]; this.v[i] = this.v[c]; i = c;
+      }
+      this.k[i] = key; this.v[i] = val;
+    }
+    return top;
+  }
+}
+
+function pointInRingXZ(x, z, ring) {
+  let inside = false;
+  for (let i = 0, m = ring.length, j = m - 1; i < m; j = i++) {
+    const xi = ring[i][0], zi = ring[i][1], xj = ring[j][0], zj = ring[j][1];
+    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function segDist2(px, pz, ax, az, bx, bz) {
+  const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+  let t = L2 > 0 ? ((px - ax) * dx + (pz - az) * dz) / L2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const qx = ax + dx * t - px, qz = az + dz * t - pz;
+  return qx * qx + qz * qz;
+}
+function ringAreaXZ(ring) { let a = 0; for (let i = 0, m = ring.length; i < m; i++) { const p = ring[i], q = ring[(i + 1) % m]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; }
+function polyLenXZ(pts) { let s = 0; for (let i = 1; i < pts.length; i++) s += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return s; }
+
+/** Clip an open polyline (local metres) to the square |x|,|z| ≤ h; returns the pieces inside. */
+function clipPolylineXZ(pts, h) {
+  const out = []; let cur = null;
+  const inside = (p) => p[0] >= -h && p[0] <= h && p[1] >= -h && p[1] <= h;
+  const clipSeg = (a, b) => {
+    let t0 = 0, t1 = 1; const dx = b[0] - a[0], dz = b[1] - a[1];
+    for (const [p, q] of [[-dx, a[0] + h], [dx, h - a[0]], [-dz, a[1] + h], [dz, h - a[1]]]) {
+      if (p === 0) { if (q < 0) return null; continue; }
+      const r = q / p;
+      if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; } else { if (r < t0) return null; if (r < t1) t1 = r; }
+    }
+    return t0 <= t1 ? [t0, t1] : null;
+  };
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const t = clipSeg(a, b);
+    if (!t) { if (cur) { out.push(cur); cur = null; } continue; }
+    const p0 = [a[0] + (b[0] - a[0]) * t[0], a[1] + (b[1] - a[1]) * t[0]], p1 = [a[0] + (b[0] - a[0]) * t[1], a[1] + (b[1] - a[1]) * t[1]];
+    if (!cur) cur = [p0];
+    cur.push(p1);
+    if (!inside(b)) { out.push(cur); cur = null; }
+  }
+  if (cur) out.push(cur);
+  return out.filter((p) => p.length >= 2);
+}
+/** Sutherland–Hodgman clip of a ring (local metres) against the square |x|,|z| ≤ h. */
+function clipRingXZ(ring, h) {
+  let poly = ring;
+  const planes = [[(p) => p[0] >= -h, (a, b) => { const t = (-h - a[0]) / (b[0] - a[0]); return [-h, a[1] + (b[1] - a[1]) * t]; }],
+    [(p) => p[0] <= h, (a, b) => { const t = (h - a[0]) / (b[0] - a[0]); return [h, a[1] + (b[1] - a[1]) * t]; }],
+    [(p) => p[1] >= -h, (a, b) => { const t = (-h - a[1]) / (b[1] - a[1]); return [a[0] + (b[0] - a[0]) * t, -h]; }],
+    [(p) => p[1] <= h, (a, b) => { const t = (h - a[1]) / (b[1] - a[1]); return [a[0] + (b[0] - a[0]) * t, h]; }]];
+  for (const [ins, cut] of planes) {
+    if (poly.length < 3) return [];
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const ia = ins(a), ib = ins(b);
+      if (ia) out.push(a);
+      if (ia !== ib) out.push(cut(a, b));
+    }
+    poly = out;
+  }
+  return poly;
+}
+/** Points every `step` metres along a polyline (ends included), each with the unit left normal of its segment. */
+function resampleXZ(pts, step) {
+  const out = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz);
+    if (L < 1e-6) continue;
+    const nx = dz / L, nz = -dx / L;
+    const k = Math.max(1, Math.ceil(L / step));
+    for (let s = i === 0 ? 0 : 1; s <= k; s++) out.push([a[0] + (dx * s) / k, a[1] + (dz * s) / k, nx, nz]);
+  }
+  return out;
+}
+
+/** Spatial index of building footprints / tanks / roads plus the walkable-cell queries the street builder needs. */
+function streetIndex(ctx) {
+  const { n, half } = ctx;
+  const gN = Math.ceil((2 * half) / STREET_GRID_M);
+  const S = { ctx, gN, blds: [], bGrid: new Array(gN * gN), bmask: new Uint8Array(n * n), tanks: [], roads: [], segGrid: new Array(gN * gN), mark: new Int32Array(64), qid: 0, comp: null };
+  for (let i = 0; i < gN * gN; i++) { S.bGrid[i] = []; S.segGrid[i] = []; }
+  ctx.features.buildings.forEach((b, idx) => addBuildingXZ(S, idx, b.pts.map((p) => ctx.frame.toXZ(p[0], p[1])), b));
+  for (const t of ctx.features.tanks) { const [x, z] = ctx.frame.toXZ(t.lat, t.lon); S.tanks.push({ x, z, r: t.radius || 10 }); fillRings(ctx, [ringXZToCells(ctx, rectXZ(x, z, 1, 0, t.radius || 10, t.radius || 10))], S.bmask, 1); }
+  return S;
+}
+const gCell = (S, v) => clamp(Math.floor((v + S.ctx.half) / STREET_GRID_M), 0, S.gN - 1);
+function addBuildingXZ(S, idx, ring, meta) {
+  if (!ring || ring.length < 3) { S.blds[idx] = null; return; }
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, cx = 0, cz = 0;
+  for (const p of ring) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[1]); z1 = Math.max(z1, p[1]); cx += p[0]; cz += p[1]; }
+  const b = { idx, ring, x0, x1, z0, z1, cx: cx / ring.length, cz: cz / ring.length, area: Math.abs(ringAreaXZ(ring)), kind: meta?.kind || 'building', height: meta?.height || 8 };
+  S.blds[idx] = b;
+  if (S.mark.length <= idx) { const m2 = new Int32Array(Math.max(idx + 1, S.mark.length * 2)); m2.set(S.mark); S.mark = m2; }
+  for (let j = gCell(S, z0); j <= gCell(S, z1); j++) for (let i = gCell(S, x0); i <= gCell(S, x1); i++) S.bGrid[j * S.gN + i].push(b);
+  fillRings(S.ctx, [ringXZToCells(S.ctx, ring)], S.bmask, 1);
+}
+/** Inside a building footprint / tank, or closer than `margin` metres to one. `skip` = a building index to ignore. */
+function nearBuilding(S, x, z, margin = 0, skip = -1) {
+  const q = ++S.qid, m2 = margin * margin;
+  for (let j = gCell(S, z - margin); j <= gCell(S, z + margin); j++) for (let i = gCell(S, x - margin); i <= gCell(S, x + margin); i++) {
+    for (const b of S.bGrid[j * S.gN + i]) {
+      if (S.mark[b.idx] === q) continue; S.mark[b.idx] = q;
+      if (b.idx === skip || x < b.x0 - margin || x > b.x1 + margin || z < b.z0 - margin || z > b.z1 + margin) continue;
+      if (pointInRingXZ(x, z, b.ring)) return true;
+      if (margin > 0) { const r = b.ring; for (let k = 0, m = r.length; k < m; k++) { const a = r[k], c = r[(k + 1) % m]; if (segDist2(x, z, a[0], a[1], c[0], c[1]) < m2) return true; } }
+    }
+  }
+  for (const t of S.tanks) { const d = Math.hypot(x - t.x, z - t.z); if (d < t.r + margin) return true; }
+  return false;
+}
+function isWalkXZ(S, x, z) { const c = S.ctx; if (x < -c.half + 3 || x > c.half - 3 || z < -c.half + 3 || z > c.half - 3) return false; const k = idxOfXZ(c, x, z); return k >= 0 && WALK[c.mask[k]] === 1; }
+function freeXZ(S, x, z, margin = 0, skip = -1) { return isWalkXZ(S, x, z) && !nearBuilding(S, x, z, margin, skip); }
+function addRoadXZ(S, road) {
+  if (!road.pts || road.pts.length < 2) return;
+  const ri = S.roads.length; S.roads.push(road);
+  const hw = road.width / 2;
+  for (let s = 0; s + 1 < road.pts.length; s++) {
+    const a = road.pts[s], b = road.pts[s + 1];
+    for (let j = gCell(S, Math.min(a[1], b[1]) - hw); j <= gCell(S, Math.max(a[1], b[1]) + hw); j++) for (let i = gCell(S, Math.min(a[0], b[0]) - hw); i <= gCell(S, Math.max(a[0], b[0]) + hw); i++) S.segGrid[j * S.gN + i].push(ri, s);
+  }
+}
+/** Distance (m) from a point to the nearest road EDGE (≤ 0 = on the carriageway), searching up to maxR metres. */
+function roadEdgeDist(S, x, z, maxR = 250) {
+  let best = Infinity;
+  const gi = gCell(S, x), gj = gCell(S, z), R = Math.ceil(maxR / STREET_GRID_M);
+  for (let r = 0; r <= R; r++) {
+    for (let j = gj - r; j <= gj + r; j++) for (let i = gi - r; i <= gi + r; i++) {
+      if (i < 0 || j < 0 || i >= S.gN || j >= S.gN || (Math.abs(i - gi) !== r && Math.abs(j - gj) !== r)) continue;
+      const L = S.segGrid[j * S.gN + i];
+      for (let k = 0; k < L.length; k += 2) {
+        const road = S.roads[L[k]], a = road.pts[L[k + 1]], b = road.pts[L[k + 1] + 1];
+        const d = Math.sqrt(segDist2(x, z, a[0], a[1], b[0], b[1])) - road.width / 2;
+        if (d < best) best = d;
+      }
+    }
+    if (best < r * STREET_GRID_M) break;
+  }
+  return best;
+}
+
+/**
+ * Keep the parts of a candidate road (local metres) that run over walkable land, clear of buildings by `margin`
+ * beyond the half width; pieces shorter than minLen are dropped. Returns polylines.
+ */
+function carveXZ(S, pts, halfW, { minLen = 30, margin = 1, step = 3, sides = true, avoidRoads = false } = {}) {
+  const smp = resampleXZ(pts, step);
+  const ok = smp.map(([x, z, nx, nz]) => freeXZ(S, x, z, halfW + margin)
+    && (!sides || (isWalkXZ(S, x + nx * halfW, z + nz * halfW) && isWalkXZ(S, x - nx * halfW, z - nz * halfW)))
+    && (!avoidRoads || roadEdgeDist(S, x, z, 60) > halfW + 2));
+  const out = [];
+  let run = [];
+  const flush = () => { if (run.length >= 2 && polyLenXZ(run) >= minLen) out.push(rdp(run, 0.5)); run = []; };
+  for (let i = 0; i < smp.length; i++) { if (ok[i]) run.push([smp[i][0], smp[i][1]]); else flush(); }
+  flush();
+  return out;
+}
+
+/** Land Dijkstra from target cells (multi-source); returns {dist, next} for tracing a path from any cell to a target. */
+function landDijkstra(S, targets) {
+  const { n, mask } = S.ctx, N = n * n;
+  const dist = new Float32Array(N).fill(Infinity), next = new Int32Array(N).fill(-1);
+  const pass = (k) => WALK[mask[k]] === 1 && S.bmask[k] === 0;
+  const pen = new Float32Array(N);
+  for (let k = 0; k < N; k++) {
+    if (!pass(k)) continue;
+    const i = k % n, j = (k - i) / n;
+    let p = mask[k] === QUAY ? 1 : mask[k] === PONTOON ? 12 : 0;
+    if (i > 0 && i < n - 1 && j > 0 && j < n - 1 && (S.bmask[k - 1] || S.bmask[k + 1] || S.bmask[k - n] || S.bmask[k + n])) p += 6;
+    if (i > 0 && i < n - 1 && j > 0 && j < n - 1 && (!WALK[mask[k - 1]] || !WALK[mask[k + 1]] || !WALK[mask[k - n]] || !WALK[mask[k + n]])) p += 8;   // keep off the water's edge
+    pen[k] = p;
+  }
+  const heap = new MinHeap(targets.length + 1024);
+  for (const k of targets) if (pass(k)) { dist[k] = 0; heap.push(0, k); }
+  while (heap.n) {
+    const k = heap.pop(), d = heap.topKey;
+    if (d > dist[k]) continue;
+    const i = k % n, j = (k - i) / n;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      if (!di && !dj) continue;
+      const i2 = i + di, j2 = j + dj;
+      if (i2 < 0 || j2 < 0 || i2 >= n || j2 >= n) continue;
+      const k2 = j2 * n + i2;
+      if (!pass(k2)) continue;
+      if (di && dj && (!pass(j * n + i2) || !pass(j2 * n + i))) continue;   // no corner cutting
+      const nd = d + (di && dj ? 14 : 10) + pen[k2];
+      if (nd < dist[k2]) { dist[k2] = nd; next[k2] = k; heap.push(nd, k2); }
+    }
+  }
+  return { dist, next };
+}
+/** Follow `next` from the cell nearest (x, z) to a target or to a cell another path already used. */
+function tracePath(S, D, x, z, used) {
+  const { n } = S.ctx;
+  let k0 = idxOfXZ(S.ctx, x, z);
+  if (k0 < 0) return null;
+  if (!Number.isFinite(D.dist[k0])) {
+    let best = -1, bd = Infinity;
+    const i0 = k0 % n, j0 = (k0 - i0) / n;
+    for (let dj = -4; dj <= 4; dj++) for (let di = -4; di <= 4; di++) {
+      const i = i0 + di, j = j0 + dj; if (i < 0 || j < 0 || i >= n || j >= n) continue;
+      const k = j * n + i; if (Number.isFinite(D.dist[k]) && di * di + dj * dj < bd) { bd = di * di + dj * dj; best = k; }
+    }
+    if (best < 0) return null;
+    k0 = best;
+  }
+  const cells = [];
+  for (let k = k0, guard = 0; k >= 0 && guard < n * 4; k = D.next[k], guard++) {
+    cells.push(k);
+    if (used[k] && cells.length > 1) break;
+  }
+  for (const k of cells) used[k] = 1;
+  return cells.map((k) => xzOfIdx(S.ctx, k));
+}
+
+/** Quay road candidates behind the quay berths: the first offset (26–85 m behind the face) that is mostly clear. */
+function quayRoadLines(S, berths, maxBerths = 24) {
+  const lines = [];
+  for (const b of berths.filter((q) => q.kind === 'quay').slice(0, maxBerths)) {
+    const Fx = b.x - b.sx * 12, Fz = b.z - b.sz * 12, Lx = -b.sx, Lz = -b.sz, ext = b.length / 2 + 25;
+    for (const o of [24, 33, 40, 48, 58, 70, 85]) {
+      let good = 0, tot = 0;
+      for (let s = -ext; s <= ext; s += 5) { tot++; if (freeXZ(S, Fx + Lx * o + b.tx * s, Fz + Lz * o + b.tz * s, 5)) good++; }
+      // the carriageway must not straddle the back edge of the quay apron (quay ↔ land): kerbs and bollards stand there
+      let same = 0;
+      for (const s of [-b.length / 3, 0, b.length / 3]) { const m0 = maskAtXZ(S.ctx, Fx + Lx * (o - 5.5) + b.tx * s, Fz + Lz * (o - 5.5) + b.tz * s), m1 = maskAtXZ(S.ctx, Fx + Lx * (o + 5.5) + b.tx * s, Fz + Lz * (o + 5.5) + b.tz * s); if (m0 === m1) same++; }
+      if (same < 2) continue;
+      if (good / tot >= 0.7) { lines.push({ ax: Fx + Lx * o - b.tx * ext, az: Fz + Lz * o - b.tz * ext, bx: Fx + Lx * o + b.tx * ext, bz: Fz + Lz * o + b.tz * ext, tx: b.tx, tz: b.tz, o, berth: b }); break; }
+    }
+  }
+  // merge collinear overlapping lines (long faces are split into several berths)
+  for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
+    const A = lines[i], B = lines[j];
+    if (!A || !B || Math.abs(A.tx * B.tx + A.tz * B.tz) < 0.995) continue;
+    const perp = Math.abs((B.ax - A.ax) * -A.tz + (B.az - A.az) * A.tx);
+    if (perp > 4) continue;
+    const proj = (x, z) => (x - A.ax) * A.tx + (z - A.az) * A.tz;
+    const a0 = 0, a1 = proj(A.bx, A.bz), b0 = Math.min(proj(B.ax, B.az), proj(B.bx, B.bz)), b1 = Math.max(proj(B.ax, B.az), proj(B.bx, B.bz));
+    if (b0 > a1 + 30 || b1 < a0 - 30) continue;
+    const s0 = Math.min(a0, b0), s1 = Math.max(a1, b1), ox = A.ax, oz = A.az;
+    A.ax = ox + A.tx * s0; A.az = oz + A.tz * s0; A.bx = ox + A.tx * s1; A.bz = oz + A.tz * s1;
+    lines[j] = null;
+  }
+  return lines.filter(Boolean);
+}
+
+/** Generated road network (synthetic harbours, OSM payloads without streets, or OSM streets missing at the quays). */
+function synthesizeRoads(S, berths, { grid = true, connectToExisting = false, rails = false } = {}) {
+  const ctx = S.ctx, rails_out = [];
+  const firstNew = S.roads.length;
+  // 1. quay roads
+  const qLines = quayRoadLines(S, berths, connectToExisting ? 3 : 24);
+  const quayPieces = [];
+  for (const L of qLines) {
+    for (const pts of carveXZ(S, [[L.ax, L.az], [L.bx, L.bz]], 4, { minLen: 40, margin: 1 })) {
+      const road = { pts, kind: 'service', width: 8, name: 'Quay road', synth: true };
+      addRoadXZ(S, road); quayPieces.push({ road, line: L });
+    }
+  }
+  // 2. links between neighbouring quay roads (stepped quays, dock sides)
+  for (let i = 0; i < quayPieces.length; i++) for (let j = i + 1; j < quayPieces.length; j++) {
+    const A = quayPieces[i].road.pts, B = quayPieces[j].road.pts;
+    let best = null, bd = Infinity;
+    for (const p of [A[0], A[A.length - 1]]) for (const q of [B[0], B[B.length - 1]]) { const d = Math.hypot(p[0] - q[0], p[1] - q[1]); if (d < bd) { bd = d; best = [p, q]; } }
+    if (!best || bd < 4 || bd > 90) continue;
+    const pieces = carveXZ(S, best, 3, { minLen: 2, margin: 0.5, step: 2 });
+    if (pieces.length === 1 && polyLenXZ(pieces[0]) >= bd * 0.85) addRoadXZ(S, { pts: best, kind: 'service', width: 6, name: '', synth: true });
+  }
+  // 3. a grid of streets behind the warehouses, aligned with the main quay
+  const main = qLines[0];
+  if (grid && main) {
+    const b = main.berth, tx = main.tx, tz = main.tz, Lx = -b.sx, Lz = -b.sz;
+    const Fx = (main.ax + main.bx) / 2 - Lx * main.o, Fz = (main.az + main.bz) / 2 - Lz * main.o;
+    const P = (u, v) => [Fx + tx * u + Lx * v, Fz + tz * u + Lz * v];
+    const frac = (pts) => { const s = resampleXZ(pts, 10); let g = 0; for (const [x, z] of s) if (freeXZ(S, x, z, 4)) g++; return s.length ? g / s.length : 0; };
+    [110, 200, 290, 380].forEach((target, k) => {
+      let bestO = target, bf = -1;
+      for (let o = target - 25; o <= target + 25; o += 5) { const f = frac([P(-650, o), P(650, o)]); if (f > bf) { bf = f; bestO = o; } }
+      if (bf < 0.2) return;
+      const w = k === 0 ? 7.5 : 6.5;
+      for (const pts of carveXZ(S, [P(-650, bestO), P(650, bestO)], w / 2, { minLen: 50, margin: 1.5, avoidRoads: false })) addRoadXZ(S, { pts, kind: k === 0 ? 'tertiary' : 'residential', width: w, name: '', synth: true });
+    });
+    for (const u0 of [-520, -390, -260, -130, 0, 130, 260, 390, 520]) {
+      let bestU = u0, bf = -1;
+      for (let u = u0 - 30; u <= u0 + 30; u += 5) { const f = frac([P(u, main.o), P(u, 420)]); if (f > bf) { bf = f; bestU = u; } }
+      if (bf < 0.25) continue;
+      for (const pts of carveXZ(S, [P(bestU, main.o), P(bestU, 420)], 3.25, { minLen: 50, margin: 1.5 })) addRoadXZ(S, { pts, kind: 'residential', width: 6.5, name: '', synth: true });
+    }
+    // 4. a rail spur along the main quay (major ports)
+    // (on the apron 24 m behind the face: clear of the crane legs, in front of the quay road)
+    if (rails) { const k = 24 - main.o; for (const pts of carveXZ(S, [[main.ax + Lx * k, main.az + Lz * k], [main.bx + Lx * k, main.bz + Lz * k]], 2, { minLen: 60, margin: 1, avoidRoads: true })) rails_out.push({ pts }); }
+  }
+  // 5. connector roads to the patch edge (and to the existing network): Dijkstra from the targets over land
+  const { n } = ctx;
+  const targets = [];
+  for (let a = 0; a < n; a++) for (const k of [a, (n - 1) * n + a, a * n, a * n + n - 1]) if (WALK[ctx.mask[k]] && !S.bmask[k]) targets.push(k);
+  if (connectToExisting) {
+    const seen = new Uint8Array(n * n);
+    for (let r = 0; r < firstNew; r++) for (const [x, z] of resampleXZ(S.roads[r].pts, 5)) { const k = idxOfXZ(ctx, x, z); if (k >= 0 && !seen[k]) { seen[k] = 1; targets.push(k); } }
+  }
+  if (targets.length) {
+    const D = landDijkstra(S, targets);
+    const used = new Uint8Array(n * n);
+    const starts = quayPieces.map((q) => q.road.pts[Math.floor(q.road.pts.length / 2)]);
+    if (!starts.length && S.roads.length > firstNew) starts.push(S.roads[firstNew].pts[0]);
+    let first = true;
+    for (const st of starts) {
+      const cells = tracePath(S, D, st[0], st[1], used);
+      if (!cells || cells.length < 3) continue;
+      const simp = rdp(cells, 7);
+      const w = first ? 9 : 7.5;
+      for (const pts of carveXZ(S, simp, w / 2, { minLen: 15, margin: 0, sides: false })) addRoadXZ(S, { pts, kind: first ? 'secondary' : 'tertiary', width: w, name: '', synth: true });
+      first = false;
+    }
+  }
+  return { rails: rails_out };
+}
+
+/** Main walkable component (4-connected land/quay/pontoon cells outside buildings) seeded behind the main berth. */
+function walkComponent(S, seedX, seedZ) {
+  const { n, mask } = S.ctx, N = n * n;
+  const comp = new Uint8Array(N);
+  const pass = (k) => WALK[mask[k]] === 1 && !S.bmask[k];
+  let s = idxOfXZ(S.ctx, seedX, seedZ);
+  if (s < 0 || !pass(s)) {
+    let best = -1, bd = Infinity; const i0 = s >= 0 ? s % n : n / 2, j0 = s >= 0 ? (s - i0) / n : n / 2;
+    for (let dj = -8; dj <= 8; dj++) for (let di = -8; di <= 8; di++) { const i = i0 + di, j = j0 + dj; if (i < 0 || j < 0 || i >= n || j >= n) continue; const k = j * n + i; if (pass(k) && di * di + dj * dj < bd) { bd = di * di + dj * dj; best = k; } }
+    s = best;
+  }
+  if (s < 0) return null;
+  const stack = new Int32Array(N); let top = 0, count = 0;
+  stack[top++] = s; comp[s] = 1;
+  while (top) {
+    const k = stack[--top]; count++;
+    const i = k % n, j = (k - i) / n;
+    if (i > 0 && !comp[k - 1] && pass(k - 1)) { comp[k - 1] = 1; stack[top++] = k - 1; }
+    if (i < n - 1 && !comp[k + 1] && pass(k + 1)) { comp[k + 1] = 1; stack[top++] = k + 1; }
+    if (j > 0 && !comp[k - n] && pass(k - n)) { comp[k - n] = 1; stack[top++] = k - n; }
+    if (j < n - 1 && !comp[k + n] && pass(k + n)) { comp[k + n] = 1; stack[top++] = k + n; }
+  }
+  return count >= 20 ? comp : null;
+}
+const inComp = (S, x, z) => { if (!S.comp) return true; const k = idxOfXZ(S.ctx, x, z); return k >= 0 && S.comp[k] === 1; };
+
+/** Door of a building: on the edge facing the nearest road (or quay), 1.2 m outside, on walkable land. */
+function doorForBuilding(S, b, fallback) {
+  let best = null, bs = Infinity;
+  const r = b.ring, m = r.length;
+  for (let k = 0; k < m; k++) {
+    const a = r[k], c = r[(k + 1) % m];
+    const dx = c[0] - a[0], dz = c[1] - a[1], L = Math.hypot(dx, dz);
+    if (L < 2.5) continue;
+    let nx = dz / L, nz = -dx / L;
+    const mx = (a[0] + c[0]) / 2, mz = (a[1] + c[1]) / 2;
+    if (pointInRingXZ(mx + nx * 0.6, mz + nz * 0.6, r)) { nx = -nx; nz = -nz; }
+    const x = mx + nx * 1.2, z = mz + nz * 1.2;
+    if (!freeXZ(S, x, z, 0.4, b.idx) || pointInRingXZ(x, z, r)) continue;
+    let score = S.roads.length ? Math.max(0, roadEdgeDist(S, x, z, 300)) : Math.hypot(x - fallback[0], z - fallback[1]);
+    if (!Number.isFinite(score)) score = Math.hypot(x - fallback[0], z - fallback[1]);
+    if (!inComp(S, x, z)) score += 1e4;
+    if (!freeXZ(S, mx + nx * 4, mz + nz * 4, 0.5, b.idx)) score += 25;   // no room to approach
+    score -= Math.min(L, 30) * 0.15;
+    if (score < bs) { bs = score; best = { x, z, inComp: inComp(S, x, z) }; }
+  }
+  return best;
+}
+/** Nearest walkable, building-free point of the main component within `radius` metres (cell centres), or null. */
+function nearestFreePoint(S, x, z, radius = 60) {
+  const res = S.ctx.res;
+  if (freeXZ(S, x, z, 0.5) && inComp(S, x, z)) return { x, z };
+  let best = null, bd = Infinity;
+  const R = Math.ceil(radius / res);
+  for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+    const px = x + di * res, pz = z + dj * res, d = di * di + dj * dj;
+    if (d >= bd || d > R * R) continue;
+    if (freeXZ(S, px, pz, 1) && inComp(S, px, pz)) { bd = d; best = { x: px, z: pz }; }
+  }
+  return best;
+}
+
+/** Find room for a small building (POI with nothing suitable nearby) behind the quay berths; returns its ring or null. */
+function placeSmallBuilding(S, berths, w = 16, d = 11) {
+  for (const b of berths.filter((q) => q.kind === 'quay').slice(0, 6).concat(berths.slice(0, 2))) {
+    const Fx = b.x - b.sx * 12, Fz = b.z - b.sz * 12, Lx = -b.sx, Lz = -b.sz;
+    for (const o of [48, 60, 75, 95, 120, 150, 190]) for (const u of [0, 25, -25, 50, -50, 80, -80, 115, -115, 150, -150]) {
+      const cx = Fx + Lx * o + b.tx * u, cz = Fz + Lz * o + b.tz * u;
+      const ring = rectXZ(cx, cz, b.tx, b.tz, w / 2, d / 2);
+      const probes = ring.concat([[cx, cz]], ring.map((p, i) => [(p[0] + ring[(i + 1) % 4][0]) / 2, (p[1] + ring[(i + 1) % 4][1]) / 2]));
+      if (!probes.every(([x, z]) => freeXZ(S, x, z, 3) && inComp(S, x, z))) continue;
+      if (S.roads.length && roadEdgeDist(S, cx, cz, 60) < Math.max(w, d) / 2 + 3) continue;
+      return ring;
+    }
+  }
+  return null;
+}
+
+/** The six game POIs (+ police / café when there is a building for them), OSM amenities first. */
+function placePois(S, berths, harbor, rnd) {
+  const ctx = S.ctx;
+  const quays = berths.filter((b) => b.kind === 'quay');
+  const mb = berths.find((b) => b.kind === 'quay' && b.length >= 120 && b.depth >= 8) || quays[0] || berths[0];
+  const focus = (mb ? [mb] : []).concat(quays.filter((b) => b !== mb).slice(0, 1)).map((b) => [b.x - b.sx * 12, b.z - b.sz * 12]);
+  if (!focus.length) focus.push([0, 0]);
+  const distFocus = (x, z) => { let d = Infinity; for (const f of focus) d = Math.min(d, Math.hypot(x - f[0], z - f[1])); return d; };
+  const used = new Set();
+  const pois = [];
+  const short = String(harbor.name || harbor.id).split(' (')[0].split(' / ')[0];
+  const defaults = { harbourmaster: `Harbourmaster ${short}`, shipyard: `${short} Shipyard`, chandler: 'Ship Chandler', fuel: 'Fuel Dock', market: `${short} Market Hall`, bar: BAR_NAMES[hashString(`${harbor.id}:bar`) % BAR_NAMES.length], police: 'Harbour Police', cafe: CAFE_NAMES[hashString(`${harbor.id}:cafe`) % CAFE_NAMES.length] };
+  const add = (kind, name, at, door, building) => pois.push({ kind, name: name || defaults[kind], x: at[0], z: at[1], door, building });
+  const osmCands = (ctx.street?.pois || []).map((p) => ({ ...p, xz: ctx.frame.toXZ(p.lat, p.lon), ringXZ: p.ring ? p.ring.map((q) => ctx.frame.toXZ(q[0], q[1])) : null }))
+    .filter((p) => inPatch(ctx, p.xz[0], p.xz[1]));
+  const buildingAt = (p) => {
+    // OSM building that holds the amenity: contains the node / ring centroid, else the nearest within 20 m
+    let best = -1, bd = 20;
+    for (const b of S.blds) {
+      if (!b || b.synthPoi) continue;
+      if (p.xz[0] < b.x0 - 20 || p.xz[0] > b.x1 + 20 || p.xz[1] < b.z0 - 20 || p.xz[1] > b.z1 + 20) continue;
+      if (pointInRingXZ(p.xz[0], p.xz[1], b.ring)) return b.idx;
+      for (let k = 0; k < b.ring.length; k++) { const a = b.ring[k], c = b.ring[(k + 1) % b.ring.length]; const d = Math.sqrt(segDist2(p.xz[0], p.xz[1], a[0], a[1], c[0], c[1])); if (d < bd) { bd = d; best = b.idx; } }
+    }
+    return best;
+  };
+  const fromOSM = (kind) => {
+    const list = osmCands.filter((p) => p.kind === kind).sort((a, b) => distFocus(a.xz[0], a.xz[1]) - distFocus(b.xz[0], b.xz[1]));
+    for (const p of list.slice(0, 8)) {
+      if (kind === 'fuel') {   // a fuel DOCK: only amenities at the water's edge qualify
+        const k = idxOfXZ(ctx, p.xz[0], p.xz[1]);
+        if (k < 0 || !(ctx.dWat && (IS_WATER[ctx.mask[k]] || ctx.dWat[k] * ctx.res <= 80))) continue;
+      }
+      const bi = buildingAt(p);
+      if (bi >= 0 && S.blds[bi]) {
+        const door = doorForBuilding(S, S.blds[bi], focus[0]);
+        if (door && door.inComp) { used.add(bi); add(kind, p.name, [S.blds[bi].cx, S.blds[bi].cz], door, bi); return true; }
+      }
+      const pt = nearestFreePoint(S, p.xz[0], p.xz[1], 60);
+      if (pt) { add(kind, p.name, p.xz, pt, -1); return true; }
+    }
+    return false;
+  };
+  const prefer = {
+    harbourmaster: (b) => (b.kind === 'building' ? 0 : b.area < 3000 ? 60 : 160),
+    market: (b) => (b.kind === 'warehouse' ? 0 : b.kind === 'industrial' ? 40 : 120) - Math.min(60, b.area / 100),
+    shipyard: (b) => (b.kind === 'industrial' ? 0 : b.kind === 'warehouse' ? 20 : 120),
+    chandler: (b) => (b.area < 1600 ? 0 : 60) + (b.kind === 'warehouse' ? 20 : 0),
+    bar: (b) => (b.kind === 'building' ? 0 : 90) + (b.area > 2500 ? 60 : 0),
+    police: (b) => (b.kind === 'building' ? 0 : 100),
+    cafe: (b) => (b.kind === 'building' ? 0 : 100),
+  };
+  const fromBuildings = (kind, maxDist) => {
+    let best = null, bs = Infinity;
+    for (const b of S.blds) {
+      if (!b || used.has(b.idx) || b.area < 40) continue;
+      const d = distFocus(b.cx, b.cz);
+      if (d > maxDist) continue;
+      let s = d + prefer[kind](b);
+      if (kind === 'bar' || kind === 'cafe') { const hm = pois.find((p) => p.kind === 'harbourmaster'); if (hm && Math.hypot(b.cx - hm.x, b.cz - hm.z) < 40) s += 80; }
+      if (s >= bs) continue;
+      const door = doorForBuilding(S, b, focus[0]);
+      if (!door || !door.inComp) continue;
+      bs = s; best = { b, door };
+    }
+    if (!best) return false;
+    used.add(best.b.idx);
+    add(kind, null, [best.b.cx, best.b.cz], best.door, best.b.idx);
+    return true;
+  };
+  const synthBuilding = (kind) => {
+    const ring = placeSmallBuilding(S, berths, kind === 'market' ? 30 : 16, kind === 'market' ? 18 : 11);
+    if (!ring) return false;
+    const idx = ctx.features.buildings.length;
+    const height = round1(kind === 'market' ? 9 : 6.5 + rnd() * 3);
+    ctx.features.buildings.push({ pts: ring.map((p) => xzToLL(ctx, p[0], p[1])), height, kind: kind === 'market' ? 'warehouse' : 'building' });
+    addBuildingXZ(S, idx, ring, { kind: 'building', height });
+    S.blds[idx].synthPoi = true;
+    const door = doorForBuilding(S, S.blds[idx], focus[0]);
+    if (!door) return false;
+    used.add(idx);
+    add(kind, null, [S.blds[idx].cx, S.blds[idx].cz], door, idx);
+    return true;
+  };
+  const fuelDock = () => {
+    // a short quay berth (bunkering alongside), then the main quay, then the marina pontoons; the pump stands on the
+    // quay a little off the berth centre so the berth itself is the place to lie alongside and fill up
+    const cand = quays.slice(1, 6).sort((a, b) => a.length - b.length).concat(quays.slice(0, 1), berths.filter((b) => b.kind === 'pontoon').slice(0, 2));
+    for (const b of cand) {
+      const Fx = b.x - b.sx * 12, Fz = b.z - b.sz * 12;
+      for (const e of [1, -1, 0.5, -0.5, 0]) {
+        const s = e * Math.max(0, Math.min(b.length / 2 - 12, 45));
+        const x = Fx + b.tx * s - b.sx * 6, z = Fz + b.tz * s - b.sz * 6;
+        if (freeXZ(S, x, z, 1.5) && inComp(S, x, z)) { add('fuel', null, [x, z], { x, z, inComp: true }, -1); return true; }
+      }
+    }
+    return false;
+  };
+  for (const kind of POI_ORDER) {
+    const required = REQUIRED_POIS.includes(kind);
+    if (fromOSM(kind)) continue;
+    if (kind === 'fuel') { if (fuelDock()) continue; }
+    else if (fromBuildings(kind, required ? 900 : 600)) continue;
+    else if (required && synthBuilding(kind)) continue;
+    if (required) {   // last resort: a kiosk spot on the quay behind the main berth
+      const f = focus[0];
+      const pt = mb ? nearestFreePoint(S, f[0] - mb.sx * (10 + 8 * pois.length), f[1] - mb.sz * (10 + 8 * pois.length), 200) : null;
+      const at = pt || { x: f[0], z: f[1] };
+      add(kind, null, [at.x, at.z], { x: at.x, z: at.z }, -1);
+    }
+  }
+  return pois;
+}
+
+/** Synthetic areas: port aprons behind the quays, an industrial zone, parking by the busy doors, a park or two. */
+function synthAreas(S, berths, pois, harbor) {
+  const out = [];
+  const quays = berths.filter((b) => b.kind === 'quay').slice(0, 6);
+  for (const b of quays) {
+    const Fx = b.x - b.sx * 12, Fz = b.z - b.sz * 12, Lx = -b.sx, Lz = -b.sz, h = b.length / 2 + 20;
+    const P = (u, v) => [Fx + b.tx * u + Lx * v, Fz + b.tz * u + Lz * v];
+    out.push({ kind: 'port', ring: [P(-h, 2), P(h, 2), P(h, 135), P(-h, 135)] });
+  }
+  const big = harbor.size === 'mega' || harbor.size === 'major';
+  if (big && quays[0]) {
+    const b = quays[0], Fx = b.x - b.sx * 12, Fz = b.z - b.sz * 12, Lx = -b.sx, Lz = -b.sz, h = b.length / 2 + 120;
+    const P = (u, v) => [Fx + b.tx * u + Lx * v, Fz + b.tz * u + Lz * v];
+    out.push({ kind: 'industrial', ring: [P(-h, 135), P(h, 135), P(h, 300), P(-h, 300)] });
+  }
+  const rectFree = (ring, margin) => {
+    const c = [(ring[0][0] + ring[2][0]) / 2, (ring[0][1] + ring[2][1]) / 2];
+    const probes = ring.concat([c], ring.map((p, i) => [(p[0] + ring[(i + 1) % 4][0]) / 2, (p[1] + ring[(i + 1) % 4][1]) / 2]));
+    return probes.every(([x, z]) => freeXZ(S, x, z, margin)) && (!S.roads.length || probes.every(([x, z]) => roadEdgeDist(S, x, z, 60) > 1));
+  };
+  // parking next to the harbour office, the market hall and the bar
+  for (const p of pois.filter((q) => q.kind === 'harbourmaster' || q.kind === 'market' || q.kind === 'bar')) {
+    let placed = false;
+    for (const r of [22, 30, 40, 52] ) {
+      for (let a = 0; a < 12 && !placed; a++) {
+        const ang = (a / 12) * Math.PI * 2, cx = p.door.x + Math.cos(ang) * r, cz = p.door.z + Math.sin(ang) * r;
+        const ux = Math.cos(ang + Math.PI / 2), uz = Math.sin(ang + Math.PI / 2);
+        const ring = rectXZ(cx, cz, ux, uz, 14, 9);
+        if (rectFree(ring, 1.5)) { out.push({ kind: 'parking', ring }); placed = true; }
+      }
+      if (placed) break;
+    }
+  }
+  // a park and some grass on free land within a kilometre of the main berth
+  const mb = quays[0] || berths[0];
+  if (mb) {
+    const Fx = mb.x - mb.sx * 12, Fz = mb.z - mb.sz * 12, Lx = -mb.sx, Lz = -mb.sz;
+    let made = 0;
+    for (let v = 160; v <= 900 && made < 3; v += 60) for (let u = -600; u <= 600 && made < 3; u += 60) {
+      const cx = Fx + mb.tx * u + Lx * v, cz = Fz + mb.tz * u + Lz * v;
+      const ring = rectXZ(cx, cz, mb.tx, mb.tz, 40, 28);
+      if (out.some((a) => a.kind !== 'port' && a.kind !== 'industrial' && Math.hypot(a.ring[0][0] - cx, a.ring[0][1] - cz) < 140)) continue;
+      if (!rectFree(ring, 4)) continue;
+      out.push({ kind: made === 0 ? 'park' : 'grass', ring }); made++;
+    }
+  }
+  return out;
+}
+
+/** Fallback when the street builder fails: the six POIs as kiosks on the quay behind the main berth. */
+function minimalPois(ctx, berths, harbor) {
+  const mb = berths.find((b) => b.kind === 'quay') || berths[0];
+  const out = [];
+  REQUIRED_POIS.forEach((kind, i) => {
+    let x = 0, z = 0;
+    if (mb) {
+      const Fx = mb.x - mb.sx * 12, Fz = mb.z - mb.sz * 12;
+      x = Fx - mb.sx * 10 + mb.tx * (i - 2.5) * 14; z = Fz - mb.sz * 10 + mb.tz * (i - 2.5) * 14;
+      if (!WALK[maskAtXZ(ctx, x, z)] ) { x = Fx - mb.sx * 3; z = Fz - mb.sz * 3; }
+    }
+    out.push({ kind, name: { harbourmaster: 'Harbourmaster', shipyard: `${String(harbor.name || '').split(' (')[0]} Shipyard`, chandler: 'Ship Chandler', fuel: 'Fuel Dock', market: 'Market Hall', bar: BAR_NAMES[0] }[kind], x, z, door: { x, z }, building: -1 });
+  });
+  return out;
+}
+
+/** Build the whole street layer; returns the JSON parts in lat/lon. Mutates ctx.features.buildings (POI buildings). */
+function buildStreetLayer(ctx, berths, rnd) {
+  const { harbor, half } = ctx;
+  const S = streetIndex(ctx);
+  const st = ctx.street || null;
+  let rails = [], areasXZ = [];
+  // ---- roads: OSM when the payload has them (and they reach the land), else generated
+  if (st && st.hasStreets) {
+    for (const r of st.roads || []) {
+      const xz = r.pts.map((p) => ctx.frame.toXZ(p[0], p[1]));
+      for (const piece of clipPolylineXZ(xz, half - 2)) {
+        const pts = rdp(piece, 0.7);
+        if (polyLenXZ(pts) >= 6) addRoadXZ(S, { pts, kind: r.kind, width: r.width, name: r.name || '', bridge: !!r.bridge });
+      }
+    }
+    for (const r of st.rails || []) for (const piece of clipPolylineXZ(r.pts.map((p) => ctx.frame.toXZ(p[0], p[1])), half - 2)) { const pts = rdp(piece, 1); if (polyLenXZ(pts) >= 20) rails.push({ pts }); }
+    for (const a of st.areas || []) {
+      const ring = clipRingXZ(a.pts.map((p) => ctx.frame.toXZ(p[0], p[1])), half - 1);
+      if (ring.length >= 3 && Math.abs(ringAreaXZ(ring)) >= 60) areasXZ.push({ kind: a.kind, ring });
+    }
+  }
+  const onLand = S.roads.filter((r) => r.kind !== 'footway' && resampleXZ(r.pts, 20).some(([x, z]) => isWalkXZ(S, x, z))).length;
+  const big = harbor.size === 'mega' || harbor.size === 'major';
+  if (!st || !st.hasStreets || onLand < 3) {
+    const extra = synthesizeRoads(S, berths, { grid: true, connectToExisting: S.roads.length > 0, rails: big && rails.length === 0 });
+    rails = rails.concat(extra.rails);
+  } else {
+    const mb = berths.find((b) => b.kind === 'quay');
+    if (mb && roadEdgeDist(S, mb.x - mb.sx * 40, mb.z - mb.sz * 40, 150) > 120) synthesizeRoads(S, berths, { grid: false, connectToExisting: true, rails: false });
+  }
+  // ---- POIs (after the roads: doors face the nearest road) inside the main walkable component
+  const mb = berths.find((b) => b.kind === 'quay' && b.length >= 120 && b.depth >= 8) || berths.find((b) => b.kind === 'quay') || berths[0];
+  S.comp = mb ? walkComponent(S, mb.x - mb.sx * 20, mb.z - mb.sz * 20) : null;
+  const pois = placePois(S, berths, harbor, rnd);
+  if (areasXZ.length < 3) areasXZ = areasXZ.concat(synthAreas(S, berths, pois, harbor));
+  // ---- JSON (lat/lon, 6 decimals)
+  const ll = (p) => xzToLL(ctx, p[0], p[1]);
+  const roads = S.roads.map((r) => ({ pts: r.pts.map(ll), kind: r.kind, width: r.width, name: r.name || '', ...(r.bridge ? { bridge: true } : {}) }));
+  const areas = areasXZ.map((a) => ({ pts: osm.simplifyRing(a.ring.map(ll), 2), kind: a.kind })).filter((a) => a.pts.length >= 3);
+  const poisJSON = pois.map((p) => {
+    const at = ll([p.x, p.z]), door = ll([p.door.x, p.door.z]);
+    return { id: `${harbor.id}-${p.kind}`, kind: p.kind, name: p.name, lat: at[0], lon: at[1], door: { lat: door[0], lon: door[1] }, building: p.building };
+  });
+  const places = [];
+  for (const p of st?.places || []) { const [x, z] = ctx.frame.toXZ(p.lat, p.lon); if (inPatch(ctx, x, z)) places.push({ kind: p.kind, sub: p.sub, name: p.name, lat: p.lat, lon: p.lon }); }
+  return { roads, areas, rails: rails.map((r) => ({ pts: r.pts.map(ll) })), pois: poisJSON, places };
+}
+
 function finishBuild(ctx, w) {
   const { n, res, mask, harbor } = ctx;
   const rnd = ctx.rnd || mulberry32(hashString(harbor.id) ^ 0x51ed270b);
@@ -1079,14 +1744,22 @@ function finishBuild(ctx, w) {
     const end = fairway[fairway.length - 1];
     if (inPatch(ctx, end[0], end[1])) { const ll = xzToLL(ctx, end[0], end[1]); ctx.features.buoys.push({ lat: ll[0], lon: ll[1], kind: 'safe_water', color: osm.BUOY_COLORS.red, color2: osm.BUOY_COLORS.white, shape: 'sphere' }); }
   }
+  // ---- street layer (v0.4): roads, areas, rails, POIs with doors. Building indices refer to the final list, so the
+  // cap is applied first; POI buildings the street builder adds are appended after it.
+  const feats = ctx.features;
+  if (feats.buildings.length > osm.BUILDING_CAP) { feats.buildings.sort((a, b) => osm.ringAreaM2(b.pts) - osm.ringAreaM2(a.pts)); feats.buildings.length = osm.BUILDING_CAP; }
+  let street;
+  try { street = buildStreetLayer(ctx, berths, mulberry32(hashString(harbor.id) ^ 0x2545f491)); }
+  catch (err) {
+    cfg.log('[geom] street layer failed for', harbor.id, err?.stack || err);
+    street = { roads: [], areas: [], rails: [], places: [], pois: minimalPois(ctx, berths, harbor).map((p) => { const at = xzToLL(ctx, p.x, p.z); return { id: `${harbor.id}-${p.kind}`, kind: p.kind, name: p.name, lat: at[0], lon: at[1], door: { lat: at[0], lon: at[1] }, building: -1 }; }) };
+  }
   // ---- JSON
   const anchorLL = xzToLL(ctx, anchor[0], anchor[1]);
   const berthsJSON = berths.map((b, k) => {
     const ll = xzToLL(ctx, b.x, b.z);
     return { id: `${harbor.id}-b${k + 1}`, name: `Berth ${k + 1}`, lat: ll[0], lon: ll[1], hdg: b.hdg, length: b.length, depth: b.depth, kind: b.kind, maxLength: Math.max(10, b.length - (b.kind === 'pontoon' ? 0 : 10)) };
   });
-  const feats = ctx.features;
-  if (feats.buildings.length > osm.BUILDING_CAP) { feats.buildings.sort((a, b) => osm.ringAreaM2(b.pts) - osm.ringAreaM2(a.pts)); feats.buildings.length = osm.BUILDING_CAP; }
   const geom = {
     id: harbor.id, name: harbor.name, source: ctx.source, version: GEOM_VERSION,
     origin: { lat: harbor.lat, lon: harbor.lon }, anchor: { lat: anchorLL[0], lon: anchorLL[1] },
@@ -1096,6 +1769,7 @@ function finishBuild(ctx, w) {
     features: {
       quays: feats.quays, piers: feats.piers, breakwaters: feats.breakwaters, pontoons: feats.pontoons,
       buildings: feats.buildings, cranes: feats.cranes, lights: feats.lights, buoys: feats.buoys, tanks: feats.tanks,
+      roads: street.roads, areas: street.areas, rails: street.rails, pois: street.pois, places: street.places,
     },
   };
   return { geom, heights: ctx.heights, mask: ctx.mask, sdf: ctx.sdf, berthsXZ: berths.map((b) => [b.x, b.z]) };
@@ -1167,6 +1841,7 @@ function loadGeomCache(id) {
     if (!fs.existsSync(j) || !fs.existsSync(b)) return null;
     const meta = JSON.parse(fs.readFileSync(j, 'utf8'));
     if (!meta || meta.version !== GEOM_VERSION || !meta.geom || !Array.isArray(meta.geom.berths)) return null;
+    if (!Array.isArray(meta.geom.features?.pois) || !meta.geom.features.pois.length || !Array.isArray(meta.geom.features.roads)) return null;   // v4 needs the street layer
     const harbor = harborById(id); if (!harbor) return null;
     const buf = fs.readFileSync(b);
     const dec = decodePatch(buf);
@@ -1213,6 +1888,14 @@ export function landPenetration(lat, lon) {
   }
   return found ? best : null;
 }
+/** Mask code (PATCH.MASK) of a built harbour patch at lat/lon, or null outside it / when not built. */
+export function maskAt(id, lat, lon) {
+  const e = entries.get(id);
+  if (!e || !Number.isFinite(lat) || !Number.isFinite(lon) || !covers(e, lat, lon)) return null;
+  const i = Math.floor(((lon - e.originLon) * e.kLon) / e.res + e.n / 2), j = Math.floor((-(lat - e.originLat) * GEO.M_PER_DEG_LAT) / e.res + e.n / 2);
+  if (i < 0 || j < 0 || i >= e.n || j >= e.n) return null;
+  return e.mask[j * e.n + i];
+}
 export function sdfAt(id, lat, lon) {
   const e = entries.get(id);
   if (!e || !Number.isFinite(lat) || !Number.isFinite(lon) || !covers(e, lat, lon)) return null;
@@ -1251,7 +1934,7 @@ function buildEntry(h, osmData) {
   e.buildMs = Date.now() - t0;
   return e;
 }
-function describe(e) { const g = e.geom; return `${e.source} ${e.buildMs ?? '?'} ms · ${g.berths.length} berths · ${g.features.buildings.length} bld · ${g.features.buoys.length} buoys`; }
+function describe(e) { const g = e.geom, f = g.features; return `${e.source} ${e.buildMs ?? '?'} ms · ${g.berths.length} berths · ${f.buildings.length} bld · ${f.buoys.length} buoys · ${f.roads?.length ?? 0} roads · ${f.pois?.length ?? 0} POIs`; }
 
 async function buildHarbor(h, opts) {
   const disk = entries.get(h.id) || loadGeomCache(h.id);

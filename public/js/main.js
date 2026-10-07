@@ -1,8 +1,12 @@
 // Saltline client: scene, floating origin, local ship simulation, networking glue, camera, day/night, HUD loop.
 // v0.3 (docs/V3-CONTRACTS.md §5): harbour geometry + patch terrain + collision, tide/weather, AI traffic, rescues,
 // offshore platforms, walkable interior, multi-waypoint routes, touch helm, sails, wakes, buoys.
+// v0.4 (docs/V4-CONTRACTS.md §1, §3, §4): client time warp (app.warp mirrors you.warp; the local simulation integrates
+// dt × warp in ≤ 0.05 s sim substeps, autopilot and grounding per substep; . / , step the level; manual helm above 20×
+// drops to real time; the chase camera lifts above 20×), going ashore (app.ashore, G, mutually exclusive with the
+// interior, no ship simulation while ashore, no casting off from the quay), chase camera sized to the hull.
 import * as THREE from 'three';
-import { GEO, SIM, SHIP_CLASSES, INTERACT, LAYERS } from '/shared/constants.js';
+import { GEO, SIM, SHIP_CLASSES, INTERACT, LAYERS, WARP } from '/shared/constants.js';
 import { toLocal, fromLocal, haversine, bearing, unitsBetween, angleDiff, normDeg, fmtDistance } from '/shared/geo.js';
 import { stepShip, currentAt } from '/shared/physics.js';
 import { Net } from './net.js';
@@ -26,6 +30,19 @@ const PLATFORM_LOAD_M = 15000, PLATFORM_UNLOAD_M = 18000;
 const COLLISION_RATE_MS = 3000;
 const ANCHOR_ORIGIN_M = 5000; // keep the floating origin on a harbour's own origin while this close, so patch, scenery and ship agree to the metre
 const CUTTER_DIMS = { length: 28, beam: 6.5 };
+// time warp (docs/V4-CONTRACTS.md §1)
+const WARP_LEVELS = Array.isArray(WARP?.LEVELS) && WARP.LEVELS.length ? WARP.LEVELS : [1, 5, 20, 100, 400];
+const WARP_MAX_NO_ROUTE = Number.isFinite(WARP?.MAX_NO_ROUTE) ? WARP.MAX_NO_ROUTE : 20; // above this: route + autopilot only, manual helm drops to 1×, camera lifts
+const SUBSTEP_S = 0.05;          // longest SIM-time integration step
+const MAX_SUBSTEPS = 400;        // per frame (at the cap a substep grows past SUBSTEP_S rather than losing sim time)
+const WARP_HOLD_MS = 3000;       // after the client lowers the level, ignore stale higher `you.warp` values this long
+const WARP_SHIP_COLLIDE_MAX = 20; // ship–ship contacts are resolved up to this level (above it the watch keeps clear of traffic)
+const ROUTE_SEND_MAX = 250;      // waypoints sent with set_warp (the socket's payload limit is 16 KiB)
+// chase camera (docs/V4-CONTRACTS.md §4): distance = max(60, 2.6 × ship length), pitch 0.32
+const CAM_PITCH = 0.32;
+const camDistFor = (L) => Math.max(60, 2.6 * (Number(L) || 60));
+const camZoomMin = (L) => Math.max(20, 0.6 * (Number(L) || 60));
+const camZoomMax = (L) => Math.max(1800, 10 * (Number(L) || 60));
 
 class App {
   constructor() {
@@ -52,11 +69,19 @@ class App {
     this.harborMeshes = new Map(); this.groundMeshes = new Map(); this.platformMeshes = new Map();
     this.myMesh = null; this.myVis = { heave: 0, pitch: 0, roll: 0 }; this.raft = null; this.selfSamples = [];
     this.input = { throttleCmd: 0, rudderCmd: 0, left: false, right: false, up: false, down: false, rudderHold: false };
-    this.cam = { yaw: 0, pitch: 0.28, dist: 260, free: false, mode: 0 };
+    this.cam = { yaw: 0, pitch: CAM_PITCH, dist: camDistFor(90), free: false, mode: 0 };
+    this.camLift = 0; this.camPrevTarget = null; // warp camera lift (0..1) and the last chase target (the camera follows its motion 1:1)
     this.route = []; this.autopilot = false;
+    // time warp: `warp` mirrors you.warp (the client follows a server drop at once and lowers it itself on manual helm)
+    this.warp = 1; this.warpHold = null; this.warpReq = null;
     this.lastGrounding = 0; this.lastCollision = 0; this.clock = new THREE.Clock(); this.time = 0; this.started = false; this.lastSend = 0;
     this.lastTerrainUpdate = 0; this.lastRadar = 0; this.lastTelemetry = 0; this.lastSails = 0; this.ready = false;
     this.interior = new Interior(this);
+    // Going ashore (docs/V4-CONTRACTS.md §3): `app.ashore = new Ashore(this)`. Loaded as its own module so a problem in the
+    // on-foot layer can never take the helm down with it; `ashoreReady` resolves to the instance (or null).
+    this.ashore = null;
+    this.ashoreReady = import('./ashore.js').then((m) => { this.ashore = new m.Ashore(this); this.hud.syncModes?.(); return this.ashore; })
+      .catch((e) => { console.warn('[ashore] unavailable', e); return null; });
     this.touchHelm = null;
     window.addEventListener('resize', () => this.resize()); this.resize();
     this.bindInput();
@@ -87,6 +112,7 @@ class App {
   onStatus(s) {
     this.hud.setStatus(s === 'connected' ? 'Connected to the shard.' : s === 'replaced' ? 'This skipper logged in from another tab. Set sail again to take the helm back here.' : 'Disconnected — reconnecting…');
     this.hud.setConn(s);
+    if (s !== 'connected') { this.applyWarp(1); this.warpHold = null; } // the server resets warp on every (re)connect; never run ahead while unheard
     if (s === 'replaced') { this.started = false; this.hud.showWelcome(true); return; } // the socket is dead for good: bring the login card back
     if (s === 'connected' && this.pendingName != null) { const n = this.pendingName; this.pendingName = null; this.start(n); return; }
     if (s === 'connected' && this.started) this.net.send({ t: 'hello', token: this.net.token, name: this.net.name });
@@ -133,7 +159,11 @@ class App {
     const prev = this.you;
     this.you = you;
     const s = you.ship;
-    const hard = !this.ship || first || !prev || prev.ship.cls !== s.cls || !!prev.docked !== !!you.docked || (!you.assist && unitsBetween(this.ship.lat, this.ship.lon, s.lat, s.lon) > 400);
+    const serverWarp = WARP_LEVELS.includes(Number(you.warp)) ? Number(you.warp) : 1;
+    // Under warp the local ship runs ahead of the server's copy by (latency + upload interval) × speed × warp: only a
+    // gap beyond that is a real disagreement (teleport, tow, impound) that must snap the ship.
+    const lead = Math.abs(Number(s.spd) || 0) * GEO.KN_TO_MS * SIM.MOTION_SCALE * Math.max(this.warp, serverWarp) * 2;
+    const hard = !this.ship || first || !prev || prev.ship.cls !== s.cls || !!prev.docked !== !!you.docked || (!you.assist && unitsBetween(this.ship.lat, this.ship.lon, s.lat, s.lon) > 400 + lead);
     if (hard || (correction && !you.assist)) {
       // a plain correction is a few hundred metres: keep the helm commands and do not force a frame rebuild
       this.ship = { ...s, throttleCmd: hard ? s.throttle : this.input.throttleCmd, rudderCmd: hard ? 0 : this.input.rudderCmd };
@@ -142,9 +172,13 @@ class App {
         if (this.myMesh) { if (this.interior.active) this.interior.exit(); this.drop(this.myMesh); }
         this.myMesh = buildShip(s.cls, you.name, 7); this.scene.add(this.myMesh);
         this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false);
+        // a new hull: chase camera sized to it (docs/V4-CONTRACTS.md §4)
+        this.cam.dist = camDistFor(this.shipLength()); this.cam.pitch = CAM_PITCH;
+        if (this.ashore?.active && this.myMesh.userData.label) this.myMesh.userData.label.visible = false; // bought a ship while ashore
       }
       this.recentre(hard);
     }
+    this.syncWarp(serverWarp, you);
     if (prev && prev.docked && !you.docked) { this.hud.hideHarbor(); }
     if (!prev?.docked && you.docked) { this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.autopilot = false; this.touchHelm?.setThrottle?.(0); }
     if (!prev?.assist && you.assist) { this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.autopilot = false; this.touchHelm?.setThrottle?.(0); }
@@ -203,7 +237,7 @@ class App {
       o = { id: p.id, name: p.name, cls: p.cls, mesh: buildShip(p.cls, p.name, p.id.charCodeAt(0)), samples: [], cur: { lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }, vis: { heave: 0, pitch: 0, roll: 0 } };
       this.scene.add(o.mesh); this.others.set(p.id, o);
     } else if (o.cls !== p.cls) { this.drop(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); }
-    Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, offline: p.offline });
+    Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, offline: p.offline, warp: WARP_LEVELS.includes(Number(p.warp)) ? Number(p.warp) : 1 });
     o.samples.push({ t: now, lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }); if (o.samples.length > 4) o.samples.shift();
     o.mesh.userData.setWear(1 - p.cond / 100); o.mesh.userData.setFlood(p.flooding);
   }
@@ -270,6 +304,7 @@ class App {
     // Everything cached in the old frame shifts by -p so there is no frame of nothing: the camera keeps its offset
     // from the ship, and scenery is re-placed instead of thrown away and rebuilt 500 ms later.
     this.camera.position.x -= p.x; this.camera.position.z -= p.z;
+    if (this.camPrevTarget) { this.camPrevTarget.x -= p.x; this.camPrevTarget.z -= p.z; }
     this.terrain.setOrigin(this.origin);
     const mp = toLocal(this.ship.lat, this.ship.lon, this.origin);
     this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), true);
@@ -308,6 +343,7 @@ class App {
             m.userData.geomId = wantGeom; m.userData.placeAt = at;
             this.place(m, at.lat, at.lon); this.scene.add(m); this.harborMeshes.set(h.id, m);
             m.userData.setNight?.(this.night, this.time);
+            if (this.ashore?.active && this.ashore.harborId === h.id) m.userData.setAshore?.(true); // rebuilt under the walker's feet
           }
         }
       } else if (d > SCENERY_UNLOAD_M && has) { this.drop(has); this.harborMeshes.delete(h.id); }
@@ -329,8 +365,8 @@ class App {
       } else if (d > PLATFORM_UNLOAD_M && has) { this.drop(this.platformMeshes.get(pl.id)); this.platformMeshes.delete(pl.id); }
     }
     for (const w of this.wrecks) { const m = this.wreckMeshes.get(w.id); if (m) this.place(m, w.lat, w.lon, -2); }
-    const cam = this.camera.position;
-    for (const m of this.harborMeshes.values()) { const l = m.children.find((c) => c.isSprite); if (l) l.visible = m.position.distanceTo(cam) < 3200; }
+    const cam = this.camera.position, onFoot = !!this.ashore?.active; // ashore the street signs name things, not the harbour label
+    for (const m of this.harborMeshes.values()) { const l = m.children.find((c) => c.isSprite); if (l) l.visible = !onFoot && m.position.distanceTo(cam) < 3200; }
     for (const m of this.groundMeshes.values()) { const l = m.children.find((c) => c.isSprite); if (l) l.visible = m.position.distanceTo(cam) < 3200; }
   }
   loadGeom(h) {
@@ -353,50 +389,57 @@ class App {
     window.addEventListener('keydown', (e) => {
       if (!this.started) return;
       if (typing()) return;
-      const k = e.key.toLowerCase();
+      const k = String(e.key || '').toLowerCase();
       if (k === 'enter') { document.getElementById('chatInput')?.focus(); e.preventDefault(); return; }
       if (k === 'escape') {
         if (this.interior.active && this.interior.handleKey(e)) return;
         if (this.hud.transientOpen()) this.hud.closeOverlays(); else if (this.hud.harborOpen()) this.hud.hideHarbor(); return; // chart/ships/help first, harbour panel next
       }
+      if (k === 'g') return this.toggleAshore();
       if (k === 'i') return this.toggleInterior();
+      // the walkers (on foot ashore, below decks) get their keys first: WASD walk, E use, V view, T taxi ashore …
+      if (this.ashore?.active && this.ashore.handleKey(e)) return;
       if (this.interior.active && this.interior.handleKey(e)) return;
       if (k === 'm') return this.hud.toggleChart();
       if (k === 'tab') { e.preventDefault(); return this.hud.toggleShips(); }
       if (k === 'h') return document.getElementById('helpWrap')?.classList.toggle('hidden');
       if (k === 'r' && this.hud.chartOpen()) { this.hud.chartMode = this.hud.chartMode === 'region' ? 'world' : 'region'; this.hud.drawChart(); return; }
+      if (this.ashore?.active) return; // ashore: the ship's controls are aboard
       if (k === 't') return this.toggleDock();
       if (k === 'f') return this.net.action('fish', { on: !this.you?.fishing });
       if (k === 'k') return this.net.action('patch');
       if (k === 'p') return this.toggleAutopilot();
-      if (k === 'c') { if (!this.interior.active) this.cam.mode = (this.cam.mode + 1) % 3; return; }
+      if (k === 'c') { this.cycleCamera(); return; }
       if (k === 'x') { this.clearRoute(); return; }
       if (k === 'n') return this.requestTugs();
+      if (k === '.' || k === '>') { e.preventDefault(); return this.stepWarp(1); }
+      if (k === ',' || k === '<') { e.preventDefault(); return this.stepWarp(-1); }
       if (this.you?.docked || this.you?.assist) return;
-      if (k === 'w' || k === 'arrowup') this.nudgeThrottle(0.1);
-      if (k === 's' || k === 'arrowdown') this.nudgeThrottle(-0.1);
-      if (k === 'a' || k === 'arrowleft') { this.input.left = true; this.autopilot = false; }
-      if (k === 'd' || k === 'arrowright') { this.input.right = true; this.autopilot = false; }
-      if (k === ' ') { this.input.rudderCmd = 0; this.input.throttleCmd = 0; this.touchHelm?.setThrottle?.(0); this.touchHelm?.setRudder?.(0); e.preventDefault(); }
+      if (k === 'w' || k === 'arrowup') { e.preventDefault(); this.nudgeThrottle(0.1); }
+      if (k === 's' || k === 'arrowdown') { e.preventDefault(); this.nudgeThrottle(-0.1); }
+      if (k === 'a' || k === 'arrowleft') { this.manualHelm(); this.input.left = true; this.autopilot = false; }
+      if (k === 'd' || k === 'arrowright') { this.manualHelm(); this.input.right = true; this.autopilot = false; }
+      if (k === ' ') { this.manualHelm(); this.input.rudderCmd = 0; this.input.throttleCmd = 0; this.touchHelm?.setThrottle?.(0); this.touchHelm?.setRudder?.(0); e.preventDefault(); }
       if (k === 'b') this.boardNearest();
       if (k === 'v') this.salvageNearest();
     });
-    window.addEventListener('keyup', (e) => { const k = e.key.toLowerCase(); if (k === 'a' || k === 'arrowleft') this.input.left = false; if (k === 'd' || k === 'arrowright') this.input.right = false; });
-    // camera: one-pointer drag orbits (mouse or finger), two fingers pinch to zoom, wheel zooms
+    window.addEventListener('keyup', (e) => { const k = String(e.key || '').toLowerCase(); if (k === 'a' || k === 'arrowleft') this.input.left = false; if (k === 'd' || k === 'arrowright') this.input.right = false; });
+    // camera: one-pointer drag orbits (mouse or finger), two fingers pinch to zoom, wheel zooms (the walkers own theirs)
     const pointers = new Map();
     let pinch = null;
     this.canvas.addEventListener('pointerdown', (e) => {
-      if (this.interior.active) return;
+      if (this.walking()) return;
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       try { this.canvas.setPointerCapture(e.pointerId); } catch {}
       if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), dist: this.cam.dist }; }
     });
     this.canvas.addEventListener('pointermove', (e) => {
-      const pt = pointers.get(e.pointerId); if (!pt || this.interior.active) return;
+      const pt = pointers.get(e.pointerId); if (!pt) return;
+      if (this.walking()) { pointers.delete(e.pointerId); pinch = null; return; }
       if (pointers.size >= 2 && pinch) {
         pt.x = e.clientX; pt.y = e.clientY;
         const [a, b] = [...pointers.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y);
-        if (d > 10) this.cam.dist = THREE.MathUtils.clamp((pinch.dist * pinch.d) / d, 60, 1800);
+        if (d > 10) this.cam.dist = this.clampZoom((pinch.dist * pinch.d) / d);
         return;
       }
       const dx = e.clientX - pt.x, dy = e.clientY - pt.y;
@@ -409,20 +452,34 @@ class App {
     this.canvas.addEventListener('pointerup', endPointer);
     this.canvas.addEventListener('pointercancel', endPointer);
     this.canvas.addEventListener('lostpointercapture', endPointer);
-    this.canvas.addEventListener('wheel', (e) => { if (this.interior.active) return; this.cam.dist = THREE.MathUtils.clamp(this.cam.dist * (1 + Math.sign(e.deltaY) * 0.12), 60, 1800); e.preventDefault(); }, { passive: false });
+    this.canvas.addEventListener('wheel', (e) => { if (this.walking()) return; this.cam.dist = this.clampZoom(this.cam.dist * (1 + Math.sign(e.deltaY) * 0.12)); e.preventDefault(); }, { passive: false });
     // A key held while focus leaves the page never gets its keyup (alt-tab, confirm() dialogs): release everything.
     const reset = () => { this.releaseControls(); pointers.clear(); pinch = null; };
     window.addEventListener('blur', reset);
-    document.addEventListener('visibilitychange', () => { if (document.hidden) reset(); });
-    // buttons that C2 may add to the DOM (bound with onclick so a HUD binding of the same button never double-fires)
-    const btn = (id, fn) => { const b = document.getElementById(id); if (b) b.onclick = fn; };
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) return;
+      reset();
+      // a hidden tab stops the frame loop, so the ship stops moving while the server would keep charging fuel and wear × warp
+      if (this.warp > 1) this.setWarp(1, 'Game hidden — time warp off (your ship only sails ahead while the game is on screen).');
+    });
+    // buttons the HUD may not bind itself (it owns them in v0.4; a HUD binding is never overridden, so nothing double-fires)
+    const btn = (id, fn) => { const b = document.getElementById(id); if (b && !b.onclick) b.onclick = fn; };
     btn('btnInterior', () => this.toggleInterior());
     btn('btnSails', () => this.setSails(!(this.you?.sailsUp !== false)));
     btn('btnTugs', () => this.requestTugs());
     btn('btnMoor', () => this.toggleDock());
+    btn('btnAshore', () => this.toggleAshore());
+    btn('btnAboard', () => this.toggleAshore());
+    btn('warpUp', () => this.stepWarp(1));
+    btn('warpDown', () => this.stepWarp(-1));
     this.bindTouch();
   }
-  nudgeThrottle(d) { if (this.you?.docked || this.you?.assist) return; this.input.throttleCmd = THREE.MathUtils.clamp(Math.round((this.input.throttleCmd + d) * 10) / 10, -0.3, 1); this.touchHelm?.setThrottle?.(this.input.throttleCmd); }
+  /** Walking on foot (below decks or ashore): those modes own the camera and the pointer. */
+  walking() { return !!(this.interior.active || this.ashore?.active); }
+  shipLength() { return SHIP_CLASSES[this.ship?.cls || this.you?.ship?.cls]?.length || this.myMesh?.userData.length || 60; }
+  clampZoom(d) { const L = this.shipLength(); return THREE.MathUtils.clamp(d, camZoomMin(L), camZoomMax(L)); }
+  cycleCamera() { if (!this.walking()) this.cam.mode = (this.cam.mode + 1) % 3; }
+  nudgeThrottle(d) { if (this.you?.docked || this.you?.assist) return; this.manualHelm(); this.input.throttleCmd = THREE.MathUtils.clamp(Math.round((this.input.throttleCmd + d) * 10) / 10, -0.3, 1); this.touchHelm?.setThrottle?.(this.input.throttleCmd); }
   releaseControls() { this.input.left = this.input.right = false; for (const id of ['tchPort', 'tchStbd']) document.getElementById(id)?.classList.remove('on'); }
   /** Touch devices: the TouchHelm sliders (C2) drive the same input state as the keys; the v0.2 hold buttons keep working too. */
   bindTouch() {
@@ -431,15 +488,23 @@ class App {
     try {
       const root = document.getElementById('touchHelm') || document.getElementById('hud') || document.body;
       this.touchHelm = new TouchHelm(root, {
-        onThrottle: (v) => { if (this.you?.docked || this.you?.assist) return; v = Number(v) || 0; if (Math.abs(v) > 1.5) v /= 100; this.input.throttleCmd = THREE.MathUtils.clamp(v, -0.3, 1); },
-        onRudder: (v) => { if (this.you?.docked || this.you?.assist) return; v = Number(v) || 0; if (Math.abs(v) > 1.5) v /= 100; this.input.rudderCmd = THREE.MathUtils.clamp(v, -1, 1); this.input.rudderHold = Math.abs(v) > 0.01; if (this.input.rudderHold) this.autopilot = false; },
-        onAllStop: () => { this.input.rudderCmd = 0; this.input.throttleCmd = 0; this.input.rudderHold = false; },
-        onDock: () => this.toggleDock(), onChart: () => this.hud.toggleChart(), onInterior: () => this.toggleInterior(), onCamera: () => { this.cam.mode = (this.cam.mode + 1) % 3; },
+        onThrottle: (v) => { if (this.you?.docked || this.you?.assist) return; v = Number(v) || 0; if (Math.abs(v) > 1.5) v /= 100; this.manualHelm(); this.input.throttleCmd = THREE.MathUtils.clamp(v, -0.3, 1); },
+        // `active` = a finger is on the slider. Without it the slider is only re-centring (or mirroring the autopilot):
+        // that must never switch the autopilot off or count as manual helm.
+        onRudder: (v, active) => {
+          if (this.you?.docked || this.you?.assist) return;
+          v = Number(v) || 0; if (Math.abs(v) > 1.5) v /= 100; v = THREE.MathUtils.clamp(v, -1, 1);
+          const finger = active !== false;
+          if (finger) { if (Math.abs(v) > 0.01) { this.manualHelm(); this.autopilot = false; } this.input.rudderCmd = v; this.input.rudderHold = Math.abs(v) > 0.01; }
+          else if (!this.autopilot) { this.input.rudderCmd = v; this.input.rudderHold = Math.abs(v) > 0.01; }
+        },
+        onAllStop: () => { this.manualHelm(); this.input.rudderCmd = 0; this.input.throttleCmd = 0; this.input.rudderHold = false; },
+        onDock: () => this.toggleDock(), onChart: () => this.hud.toggleChart(), onInterior: () => this.toggleInterior(), onCamera: () => this.cycleCamera(), onAshore: () => this.toggleAshore(),
       });
     } catch (e) { console.warn('[touch] helm unavailable', e); this.touchHelm = null; }
     const hold = (id, key) => {
       const b = document.getElementById(id); if (!b) return;
-      const on = (e) => { e.preventDefault(); if (this.you?.docked) return; this.input[key] = true; this.autopilot = false; b.classList.add('on'); };
+      const on = (e) => { e.preventDefault(); if (this.you?.docked) return; this.manualHelm(); this.input[key] = true; this.autopilot = false; b.classList.add('on'); };
       const off = () => { this.input[key] = false; b.classList.remove('on'); };
       b.addEventListener('pointerdown', on);
       for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, off);
@@ -456,7 +521,11 @@ class App {
     if (!this.hud.harborOpen()) return this.net.action('dock');
     this.castOff();
   }
-  castOff() { if (this.you?.docked) this.net.action('undock'); }
+  castOff() {
+    if (!this.you?.docked) return;
+    if (this.ashore?.active) { this.hud.event({ kind: 'warn', text: 'Go aboard first (G) — the ship cannot cast off without her skipper.' }); return; }
+    this.net.action('undock');
+  }
   requestTugs() {
     const you = this.you; if (!you || you.docked || you.assist) return;
     const C = SHIP_CLASSES[you.ship.cls];
@@ -464,7 +533,43 @@ class App {
     if (!you.nearBerth) return this.hud.event({ kind: 'warn', text: 'No berth within reach of the tugs (get within 1.5 km of the harbour, under 6 kn).' });
     if (confirm(`Request tugs to ${you.nearBerth.name || 'the berth'} for ${cost.toLocaleString()} cr?`)) this.net.action('tug_assist');
   }
-  toggleInterior() { if (this.interior.active) this.interior.exit(); else if (!this.interior.enter()) this.hud.event({ kind: 'warn', text: 'Nothing to go below into yet — wait for your ship.' }); }
+  toggleInterior() {
+    if (this.interior.active) { this.interior.exit(); return; }
+    if (this.ashore?.active) { this.hud.event({ kind: 'warn', text: 'Go back aboard first (G).' }); return; } // the two walkers are mutually exclusive
+    this.releaseControls();
+    if (!this.interior.enter()) this.hud.event({ kind: 'warn', text: 'Nothing to go below into yet — wait for your ship.' });
+  }
+  /**
+   * Go ashore / back aboard (docs/V4-CONTRACTS.md §3). Only while moored; leaves the interior first. Returns the
+   * Ashore.enter promise (→ boolean) when going ashore, true when coming back aboard, false when refused.
+   */
+  toggleAshore() {
+    const a = this.ashore;
+    if (a?.active) { a.exit(); this.afterAshoreChange(); return true; }
+    const you = this.you;
+    if (!you?.docked) { this.hud.event({ kind: 'warn', text: 'Moor at a berth first, then go ashore.' }); return false; }
+    if (!a) {
+      // the module is still loading (or failed): try once more when it arrives
+      return this.ashoreReady.then((inst) => {
+        if (!inst) { this.hud.event({ kind: 'warn', text: 'Going ashore is not available right now.' }); return false; }
+        return inst.active ? true : this.toggleAshore();
+      });
+    }
+    if (this.interior.active) this.interior.exit();
+    this.releaseControls(); this.autopilot = false;
+    this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.input.rudderHold = false; this.touchHelm?.setThrottle?.(0);
+    this.cam.mode = this.cam.mode === 2 ? 0 : this.cam.mode; // come back to the chase view, not the bridge
+    let p;
+    try { p = Promise.resolve(a.enter(you.docked)); } catch (e) { console.warn('[ashore] enter threw', e); p = Promise.resolve(false); }
+    return p.then((ok) => { this.afterAshoreChange(); return !!ok; }, (e) => { console.warn('[ashore] enter failed', e); this.afterAshoreChange(); return false; });
+  }
+  afterAshoreChange() {
+    this.camPrevTarget = null; this.cam.free = false;
+    // the harbour name label comes back with the next scenery pass; the HUD follows app.ashore.active
+    this.updateScenery();
+    this.hud.showAshoreHint?.(null); // the default line until the walker reports the nearest door
+    this.hud.syncModes?.();
+  }
   setSails(up) {
     const you = this.you; if (!you) return;
     up = !!up;
@@ -474,18 +579,81 @@ class App {
   }
   /** Relative wind angle in degrees (0 = on the bow, 90 = from starboard). */
   windRel() { const w = this.localWind || this.wind; const from = Number.isFinite(w?.dir) ? w.dir : normDeg((Math.atan2(-(w?.u || 0), -(w?.v || 0)) * 180) / Math.PI); return normDeg(from - (this.ship?.hdg || 0)); }
-  toggleAutopilot() { if (!this.route.length) { this.hud.event({ kind: 'warn', text: 'Set a waypoint or a route on the chart (M) first.' }); return; } this.autopilot = !this.autopilot; if (this.autopilot) this.input.rudderHold = false; }
+  toggleAutopilot() {
+    if (!this.route.length) { this.hud.event({ kind: 'warn', text: 'Set a waypoint or a route on the chart (M) first.' }); return; }
+    this.autopilot = !this.autopilot;
+    if (this.autopilot) this.input.rudderHold = false;
+    else if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(WARP_MAX_NO_ROUTE, `Autopilot off — time warp back to ${WARP_MAX_NO_ROUTE}× (higher levels sail the route).`);
+  }
   /** Route API used by the chart: ordered waypoints the autopilot follows. */
   setRoute(points) {
     const pts = (points || []).map((p) => ({ lat: Number(Array.isArray(p) ? p[0] : p.lat), lon: Number(Array.isArray(p) ? p[1] : p.lon) })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
     this.route = pts;
-    if (!pts.length) { this.autopilot = false; return; }
-    const last = pts[pts.length - 1];
+    if (!pts.length) { this.autopilot = false; if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(WARP_MAX_NO_ROUTE, `Route cleared — time warp back to ${WARP_MAX_NO_ROUTE}×.`); return; }
     const total = this.routeLength();
-    this.hud.event({ kind: 'info', text: `Route set: ${pts.length} waypoint${pts.length > 1 ? 's' : ''}, ${fmtDistance(total)}, first leg bearing ${Math.round(bearing(this.ship.lat, this.ship.lon, pts[0].lat, pts[0].lon))}°. Press P for autopilot.` });
-    void last;
+    if (this.warp > WARP_MAX_NO_ROUTE) this.autopilot = true; // above 20× the crew sails the (new) route
+    const from = this.ship || pts[0];
+    this.hud.event({ kind: 'info', text: `Route set: ${pts.length} waypoint${pts.length > 1 ? 's' : ''}, ${fmtDistance(total)}, first leg bearing ${Math.round(bearing(from.lat, from.lon, pts[0].lat, pts[0].lon))}°. ${this.autopilot ? 'Autopilot steering.' : 'Press P for autopilot, . / , for time warp.'}` });
   }
-  clearRoute() { this.route = []; this.autopilot = false; this.hud.chart?.clearRoute?.(true); }
+  clearRoute() {
+    this.route = []; this.autopilot = false; this.hud.chart?.clearRoute?.(true);
+    if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(WARP_MAX_NO_ROUTE, `Route cleared — time warp back to ${WARP_MAX_NO_ROUTE}×.`);
+  }
+
+  // ------------------------------------------------------------------ time warp (docs/V4-CONTRACTS.md §1)
+  warpLevels() { const L = this.world?.warp?.LEVELS; return Array.isArray(L) && L.length ? L : WARP_LEVELS; }
+  /** One level up (+1) or down (-1): keys . and , (the HUD's ◀◀ ▶▶ call setWarp directly). */
+  stepWarp(dir) {
+    const you = this.you; if (!you) return false;
+    if (dir > 0 && you.docked) { this.hud.event({ kind: 'warn', text: 'Time warp works at sea — cast off first.' }); return false; }
+    const L = this.warpLevels();
+    // a raise still waiting for the server's answer counts, so two quick presses step two levels
+    const req = this.warpReq, base = req && req.f > this.warp && performance.now() - req.t < 1500 ? req.f : this.warp;
+    let i = L.indexOf(base); if (i < 0) i = L.reduce((bi, v, k) => (Math.abs(v - base) < Math.abs(L[bi] - base) ? k : bi), 0);
+    const next = L[Math.max(0, Math.min(L.length - 1, i + (dir > 0 ? 1 : -1)))];
+    return next === base ? false : this.setWarp(next);
+  }
+  /**
+   * Ask the server for warp level `factor` (`net.action('set_warp', {factor, route})`). Lowering is applied at once (it is
+   * always allowed); raising waits for the server's `you.warp`, which then becomes `app.warp`. Above 20× the route is
+   * required and the autopilot takes over. `note` = an event line explaining a client-side drop.
+   */
+  setWarp(factor, note) {
+    const f = Number(factor), L = this.warpLevels();
+    if (!L.includes(f)) return false;
+    const you = this.you; if (!you) return false;
+    if (f > 1) {
+      if (you.docked) { this.hud.event({ kind: 'warn', text: 'Time warp works at sea — cast off first.' }); return false; }
+      if (f > WARP_MAX_NO_ROUTE && !this.route.length) { this.hud.event({ kind: 'warn', text: `Above ${WARP_MAX_NO_ROUTE}× the crew needs a route to follow — plot one on the chart (M) and sail it.` }); return false; }
+      if (f > WARP_MAX_NO_ROUTE) { this.autopilot = true; this.input.rudderHold = false; this.input.left = this.input.right = false; }
+    }
+    const now = performance.now();
+    const raisePending = !!this.warpReq && this.warpReq.f > f && now - this.warpReq.t < WARP_HOLD_MS; // asked higher, not answered yet
+    if (f < this.warp || raisePending) { // lowering: follow at once and ignore stale higher answers for a moment
+      if (f < this.warp) this.applyWarp(f);
+      this.warpHold = { f, until: now + WARP_HOLD_MS }; this.warpReq = null;
+    } else if (f === 1 && (Number(you.warp) || 1) === 1) return true; // already in real time on both sides
+    else if (f > this.warp) this.warpReq = { f, t: now };
+    if (note) this.hud.event({ kind: 'info', text: note });
+    const route = this.route.slice(0, ROUTE_SEND_MAX).map((p) => ({ lat: Math.round(p.lat * 1e5) / 1e5, lon: Math.round(p.lon * 1e5) / 1e5 }));
+    this.net.action('set_warp', { factor: f, route });
+    return true;
+  }
+  /** Mirror the server's level (`you.warp`): a drop is followed at once; a raise only once we have not just lowered it ourselves. */
+  syncWarp(serverWarp, you) {
+    let w = you?.docked || you?.assist || you?.rescue ? 1 : serverWarp;
+    const hold = this.warpHold;
+    if (hold) { if (w <= hold.f || performance.now() > hold.until) this.warpHold = null; else w = Math.min(w, hold.f); }
+    if (w !== this.warp) this.applyWarp(w);
+  }
+  applyWarp(f) {
+    f = WARP_LEVELS.includes(f) ? f : 1;
+    if (f === this.warp) return;
+    this.warp = f;
+    if (f > WARP_MAX_NO_ROUTE && this.route.length) { this.autopilot = true; this.input.rudderHold = false; }
+  }
+  /** Any manual throttle / rudder input above 20× hands the ship back to real time (contract §1). */
+  manualHelm() { if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(1, 'Manual helm — time warp off.'); }
   setWaypoint(lat, lon) { this.setRoute([{ lat, lon }]); }
   routeLength() { let d = 0, a = this.ship; for (const p of this.route) { d += haversine(a.lat, a.lon, p.lat, p.lon); a = p; } return d; }
   nearestOther(range) { let best = null, bd = range; for (const o of this.others.values()) { const d = unitsBetween(this.ship.lat, this.ship.lon, o.cur.lat, o.cur.lon); if (d < bd) { bd = d; best = o; } } return best; }
@@ -499,51 +667,87 @@ class App {
     if (you.assist) { this.followServer(dt); return; } // tugs: the server moves the ship, we only show it
     if (you.docked || you.flooding >= 1 || you.rescue) { s.spd = 0; s.throttle = 0; return; }
     const C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
-    // rudder from keys (hold), the touch slider, or the autopilot following the route
-    if (this.autopilot && this.route.length) {
-      const wp = this.route[0];
-      const brg = bearing(s.lat, s.lon, wp.lat, wp.lon);
-      this.input.rudderCmd = THREE.MathUtils.clamp(angleDiff(s.hdg, brg) / 25, -1, 1);
-      const d = unitsBetween(s.lat, s.lon, wp.lat, wp.lon);
-      const reach = this.route.length > 1 ? Math.max(300, C.length * 3) : Math.max(200, C.length * 2);
-      if (d < reach) {
-        this.route.shift();
-        if (!this.route.length) { this.autopilot = false; this.input.rudderCmd = 0; this.hud.event({ kind: 'info', text: 'Route complete — waypoint reached.' }); this.hud.chart?.clearRoute?.(true); }
-        else this.hud.event({ kind: 'info', text: `Waypoint reached, ${this.route.length} to go.` });
-      }
-    } else if (this.input.left || this.input.right) {
-      this.input.rudderCmd = THREE.MathUtils.clamp(this.input.rudderCmd + (this.input.left ? -1 : 1) * dt * 1.4, -1, 1);
-    } else if (!this.input.rudderHold) { this.input.rudderCmd += (0 - this.input.rudderCmd) * Math.min(1, dt * 2.5); if (Math.abs(this.input.rudderCmd) < 0.02) this.input.rudderCmd = 0; }
-    const prevLat = s.lat, prevLon = s.lon;
+    // Time warp: the ship's own clock runs `warp` times faster (the world clock and everything else stay real time).
+    const warp = this.warp > 1 ? this.warp : 1;
+    const simDt = dt * warp;
+    const topLevel = warp >= WARP_LEVELS[WARP_LEVELS.length - 1];
+    const steerByRoute = this.autopilot && this.route.length > 0;
+    // manual rudder (keys held / touch slider) follows the hand in REAL time; at the top warp level only the route steers
+    if (!steerByRoute) {
+      if ((this.input.left || this.input.right) && !topLevel) {
+        this.input.rudderCmd = THREE.MathUtils.clamp(this.input.rudderCmd + (this.input.left ? -1 : 1) * dt * 1.4, -1, 1);
+      } else if (!this.input.rudderHold || topLevel) { this.input.rudderCmd += (0 - this.input.rudderCmd) * Math.min(1, dt * 2.5); if (Math.abs(this.input.rudderCmd) < 0.02) this.input.rudderCmd = 0; }
+    }
     const cur = currentAt(s.lat, s.lon, this.simTime);
     const env = {
       cond: you.cond, flooding: you.flooding, loadFrac: you.cargo.reduce((a, c) => a + c.qty, 0) / C.capacity, wind: this.localWind || this.wind, current: cur,
       tideStream: this.tide?.stream || null, sea: this.wx?.sea ?? 0, waveH: this.wx?.waveH ?? 0, sailsUp: you.sailsUp !== false, towing: !!you.towing,
       fuelEmpty: you.fuelEmpty, grounded: false,
     };
-    const sub = Math.max(1, Math.min(8, Math.ceil(dt / 0.02)));
-    for (let i = 0; i < sub; i++) stepShip(s, { throttleCmd: this.input.throttleCmd, rudderCmd: this.input.rudderCmd }, env, dt / sub);
-    // grounding check against loaded terrain (+ tide): refuse only moves that go SHALLOWER than where we already are,
-    // so a ship sitting on a shallow reading can still back (or push) off towards deeper water
-    const h = this.terrain.heightAt(s.lat, s.lon);
-    if (h != null && -h + this.tideLevel < C.draft) {
-      const hPrev = this.terrain.heightAt(prevLat, prevLon);
-      if (hPrev == null || h > hPrev) {
-        s.lat = prevLat; s.lon = prevLon;
-        const bump = Math.abs(s.spd) > 0.5;
-        if (bump) s.spd *= 0.15; else s.spd = 0;
-        const now = performance.now();
-        if (now - this.lastGrounding > 4000) { // always tell the player; only a real bump costs hull condition
-          this.lastGrounding = now;
-          if (bump) this.net.action('grounding');
-          this.hud.alert('ground', 'AGROUND — reverse off (S)', ''); setTimeout(() => this.hud.clearAlert('ground'), 4000);
-        }
-      }
+    // ≤ SUBSTEP_S of sim time per step, at most MAX_SUBSTEPS per frame; the autopilot steers and the keel is checked
+    // every substep, so even 400× follows the route leg by leg and cannot hop over a spit between two frames
+    const sub = Math.max(1, Math.min(MAX_SUBSTEPS, Math.ceil(simDt / SUBSTEP_S)));
+    const h = simDt / sub;
+    const cmd = { throttleCmd: this.input.throttleCmd, rudderCmd: this.input.rudderCmd };
+    let aground = null;
+    for (let i = 0; i < sub; i++) {
+      if (this.autopilot && this.route.length) { if (!this.autopilotStep(s, C)) this.input.rudderCmd = 0; }
+      if (this.warp !== warp) break; // dropped mid-frame (destination reached): the rest of this frame's warped time is not sailed
+      cmd.throttleCmd = this.input.throttleCmd; cmd.rudderCmd = this.input.rudderCmd;
+      const pLat = s.lat, pLon = s.lon;
+      stepShip(s, cmd, env, h);
+      aground = this.keelCheck(s, C, pLat, pLon);
+      if (aground) break;
     }
-    // quays, breakwaters, land of the loaded harbour patches, and other hulls
-    const res = resolveShip(s, C, this.geoms, dt, this.collisionOthers());
+    if (aground) this.onGrounding(aground.bump);
+    // quays, breakwaters, land of the loaded harbour patches, and other hulls (ship–ship only up to 20×: above it the
+    // hull covers hundreds of metres a frame and the watch keeps clear of traffic)
+    const res = resolveShip(s, C, this.geoms, dt, warp <= WARP_SHIP_COLLIDE_MAX ? this.collisionOthers() : null);
     if (res.hit) this.onCollision(res);
     this.net.sendState(s);
+  }
+  /**
+   * Autopilot: steer for the head of the route, advance it when the waypoint is reached. Returns false when the route
+   * is finished (autopilot off; time warp back to real time so the ship does not run on past the destination warped).
+   */
+  autopilotStep(s, C) {
+    const wp = this.route[0];
+    const brg = bearing(s.lat, s.lon, wp.lat, wp.lon);
+    this.input.rudderCmd = THREE.MathUtils.clamp(angleDiff(s.hdg, brg) / 25, -1, 1);
+    const d = unitsBetween(s.lat, s.lon, wp.lat, wp.lon);
+    const reach = this.route.length > 1 ? Math.max(300, C.length * 3) : Math.max(200, C.length * 2);
+    if (d >= reach) return true;
+    this.route.shift();
+    if (this.route.length) { this.hud.event({ kind: 'info', text: `Waypoint reached, ${this.route.length} to go.` }); return true; }
+    this.autopilot = false; this.input.rudderCmd = 0;
+    this.hud.event({ kind: 'info', text: 'Route complete — waypoint reached.' });
+    this.hud.chart?.clearRoute?.(true);
+    if (this.warp > 1) this.setWarp(1, 'Destination reached — time warp off.');
+    return false;
+  }
+  /**
+   * Depth under the keel (loaded terrain + tide) after a substep from (pLat, pLon). Refuses only moves that go SHALLOWER
+   * than where the ship already was, so a ship sitting on a shallow reading can still back (or push) off towards deeper
+   * water. Returns null when the water is deep enough, else {bump} after putting the ship back.
+   */
+  keelCheck(s, C, pLat, pLon) {
+    const hh = this.terrain.heightAt(s.lat, s.lon);
+    if (hh == null || -hh + this.tideLevel >= C.draft) return null;
+    const hPrev = this.terrain.heightAt(pLat, pLon);
+    if (hPrev != null && hh <= hPrev) return null;
+    s.lat = pLat; s.lon = pLon;
+    const bump = Math.abs(s.spd) > 0.5;
+    if (bump) s.spd *= 0.15; else s.spd = 0;
+    return { bump };
+  }
+  onGrounding(bump) {
+    if (this.warp > 1) this.setWarp(1, 'Aground — time warp off.');
+    const now = performance.now();
+    if (now - this.lastGrounding > 4000) { // always tell the player; only a real bump costs hull condition
+      this.lastGrounding = now;
+      if (bump) this.net.action('grounding');
+      this.hud.alert('ground', 'AGROUND — reverse off (S)', ''); setTimeout(() => this.hud.clearAlert('ground'), 4000);
+    }
   }
   /** Tug assist: ease the local ship onto the server's positions (10 Hz from the snapshot, 1 Hz from `you`). */
   followServer(dt) {
@@ -578,9 +782,9 @@ class App {
     let a = S[0], b = S[S.length - 1];
     for (let i = 0; i < S.length - 1; i++) if (S[i].t <= t && S[i + 1].t >= t) { a = S[i]; b = S[i + 1]; break; }
     let lat, lon, hdg;
-    if (t >= b.t) { // extrapolate briefly by dead reckoning
+    if (t >= b.t) { // extrapolate briefly by dead reckoning (a warped skipper's ship runs `warp` times faster)
       const dtE = Math.min(1.0, (t - b.t) / 1000);
-      const v = b.spd * GEO.KN_TO_MS * SIM.MOTION_SCALE * dtE;
+      const v = b.spd * GEO.KN_TO_MS * SIM.MOTION_SCALE * (o.warp > 1 ? o.warp : 1) * dtE;
       lat = b.lat + (Math.cos(b.hdg * D2R) * v) / GEO.M_PER_DEG_LAT; lon = b.lon + (Math.sin(b.hdg * D2R) * v) / (GEO.M_PER_DEG_LON_EQ * Math.cos(b.lat * D2R));
       hdg = b.hdg;
     } else {
@@ -616,13 +820,26 @@ class App {
   }
   updateCamera(dt) {
     const s = this.ship; if (!s || !this.myMesh) return;
-    if (this.you?.rescue) return this.updateRaftCamera(dt);
+    if (this.you?.rescue) { this.camPrevTarget = null; return this.updateRaftCamera(dt); }
     const target = this.myMesh.position.clone().add(new THREE.Vector3(0, 8, 0));
+    // Carry the camera along with the ship's own motion (horizontal) before easing the orbit: a plain lerp trails a
+    // warped ship by hundreds of metres (2.9 km/s at 400×); a teleport (snap / correction) is not carried.
+    const prev = this.camPrevTarget;
+    if (prev) { const mx = target.x - prev.x, mz = target.z - prev.z; if (mx * mx + mz * mz < 25e6) { this.camera.position.x += mx; this.camera.position.z += mz; } }
+    this.camPrevTarget = (prev || new THREE.Vector3()).copy(target);
     if (this.cam.free && performance.now() - this.cam.lastDrag > 6000) this.cam.free = false;
     const h = s.hdg * D2R;
     let yaw = this.cam.free ? this.cam.yaw : (this.cam.yaw += angleDiffRad(this.cam.yaw, -h) * Math.min(1, dt * 1.5));
     let dist = this.cam.dist, pitch = this.cam.pitch;
-    if (this.cam.mode === 1) { dist = this.cam.dist * 2.2; pitch = 1.1; }
+    // above 20× the chase camera climbs to a higher, wider view (eased in and out)
+    this.camLift += ((this.warp > WARP_MAX_NO_ROUTE ? 1 : 0) - this.camLift) * Math.min(1, dt * 1.2);
+    if (this.camLift < 1e-3) this.camLift = 0;
+    if (this.camLift > 0) {
+      const L = this.shipLength();
+      dist += (Math.max(dist * 2, 250 + 3 * L) - dist) * this.camLift;
+      pitch += (Math.max(pitch, 0.55) - pitch) * this.camLift;
+    }
+    if (this.cam.mode === 1) { dist = dist * 2.2; pitch = 1.1; }
     const pos = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist + 6, Math.cos(yaw) * Math.cos(pitch) * dist).add(target);
     if (this.cam.mode === 2) { // bridge view: look azimuth = heading + the mouse yaw offset (which eases back to dead ahead)
       const L = this.myMesh.userData.length; const bp = new THREE.Vector3(0, this.myMesh.userData.freeboard + 16, L * 0.35).applyMatrix4(this.myMesh.matrixWorld);
@@ -697,7 +914,8 @@ class App {
     const dt = Math.min(0.25, this.clock.getDelta()); this.time += dt;
     const now = performance.now();
     if (!this.ready || !this.ship) { this.renderer.render(this.scene, this.camera); return; }
-    this.simulate(dt);
+    const ashore = !!this.ashore?.active;
+    if (!ashore) this.simulate(dt); // ashore the ship lies moored: nothing to integrate, no helm
     this.recentre(false);
     if (now - this.lastTerrainUpdate > 500) { this.lastTerrainUpdate = now; this.terrain.update(this.ship.lat, this.ship.lon); this.updateScenery(); }
     const mp = toLocal(this.ship.lat, this.ship.lon, this.origin);
@@ -715,7 +933,10 @@ class App {
       else this.shipVisual(r.mesh, r.cur.lat, r.cur.lon, r.cur.hdg, r.cur.spd, r.vis, 0, dt, false);
     }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
-    if (this.interior.active) this.interior.update(dt); else { if (this.raft && !this.you.rescue) { this.drop(this.raft); this.raft = null; } this.updateCamera(dt); }
+    // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views
+    if (ashore) { this.camPrevTarget = null; try { this.ashore.update(dt); } catch (e) { console.warn('[ashore] update failed — back aboard', e); try { this.ashore.exit(); } catch {} this.afterAshoreChange(); } }
+    else if (this.interior.active) { this.camPrevTarget = null; this.interior.update(dt); }
+    else { if (this.raft && !this.you.rescue) { this.drop(this.raft); this.raft = null; } this.updateCamera(dt); }
     this.updateDayNight(dt);
     this.weatherFx.update?.(dt, this.camera.position, this.time);
     this.renderer.render(this.scene, this.camera);
@@ -743,13 +964,15 @@ class App {
     if (this.route.length) {
       const first = this.route[0];
       const d = haversine(s.lat, s.lon, first.lat, first.lon), total = this.routeLength();
-      eta = v > 0.5 ? total / v : null;
-      wp = { dist: fmtDistance(d), brg: bearing(s.lat, s.lon, first.lat, first.lon), eta: eta != null ? fmtTime(eta) : '—', total: fmtDistance(total), count: this.route.length };
+      eta = v > 0.5 ? total / v : null; // at sea (ship's clock); the telemetry line shows the real-time wait under warp
+      const etaTxt = eta == null ? '—' : this.warp > 1 ? `${fmtTime(eta / this.warp)} (${this.warp}×)` : fmtTime(eta);
+      wp = { dist: fmtDistance(d), brg: bearing(s.lat, s.lon, first.lat, first.lon), eta: etaTxt, etaSea: eta, total: fmtDistance(total), count: this.route.length, warp: this.warp };
     }
     this.hud.updateTelemetry(s, {
       depth: h == null ? null : -h + this.tideLevel, draft: C.draft, current: { set: normDeg((Math.atan2(cur.u, cur.v) * 180) / Math.PI), drift: Math.hypot(cur.u, cur.v) / GEO.KN_TO_MS }, flooding: you.flooding,
       nearest: nearest ? { name: nearest.name, dist: fmtDistance(nd) } : null, wp, autopilot: this.autopilot, jobs: you.jobs.length, tide: this.tide, berth: you.nearBerth,
-      status: you.rescue ? 'ADRIFT' : you.docked ? (you.berth ? `moored · ${you.berth.name}` : 'docked') : you.assist ? 'under tow' : you.fuelEmpty ? 'NO FUEL' : you.fishing ? 'fishing' : you.hail ? 'HAILED' : you.towing ? 'towing' : 'at sea',
+      status: you.rescue ? 'ADRIFT' : this.ashore?.active ? 'ashore' : you.docked ? (you.berth ? `moored · ${you.berth.name}` : 'docked') : you.assist ? 'under tow' : you.fuelEmpty ? 'NO FUEL' : you.fishing ? 'fishing' : you.hail ? 'HAILED' : you.towing ? 'towing' : this.warp > 1 ? `warp ${this.warp}×` : 'at sea',
+      warp: this.warp,
     });
     this.hud.updateTop(you, { simTime: this.simTime, wind: this.localWind ? { dir: this.localWind.dir, spd: this.localWind.spd, u: this.localWind.u, v: this.localWind.v } : this.wind, storms: this.storms }, this.others.size + 1, this.net.latency);
     if (you.fuelEmpty) this.hud.alert('fuel', 'OUT OF FUEL — drifting. Call a tow or wait for help.', ''); else this.hud.clearAlert('fuel');

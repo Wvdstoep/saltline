@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#07131f">
+<meta name="theme-color" content="#06111c">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Saltline — open-world sailing sim</title>
@@ -15,123 +15,198 @@
 <body>
 <canvas id="view"></canvas>
 
-<!-- Welcome / login -->
+<!-- ============================================================== Welcome / login (hero) -->
 <div id="welcome" class="overlay">
-  <div class="card">
-    <h1>SALTLINE</h1>
-    <p class="tag">Open-world maritime survival, trade &amp; navigation on the real globe — in real time.</p>
-    <label>Skipper name <input id="nameInput" maxlength="20" placeholder="e.g. Kapitein Carla" autocomplete="off"></label>
-    <button id="startBtn">Set sail</button>
-    <p id="connStatus" class="muted">Connecting…</p>
-    <div class="help">
-      <p><b>W/S</b> throttle · <b>A/D</b> rudder · <b>Space</b> all stop · <b>T</b> moor / harbour panel · <b>M</b> chart · <b>P</b> autopilot · <b>I</b> walk your ship ·
-      <b>Tab</b> ships nearby · <b>F</b> fish · <b>K</b> damage-control kit · <b>C</b> camera · <b>Enter</b> chat · <b>H</b> help · drag to look, wheel to zoom.</p>
-      <p>The world is the real Earth at 1:1 and the clock is the real clock: a Rotterdam–Hull crossing takes the 13 hours it really takes. Plan a route on the chart
-      (pan, pinch, tap for waypoints), let the autopilot or your crew sail it while you are away, or pay for an express passage. Come alongside a berth under 2 kn
-      and moor (T), or call the tugs. Walk the bridge, engine room and cabins with <b>I</b>. On a phone: throttle and rudder sliders, bottom bar for everything else.</p>
+  <div class="hero">
+    <div class="heroArt" aria-hidden="true">
+      <img id="heroShip" alt="">
+      <div class="heroGlow"></div>
+    </div>
+    <div class="heroPanel">
+      <h1 class="brand">SALTLINE</h1>
+      <p class="tag">Open-world maritime survival, trade &amp; navigation on the real globe — in real time.</p>
+      <form id="loginForm" class="login" autocomplete="off" onsubmit="return false">
+        <label for="nameInput">Skipper name</label>
+        <div class="loginRow">
+          <input id="nameInput" maxlength="20" placeholder="e.g. Kapitein Carla" autocomplete="off" enterkeyhint="go">
+          <button id="startBtn" type="button" class="primary big">Set sail</button>
+        </div>
+      </form>
+      <p id="connStatus" class="muted small">Connecting…</p>
+      <ul class="features" id="featureList"></ul>
+      <details class="keys">
+        <summary>Controls &amp; how it works</summary>
+        <p><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> rudder · <kbd>Space</kbd> all stop · <kbd>T</kbd> moor / harbour · <kbd>G</kbd> go ashore · <kbd>M</kbd> chart · <kbd>P</kbd> autopilot ·
+        <kbd>.</kbd>/<kbd>,</kbd> time warp · <kbd>I</kbd> walk your ship · <kbd>Tab</kbd> ships nearby · <kbd>F</kbd> fish · <kbd>K</kbd> damage-control kit · <kbd>C</kbd> camera · <kbd>Enter</kbd> chat · <kbd>H</kbd> help.</p>
+        <p>The world is the real Earth at 1:1 and the clock is the real clock. Plan a route on the chart and use <b>time warp</b> on open water to get there faster,
+        come alongside a berth under 2 kn and moor (T), then <b>go ashore</b> and walk the real harbour to the harbourmaster, shipyard, chandler, market and bar.</p>
+      </details>
     </div>
   </div>
 </div>
 
-<!-- HUD -->
+<!-- ============================================================== In-game HUD -->
 <div id="hud" class="hidden">
-  <div id="topbar">
-    <span id="hbName">—</span>
-    <span class="stat"><label>Credits</label><b id="hbMoney">0</b></span>
-    <span class="stat"><label>Fuel</label><b id="hbFuel">0</b></span>
-    <span class="stat"><label>Hull</label><b id="hbCond">100%</b></span>
-    <span class="stat"><label>Cargo</label><b id="hbCargo">0 t</b></span>
-    <span class="stat"><label>Wanted</label><b id="hbWanted">—</b></span>
-    <span class="stat"><label>UTC</label><b id="hbClock">—</b></span>
-    <span class="stat"><label>Wind</label><b id="hbWind">—</b></span>
-    <span class="stat"><label>Ping</label><b id="hbPing">—</b></span>
-    <span id="connPill" class="pill bad hidden">offline — reconnecting</span>
-    <span id="hbOnline" class="muted"></span>
-  </div>
+  <header id="topbar" class="glass">
+    <div class="tbShip" title="Your ship">
+      <span class="thumbBox tbThumb"><img id="hbThumb" alt=""></span>
+      <span class="tbShipTxt"><b id="hbName">—</b><small id="hbClass"></small></span>
+    </div>
+    <div class="tbStats">
+      <div class="stat moneyStat" title="Credits"><span class="si" data-icon="coins"></span><span class="sv"><small>Credits</small><b id="hbMoney">0</b></span></div>
+      <div class="stat gauge" title="Fuel and range at the current speed"><span class="si" data-icon="fuel"></span><span class="sv"><small>Fuel</small><b id="hbFuel">—</b><i class="gbar"><i id="hbFuelBar"></i></i></span></div>
+      <div class="stat gauge" title="Hull condition"><span class="si" data-icon="hull"></span><span class="sv"><small>Hull</small><b id="hbCond">—</b><i class="gbar"><i id="hbCondBar"></i></i></span></div>
+      <div class="stat cargoStat" title="Cargo aboard / capacity"><span class="si" data-icon="crate"></span><span class="sv"><small>Cargo</small><b id="hbCargo">—</b></span></div>
+      <div class="stat wantedStat" title="Wanted level"><span class="si" data-icon="star"></span><span class="sv"><small>Wanted</small><b id="hbWanted">clean</b></span></div>
+    </div>
+    <span class="tbBreak" aria-hidden="true"></span>
+    <div class="tbEnv">
+      <div class="stat windStat" title="Wind (from)"><span class="windArrow" id="hbWindArrow" data-icon="arrowDown"></span><span class="sv"><small>Wind</small><b id="hbWind">—</b></span></div>
+      <div class="stat tideStat" title="Tide height"><span class="si" id="hbTideIcon" data-icon="tide"></span><span class="sv"><small>Tide</small><b id="hbTide">—</b></span></div>
+      <div class="stat clockStat" title="Real UTC date and time"><span class="si" data-icon="clock"></span><span class="sv"><small id="hbDate">UTC</small><b id="hbClock">—</b></span></div>
+      <div class="stat netStat" title="Latency · skippers online"><span class="si" data-icon="signal"></span><span class="sv"><small id="hbOnline">—</small><b id="hbPing">—</b></span></div>
+      <span id="connPill" class="chip bad hidden">offline — reconnecting</span>
+    </div>
+  </header>
 
-  <div id="log"></div>
-
+  <div id="warpBanner" class="glass hidden" role="status"><span class="si" data-icon="ffwd"></span><span id="warpBannerText"></span></div>
+  <div id="log" aria-live="polite"></div>
   <div id="alerts"></div>
 
-  <!-- Weather / tide panel (toggle: Wx button) -->
-  <div id="weatherPanel" class="sidePanel hidden">
-    <div class="panelHead"><b>Weather &amp; tide</b><button class="close" id="weatherClose">×</button></div>
-    <div id="weatherBody" class="small"></div>
+  <!-- context stack (bottom centre on desktop): berth guidance, fishing, time warp -->
+  <div id="ctxStack">
+    <div id="warpCtl" class="glass hidden" role="group" aria-label="Time warp">
+      <button id="warpDown" title="Slower (,)" aria-label="Slower time warp"><span class="si" data-icon="rewind"></span></button>
+      <span class="warpLevel"><small>Warp</small><b id="warpLevel">1×</b></span>
+      <button id="warpUp" title="Faster (.)" aria-label="Faster time warp"><span class="si" data-icon="ffwd"></span></button>
+    </div>
+    <div id="berthLine" class="glass ctxCard hidden">
+      <div class="berthInfo"><span class="si" data-icon="pier"></span><span id="berthText"></span></div>
+      <span class="berthBtns"><button id="btnMoor" class="primary">Moor (T)</button><button id="btnTugs">Request tugs</button></span>
+    </div>
+    <div id="fishPanel" class="glass ctxCard hidden">
+      <div class="ctxHead"><span class="si" data-icon="net"></span><b>Nets out</b></div>
+      <div class="rows"><div><label>Ground</label><b id="fishGround">—</b></div><div><label>Rate</label><b id="fishRate">0 t/h</b></div><div><label>Caught</label><b id="fishCaught">0 t</b></div></div>
+      <div id="fishWarn" class="warnLine hidden"></div>
+    </div>
   </div>
 
-  <!-- Fishing telemetry while the nets are out -->
-  <div id="fishPanel" class="sidePanel hidden">
-    <div class="panelHead"><b>Nets out</b></div>
-    <div class="rows"><div><label>Ground</label><b id="fishGround">—</b></div><div><label>Rate</label><b id="fishRate">0 t/h</b></div><div><label>Caught</label><b id="fishCaught">0 t</b></div></div>
-    <div id="fishWarn" class="warn hidden"></div>
+  <!-- Weather / tide panel -->
+  <div id="weatherPanel" class="glass sidePanel hidden">
+    <div class="panelHead"><span class="si" data-icon="wind"></span><b>Weather &amp; tide</b><button class="iconBtn close" id="weatherClose" aria-label="Close"><span class="si" data-icon="close"></span></button></div>
+    <div id="weatherBody"></div>
   </div>
 
-  <div id="telemetry">
-    <button id="telToggle" title="Expand / collapse">▴</button>
-    <div class="row"><label>SOG</label><b><span id="tSog">0.0</span> kn</b><label>HDG</label><b><span id="tHdg">000</span>°</b></div>
-    <div class="row"><label>Depth</label><b><span id="tDepth">—</span> m</b><label>Fuel</label><b id="tFuel">—</b></div>
-    <div class="row"><label>Throttle</label><b id="tThr">0%</b><label>Rudder</label><b id="tRud">0</b></div>
-    <div class="row"><label>LAT</label><b id="tLat">—</b><label>LON</label><b id="tLon">—</b></div>
-    <div class="row"><label>Current</label><b id="tCur">—</b><label>Tide</label><b id="tTide">—</b></div>
-    <div class="row"><label>Wind</label><b id="tWind">—</b><label>Sea</label><b id="tSea">—</b></div>
-    <div class="row"><label>Range</label><b id="tRange">—</b><label>Flooding</label><b id="tFlood">0%</b></div>
-    <div class="row"><label>Nearest</label><b id="tNear">—</b><label>Position</label><b id="tStatus">at sea</b></div>
-    <div class="row"><label>Waypoint</label><b id="tWp">none</b><label>ETA</label><b id="tEta">—</b></div>
-    <div class="row"><label>Contracts</label><b id="tJobs">0</b><label></label><b></b></div>
-    <div id="bars"><div class="bar"><i id="barThr"></i></div><div class="bar rud"><i id="barRud"></i></div></div>
-    <div id="berthLine" class="hidden"><span id="berthText"></span><span class="inline"><button id="btnMoor">Moor (T)</button><button id="btnTugs">Request tugs</button></span></div>
-  </div>
+  <!-- Instrument strip -->
+  <section id="telemetry" class="glass" aria-label="Instruments">
+    <button id="telToggle" class="iconBtn" title="More / fewer instruments" aria-label="Toggle instrument details"><span class="si" data-icon="chevronUp"></span></button>
+    <div class="iRow big">
+      <div class="cell"><label>SOG</label><b><span id="tSog">0.0</span><u>kn</u></b></div>
+      <div class="cell"><label>HDG</label><b><span id="tHdg">000</span><u>°</u></b></div>
+      <div class="cell"><label>Depth</label><b><span id="tDepth">—</span><u>m</u></b></div>
+      <div class="cell"><label>Throttle</label><b id="tThr">0%</b><span class="bar"><i id="barThr"></i></span></div>
+      <div class="cell"><label>Rudder</label><b id="tRud">0</b><span class="bar rud"><i id="barRud"></i></span></div>
+    </div>
+    <div class="iRow sec">
+      <div class="cell"><label>Fuel</label><b id="tFuel">—</b></div>
+      <div class="cell"><label>Range</label><b id="tRange">—</b></div>
+      <div class="cell w2"><label>Wind</label><b id="tWind">—</b></div>
+      <div class="cell"><label>Sea</label><b id="tSea">—</b></div>
+    </div>
+    <div class="iRow detail">
+      <div class="cell w2"><label>Tide</label><b id="tTide">—</b></div>
+      <div class="cell"><label>Current</label><b id="tCur">—</b></div>
+      <div class="cell"><label>Flooding</label><b id="tFlood">0%</b></div>
+      <div class="cell"><label>Contracts</label><b id="tJobs">0</b></div>
+    </div>
+    <div class="iRow detail">
+      <div class="cell w2"><label>Lat</label><b id="tLat">—</b></div>
+      <div class="cell w2"><label>Lon</label><b id="tLon">—</b></div>
+      <div class="cell w2"><label>Position</label><b id="tStatus">at sea</b></div>
+    </div>
+    <div class="iRow detail">
+      <div class="cell w2"><label>Nearest</label><b id="tNear">—</b></div>
+      <div class="cell w2"><label>Waypoint</label><b id="tWp">none</b></div>
+      <div class="cell"><label>ETA</label><b id="tEta">—</b></div>
+    </div>
+  </section>
 
-  <div id="radarWrap">
+  <div id="radarWrap" class="glass">
     <canvas id="radar" width="260" height="260"></canvas>
-    <div id="radarCtl"><button data-r="-">−</button><span id="radarRange">10 km</span><button data-r="+">+</button><button id="radarHU" title="North-up / heading-up">N↑</button></div>
+    <div id="radarCtl">
+      <button data-r="-" aria-label="Shorter range"><span class="si" data-icon="minus"></span></button>
+      <span id="radarRange">10 km</span>
+      <button data-r="+" aria-label="Longer range"><span class="si" data-icon="plus"></span></button>
+      <button id="radarHU" title="North-up / heading-up">N↑</button>
+    </div>
   </div>
 
-  <!-- Touch helm: filled by touch.js (throttle lever, rudder slider, round buttons, interior stick) -->
+  <!-- Touch helm: filled by touch.js (throttle lever, rudder slider, round buttons, walking stick) -->
   <div id="touchHelm" aria-label="Touch helm"></div>
 
-  <div id="actions">
-    <button id="btnDock">Dock (T)</button>
-    <button id="btnCastOff" class="hidden">Cast off</button>
-    <button id="btnChart">Chart (M)</button>
-    <button id="btnShips">Ships (Tab)</button>
-    <button id="btnInterior">Walk (I)</button>
-    <button id="btnCamera">Camera (C)</button>
-    <button id="btnFish">Fish (F)</button>
-    <button id="btnPatch">Kit (K)</button>
-    <button id="btnAuto">Autopilot (P)</button>
-    <button id="btnSails" class="hidden">Sails</button>
-    <button id="btnWeather">Wx</button>
-    <button id="btnTow" class="danger">Call tow</button>
-    <button id="btnHelp">Help (H)</button>
-    <button id="btnMore" class="touchOnly">More…</button>
+  <!-- Action dock -->
+  <nav id="actions" class="glass" aria-label="Actions">
+    <button id="btnDock" class="dockBtn" title="Moor / harbour (T)"><span class="si" data-icon="anchor"></span><span class="lbl">Dock</span></button>
+    <button id="btnAshore" class="dockBtn hidden" title="Go ashore and walk the harbour (G)"><span class="si" data-icon="walk"></span><span class="lbl">Go ashore</span></button>
+    <button id="btnCastOff" class="dockBtn hidden" title="Cast off"><span class="si" data-icon="logout"></span><span class="lbl">Cast off</span></button>
+    <button id="btnChart" class="dockBtn" title="Chart (M)"><span class="si" data-icon="chart"></span><span class="lbl">Chart</span></button>
+    <button id="btnShips" class="dockBtn" title="Ships on the water (Tab)"><span class="si" data-icon="list"></span><span class="lbl">Ships</span></button>
+    <button id="btnInterior" class="dockBtn" title="Walk your ship (I)"><span class="si" data-icon="stairs"></span><span class="lbl">Walk ship</span></button>
+    <button id="btnAuto" class="dockBtn" title="Autopilot (P)"><span class="si" data-icon="route"></span><span class="lbl">Autopilot</span></button>
+    <button id="btnCamera" class="dockBtn" title="Camera (C)"><span class="si" data-icon="camera"></span><span class="lbl">Camera</span></button>
+    <button id="btnWeather" class="dockBtn" title="Weather &amp; tide"><span class="si" data-icon="wind"></span><span class="lbl">Weather</span></button>
+    <button id="btnMore" class="dockBtn" title="More actions" aria-haspopup="true"><span class="si" data-icon="more"></span><span class="lbl">More</span></button>
+  </nav>
+  <div id="moreSheet" class="glass" role="menu">
+    <button id="btnFish" class="menuBtn"><span class="si" data-icon="fish"></span><span class="lbl">Fish (F)</span></button>
+    <button id="btnPatch" class="menuBtn"><span class="si" data-icon="kit"></span><span class="lbl">Kit (K)</span></button>
+    <button id="btnSails" class="menuBtn hidden"><span class="si" data-icon="sail"></span><span class="lbl">Sails</span></button>
+    <button id="btnWalkMore" class="menuBtn touchOnly"><span class="si" data-icon="stairs"></span><span class="lbl">Walk ship</span></button>
+    <button id="btnChatMore" class="menuBtn touchOnly"><span class="si" data-icon="chat"></span><span class="lbl">Chat</span></button>
+    <button id="btnTow" class="menuBtn danger"><span class="si" data-icon="tow"></span><span class="lbl">Call tow</span></button>
+    <button id="btnHelp" class="menuBtn"><span class="si" data-icon="help"></span><span class="lbl">Help (H)</span></button>
   </div>
-  <div id="moreSheet"></div>
 
-  <div id="chatWrap"><div id="chat"></div><input id="chatInput" placeholder="Press Enter to chat…" maxlength="200"></div>
+  <div id="chatWrap"><div id="chat"></div><input id="chatInput" placeholder="Press Enter to chat…" maxlength="200" enterkeyhint="send"></div>
 
-  <!-- Interior (first-person) HUD -->
+  <!-- Interior (walking the ship) -->
   <div id="interiorHud" class="hidden">
-    <button id="btnDeck">Back on deck (I)</button>
-    <div id="interiorHint" class="muted">WASD to walk · E / tap to use · Esc releases the mouse</div>
+    <div class="hudRow" id="interiorRow"><button id="btnDeck" class="glassBtn"><span class="si" data-icon="stairs"></span><span class="lbl">Back on deck (I)</span></button></div>
+    <div id="interiorHint" class="hintLine">WASD to walk · E / tap to use · Esc releases the mouse</div>
+  </div>
+  <!-- Ashore (walking the harbour) -->
+  <div id="ashoreHud" class="hidden">
+    <div class="hudRow" id="ashoreRow">
+      <button id="btnAboard" class="glassBtn primary"><span class="si" data-icon="walk"></span><span class="lbl">Back aboard (G)</span></button>
+      <button id="btnAshoreOffice" class="glassBtn" title="Harbour offices: contracts, market, shipyard, services"><span class="si" data-icon="anchor"></span><span class="lbl">Harbour</span></button>
+    </div>
+    <div id="ashoreHint" class="hintLine"><span class="si" data-icon="pin"></span><span id="ashoreHintText">Walk to the harbourmaster, shipyard, chandler, market or bar · E / tap to go in</span></div>
   </div>
 </div>
 
-<!-- Chart: full-screen interactive Web-Mercator chart (public/js/chart.js) -->
+<!-- ============================================================== Chart (full screen) -->
 <div id="chartWrap" class="overlay hidden">
-  <div class="panel chartPanel">
-    <div class="panelHead"><b>Chart</b> <span class="muted chartHint">drag to pan · wheel / pinch to zoom · tap open water to add a waypoint · <b>R</b> ship / world · <b>M</b> close</span><button class="close" id="chartClose" data-close="chartWrap">×</button></div>
+  <div class="chartPanel">
+    <header class="sheetHead chartHead">
+      <span class="sheetIcon" data-icon="chart"></span>
+      <div class="sheetTitle"><b>Chart</b><small class="chartHint">drag to pan · wheel / pinch to zoom · tap open water to add a waypoint · <kbd>R</kbd> ship / world · <kbd>M</kbd> close</small></div>
+      <button class="iconBtn close" id="chartClose" data-close="chartWrap" aria-label="Close chart"><span class="si" data-icon="close"></span></button>
+    </header>
     <div class="chartBody">
       <canvas id="chart"></canvas>
-      <div id="chartTools">
-        <button id="chartZoomIn" title="Zoom in">+</button>
-        <button id="chartZoomOut" title="Zoom out">−</button>
-        <button id="chartCentre" title="Centre on your ship">⌖</button>
-        <button id="chartModeBtn" class="wide on" title="Route mode adds waypoints; select mode inspects">Route mode</button>
-        <button id="chartClear" class="wide" title="Clear the planned route">Clear route</button>
-        <button id="chartSail" class="wide primary" title="Hand the route to the autopilot">Sail route</button>
-        <button id="chartSeamarks" class="wide on" title="OpenSeaMap seamark overlay (zoom 7+)">Seamarks</button>
-        <button id="chartBase" class="wide on" title="Saltline base chart">Base</button>
+      <div id="chartTools" class="glass">
+        <div class="toolRow">
+          <button id="chartZoomIn" class="iconBtn" title="Zoom in" aria-label="Zoom in"><span class="si" data-icon="plus"></span></button>
+          <button id="chartZoomOut" class="iconBtn" title="Zoom out" aria-label="Zoom out"><span class="si" data-icon="minus"></span></button>
+          <button id="chartCentre" class="iconBtn" title="Centre on your ship" aria-label="Centre on your ship"><span class="si" data-icon="target"></span></button>
+        </div>
+        <span class="toolSep"></span>
+        <button id="chartModeBtn" class="toolBtn on" title="Route mode adds waypoints; select mode inspects"><span class="si" data-icon="route"></span><span class="lbl">Route mode</span></button>
+        <button id="chartClear" class="toolBtn" title="Clear the planned route"><span class="si" data-icon="trash"></span><span class="lbl">Clear route</span></button>
+        <button id="chartSail" class="toolBtn primary" title="Hand the route to the autopilot"><span class="si" data-icon="play"></span><span class="lbl">Sail route</span></button>
+        <span class="toolSep"></span>
+        <button id="chartSeamarks" class="toolBtn on" title="OpenSeaMap seamark overlay (zoom 7+)"><span class="si" data-icon="seamark"></span><span class="lbl">Seamarks</span></button>
+        <button id="chartBase" class="toolBtn on" title="Saltline base chart"><span class="si" data-icon="layers"></span><span class="lbl">Base</span></button>
       </div>
       <div id="chartPopup" class="hidden"></div>
     </div>
@@ -140,53 +215,80 @@
   </div>
 </div>
 
-<!-- Harbour -->
-<div id="harborWrap" class="overlay hidden">
-  <div class="panel wide">
-    <div class="panelHead"><b id="hName">Harbour</b> <span id="hSub" class="muted"></span><button class="close" id="btnUndock">Cast off</button><button data-close="harborWrap" title="Stay docked, close panel">×</button></div>
-    <div class="tabs">
-      <button data-tab="jobs" class="on">Contracts</button><button data-tab="boards">Job boards</button><button data-tab="services">Fuel &amp; yard</button><button data-tab="market">Market</button>
-      <button data-tab="shipyard">Ship market</button><button data-tab="shady">Look around</button><button data-tab="players">Players here</button><button data-tab="info">Harbour info</button>
-    </div>
-    <div class="tab" id="tab-jobs"></div>
-    <div class="tab hidden" id="tab-boards"></div>
-    <div class="tab hidden" id="tab-services"></div>
-    <div class="tab hidden" id="tab-market"></div>
-    <div class="tab hidden" id="tab-shipyard"></div>
-    <div class="tab hidden" id="tab-shady"></div>
-    <div class="tab hidden" id="tab-players"></div>
-    <div class="tab hidden" id="tab-info"></div>
-  </div>
-</div>
-
-<!-- Ships nearby / players / AIS traffic -->
-<div id="shipsWrap" class="overlay hidden">
-  <div class="panel">
-    <div class="panelHead"><b>Ships on the water</b><button class="close" data-close="shipsWrap">×</button></div>
-    <div id="shipsList" class="tab"></div>
-  </div>
-</div>
-
-<!-- Help -->
-<div id="helpWrap" class="overlay hidden">
-  <div class="panel">
-    <div class="panelHead"><b>How to play</b><button class="close" data-close="helpWrap">×</button></div>
-    <div class="prose">
-      <p><b>Real time, real world.</b> The map is the Earth at 1:1 and the clock is the real UTC clock. Voyages take as long as they really take; the crew keeps sailing a set voyage while you are offline, and a paid <i>express passage</i> is the only way to skip ahead. Weather comes from live observations where available, tides rise and fall twice a day, and AIS traffic sails the real shipping lanes.</p>
-      <p><b>Survive.</b> Fuel burns with throttle³, load and headwind — bunker at harbour fuel docks (the telemetry shows your range at the current speed). Hull condition decays under way; below 30 % steering goes sluggish and leaks start; at 0 % you take on water and sink. Repairs and a regular service at the yard, or a damage-control kit (K) at sea. Hitting a quay or another ship costs condition; run aground and you lose 5 % per bump. Sink and the nearest lifeboat station comes for you.</p>
-      <p><b>Berthing.</b> Harbours have real quays, breakwaters and berths. Come alongside a berth (within 60 m, under 2 kn) and press <b>T</b> to moor, or request tugs within 1.5 km (they cost money but bring you in). The telemetry shows the nearest berth with bearing, distance and depth; the radar marks it. Port dues, berth fees and pilotage are charged like in a real port.</p>
-      <p><b>Trade.</b> Take freight, passenger, charter, fishing, supply and tow contracts; every harbour's board is on the chart and in the <i>Job boards</i> tab. Buy low / sell high on markets with real stock levels (buying raises the price), or <i>look around</i> for the black-market contact whose runs pay 5× — with contraband aboard. The ship market sells new and second-hand hulls and buys yours.</p>
-      <p><b>The law.</b> Coast-guard cutters patrol chokepoints and hail ships. Heave to (under 2 kn) within 30 s or become wanted. Caught with contraband: heavy fine, impound if you cannot pay, forced reset for repeat offenders. Port authorities also inspect at the quay.</p>
-      <p><b>Multiplayer.</b> Everyone sails the same persistent ocean. Close to another ship (about 300 m) or in the same harbour you can trade cargo, form a convoy (escorts halve boarding odds), or board a slow ship and take half its cargo — which makes you wanted. Sunk ships leave salvageable wrecks.</p>
-      <p><b>Navigation.</b> Chart (M): drag, wheel or pinch to zoom, tap open water to add numbered waypoints, long-press or right-click to remove one, <i>Sail route</i> hands them to the autopilot (P). Harbours open their job board, ships show their details, the cursor reads depth and tide. Radar (bottom right, N↑/H↑ toggle), telemetry (bottom left), weather &amp; tide panel (Wx). Walk your ship with <b>I</b>: bridge, engine room, cabins; the chart table opens the chart.</p>
-      <p class="muted">Design document: <a href="/docs/GDD.md" target="_blank">GDD.md</a> · Architecture: <a href="/docs/ARCHITECTURE.md" target="_blank">ARCHITECTURE.md</a></p>
+<!-- ============================================================== Harbour (full-screen sheet) -->
+<div id="harborWrap" class="sheet hidden" role="dialog" aria-labelledby="hName">
+  <header class="sheetHead">
+    <span class="sheetIcon" data-icon="anchor"></span>
+    <div class="sheetTitle"><b id="hName">Harbour</b><small id="hSub"></small></div>
+    <span class="headMoney" id="hMoney" title="Your credits"></span>
+    <button id="btnAshoreH" class="headBtn" title="Go ashore (G)"><span class="si" data-icon="walk"></span><span class="lbl">Go ashore</span></button>
+    <button id="btnUndock" class="headBtn" title="Cast off"><span class="si" data-icon="logout"></span><span class="lbl">Cast off</span></button>
+    <button class="iconBtn close" data-close="harborWrap" title="Stay docked, close" aria-label="Close harbour"><span class="si" data-icon="close"></span></button>
+  </header>
+  <div class="sheetMain">
+    <nav class="sheetNav" id="harborNav" aria-label="Harbour sections">
+      <button data-tab="overview"><span class="si" data-icon="anchor"></span><span class="lbl">Overview</span><span class="sl">Port</span></button>
+      <button data-tab="jobs" class="on"><span class="si" data-icon="contract"></span><span class="lbl">Contracts</span><span class="sl">Jobs</span><em class="badge" id="navJobs"></em></button>
+      <button data-tab="boards"><span class="si" data-icon="board"></span><span class="lbl">Job boards</span><span class="sl">Boards</span></button>
+      <button data-tab="market"><span class="si" data-icon="market"></span><span class="lbl">Market</span><span class="sl">Market</span></button>
+      <button data-tab="shipyard"><span class="si" data-icon="shipyard"></span><span class="lbl">Shipyard</span><span class="sl">Ships</span></button>
+      <button data-tab="services"><span class="si" data-icon="wrench"></span><span class="lbl">Services</span><span class="sl">Service</span></button>
+      <button data-tab="shady"><span class="si" data-icon="mask"></span><span class="lbl">Black market</span><span class="sl">Shady</span></button>
+      <button data-tab="players"><span class="si" data-icon="users"></span><span class="lbl">Players</span><span class="sl">Players</span><em class="badge" id="navPlayers"></em></button>
+    </nav>
+    <div class="sheetBody" id="harborBody">
+      <section class="tab hidden" id="tab-overview"></section>
+      <section class="tab" id="tab-jobs"></section>
+      <section class="tab hidden" id="tab-boards"></section>
+      <section class="tab hidden" id="tab-market"></section>
+      <section class="tab hidden" id="tab-shipyard"></section>
+      <section class="tab hidden" id="tab-services"></section>
+      <section class="tab hidden" id="tab-shady"></section>
+      <section class="tab hidden" id="tab-players"></section>
     </div>
   </div>
+  <div id="compareWrap" class="hidden" role="dialog" aria-label="Compare ships"></div>
 </div>
 
-<!-- Rescue overlay: adrift in the life raft -->
+<!-- ============================================================== Ships nearby / AIS -->
+<div id="shipsWrap" class="sheet hidden" role="dialog" aria-label="Ships on the water">
+  <header class="sheetHead">
+    <span class="sheetIcon" data-icon="list"></span>
+    <div class="sheetTitle"><b>Ships on the water</b><small id="shipsSub">Skippers and AIS traffic nearby</small></div>
+    <button class="iconBtn close" data-close="shipsWrap" aria-label="Close"><span class="si" data-icon="close"></span></button>
+  </header>
+  <div class="sheetBody solo"><div id="shipsList" class="sheetInner"></div></div>
+</div>
+
+<!-- ============================================================== Help -->
+<div id="helpWrap" class="sheet hidden" role="dialog" aria-label="How to play">
+  <header class="sheetHead">
+    <span class="sheetIcon" data-icon="help"></span>
+    <div class="sheetTitle"><b>How to play</b><small>Real world, real time — and a time warp for the long legs</small></div>
+    <button class="iconBtn close" data-close="helpWrap" aria-label="Close"><span class="si" data-icon="close"></span></button>
+  </header>
+  <div class="sheetBody solo">
+    <div class="sheetInner prose">
+      <div class="cards2">
+        <article class="card"><h3><span class="si" data-icon="globe"></span>Real time, real world</h3><p>The map is the Earth at 1:1 and the clock is the real UTC clock. Weather comes from live observations where available, tides rise and fall twice a day, and AIS traffic sails the real shipping lanes. The crew keeps sailing a set voyage while you are offline.</p></article>
+        <article class="card"><h3><span class="si" data-icon="ffwd"></span>Time warp</h3><p>On open water, away from harbours and other skippers, step the warp up with <kbd>.</kbd> (down with <kbd>,</kbd>) or the ◀◀ ▶▶ control: 5×, 20×, 100× and — with a planned route — 400×. Fuel, wear and wages scale with it. The warp drops back to 1× near land, harbours, storms, other ships or the coast guard.</p></article>
+        <article class="card"><h3><span class="si" data-icon="fuel"></span>Survive</h3><p>Fuel burns with throttle³, load and headwind — bunker at harbour fuel docks (the instruments show your range). Hull condition decays under way; below 30 % steering goes sluggish and leaks start; at 0 % you sink and the nearest lifeboat station comes for you. Repairs and a regular service at the yard, or a damage-control kit (K) at sea.</p></article>
+        <article class="card"><h3><span class="si" data-icon="pier"></span>Berthing</h3><p>Come alongside a berth (within 60 m, under 2 kn) and press <kbd>T</kbd> to moor, or request tugs within 1.5 km. The berth card shows distance, bearing and depth; the radar marks the berth. Port dues, berth fees and pilotage are charged like in a real port.</p></article>
+        <article class="card"><h3><span class="si" data-icon="walk"></span>Go ashore</h3><p>Moored, press <kbd>G</kbd> to walk the real harbour: the harbourmaster has the contracts and job boards, the shipyard sells hulls, the chandler repairs and services, the market trades commodities, and the bar … knows people. <kbd>E</kbd> or tap at a door, <kbd>G</kbd> to go back aboard.</p></article>
+        <article class="card"><h3><span class="si" data-icon="coins"></span>Trade</h3><p>Freight, passenger, charter, fishing, supply and tow contracts; every harbour's board is on the chart and in <i>Job boards</i>. Markets have real stock levels (buying raises the price). The black-market contact pays five times the rate — with contraband aboard.</p></article>
+        <article class="card"><h3><span class="si" data-icon="warning"></span>The law</h3><p>Coast-guard cutters patrol chokepoints and hail ships. Heave to (under 2 kn) within 30 s or become wanted. Caught with contraband: heavy fine, impound if you cannot pay, forced reset for repeat offenders.</p></article>
+        <article class="card"><h3><span class="si" data-icon="users"></span>Multiplayer</h3><p>Everyone sails the same persistent ocean. Close to another ship or in the same harbour you can trade cargo, form a convoy (escorts halve boarding odds) or board a slow ship — which makes you wanted. Sunk ships leave salvageable wrecks.</p></article>
+        <article class="card"><h3><span class="si" data-icon="chart"></span>Navigation</h3><p>Chart (<kbd>M</kbd>): drag, wheel or pinch to zoom down to street level, tap open water to add waypoints, long-press or right-click to remove one, <i>Sail route</i> hands them to the autopilot (<kbd>P</kbd>). Radar bottom right (N↑ / H↑), instruments bottom left, weather &amp; tide panel.</p></article>
+      </div>
+      <p class="muted small">Design document: <a href="/docs/GDD.md" target="_blank" rel="noopener">GDD.md</a> · Architecture: <a href="/docs/ARCHITECTURE.md" target="_blank" rel="noopener">ARCHITECTURE.md</a></p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================== Rescue overlay -->
 <div id="rescueWrap" class="hidden">
-  <div class="rescueCard">
+  <div class="rescueCard glass">
+    <span class="rescueIcon" data-icon="lifebuoy"></span>
     <h2>MAYDAY</h2>
     <p id="rescueText">You are in the life raft.</p>
     <div class="progress"><i id="rescueBar"></i></div>
@@ -194,9 +296,8 @@
   </div>
 </div>
 
-<!-- Hail / inspection banner -->
-<div id="hail" class="hidden"></div>
-<!-- Trade / convoy prompts -->
+<!-- Hail / inspection banner, trade / convoy prompts -->
+<div id="hail" class="hidden" role="alert"></div>
 <div id="prompts"></div>
 
 <script type="module" src="js/main.js"></script>

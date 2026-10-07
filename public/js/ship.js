@@ -3,6 +3,11 @@
 // ribbon + Kelvin V + bow strips), sails that sheet to the wind, navigation lights, coast-guard cutters, SAR lifeboat
 // and helicopter, derelicts, wrecks, offshore platforms and sprite labels. Static parts are merged per material
 // (models.js PartBuilder) so a ship is ~10–20 draw calls whatever its size.
+// v0.4 (docs/V4-CONTRACTS.md §4): navigation lights per COLREGS — masthead white over 225° (two on hulls ≥ 50 m, the
+// forward one lower; none while a sailing yacht is under sail), sidelights red / green over 112.5° each, stern light
+// white over 135° — drawn as small glow sprites that only show inside their real arc as seen from the camera; every
+// hull carries 1.1 m handrails (top + knee rail on stanchions) and a few crew-sized figures as a scale reference; labels
+// are real-world sized near by and clamped to a readable pixel size far away.
 import * as THREE from 'three';
 import { SHIP_CLASSES } from '/shared/constants.js';
 import { PartBuilder, noiseTexture } from './models.js';
@@ -67,7 +72,11 @@ const P = {
   hatch: std(0x5c6168, { roughness: 0.8 }), rust: std(0x4a2f1f, { roughness: 0.95, metalness: 0.1 }), grey: std(0x9ea3a8, { roughness: 0.7 }), lime: std(0xd4e157),
   sail: std(0xf3efe4, { roughness: 0.9, metalness: 0, side: THREE.DoubleSide }), sailCover: std(0x24466b, { roughness: 0.9, metalness: 0 }), tramp: std(0x222a33, { roughness: 1, metalness: 0, side: THREE.DoubleSide }),
   black: std(0x101214, { roughness: 0.6 }), heliBody: std(0xd62828), flame: null,
+  rail: std(0xdfe3e3, { roughness: 0.45, metalness: 0.45 }), hivis: std(0xff7a1a, { roughness: 0.8, metalness: 0 }), overall: std(0x23324a, { roughness: 0.9, metalness: 0 }),
+  skin: std(0xc99a74, { roughness: 0.9, metalness: 0 }), housing: std(0x1a1d21, { roughness: 0.5, metalness: 0.4 }),
 };
+/** handrail height (m) on every deck edge: SOLAS ≥ 1 m — and the size of a person next to it is the scale reference */
+export const RAIL_H = 1.1;
 P.flame = new THREE.MeshBasicMaterial({ color: 0xff9a2a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }); P.flame.userData.shared = true;
 const CONTAINER_COLORS = [0xc0392b, 0x2980b9, 0x27ae60, 0xf39c12, 0x8e44ad, 0x7f8c8d, 0xd35400, 0x16a085];
 const CONT = CONTAINER_COLORS.map((c) => std(c, { roughness: 0.7 }));
@@ -297,14 +306,24 @@ function makeCtx(g, C, cls, seed) {
     win: (w, h, x, y, z, ry = 0) => pb.box(w, h, 0.14, windowMat, x, y, z, 0, ry, 0),
     nav: (which, x, y, z) => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), navMats[which]); m.position.set(x, y, z); g.add(m); return m; },
   };
-  /** railing along a polyline [[x,z],…] at height y (posts every ~2.6 m + top rail) */
-  ctx.rail = (pts, y, h = 1.05) => {
+  /** handrail along a polyline [[x,z],…] standing on y: top rail at RAIL_H, knee rail at half height, stanchions ≤ 1.9 m apart */
+  ctx.rail = (pts, y, h = RAIL_H) => {
     for (let i = 0; i < pts.length - 1; i++) {
       const [x0, z0] = pts[i], [x1, z1] = pts[i + 1], len = Math.hypot(x1 - x0, z1 - z0);
-      pb.rod(x0, y + h, z0, x1, y + h, z1, 0.05, P.steel, 4);
-      const n = Math.max(1, Math.round(len / 2.6));
-      for (let k = 0; k <= n; k++) { const t = k / n; pb.rod(x0 + (x1 - x0) * t, y, z0 + (z1 - z0) * t, x0 + (x1 - x0) * t, y + h, z0 + (z1 - z0) * t, 0.04, P.steel, 4); }
+      if (len < 0.05) continue;
+      pb.rod(x0, y + h, z0, x1, y + h, z1, 0.03, P.rail, 4);
+      pb.rod(x0, y + h * 0.5, z0, x1, y + h * 0.5, z1, 0.022, P.rail, 4);
+      const n = Math.max(1, Math.ceil(len / 1.9));
+      for (let k = i === 0 ? 0 : 1; k <= n; k++) { const t = k / n; pb.rod(x0 + (x1 - x0) * t, y, z0 + (z1 - z0) * t, x0 + (x1 - x0) * t, y + h, z0 + (z1 - z0) * t, 0.025, P.rail, 4); }
     }
+  };
+  /** a crew member (~1.8 m, hi-vis vest) standing on y — the human scale reference */
+  ctx.crewSpots = [];
+  ctx.crew = (x, y, z, ry = 0) => {
+    const c = Math.cos(ry), s2 = Math.sin(ry);
+    for (const side of [-1, 1]) pb.geo(new THREE.CapsuleGeometry(0.1, 0.72, 2, 6), P.overall, x + side * 0.11 * c, y + 0.46, z - side * 0.11 * s2);
+    pb.geo(new THREE.CapsuleGeometry(0.2, 0.42, 2, 8), P.hivis, x, y + 1.22, z);
+    pb.sphere(0.12, P.skin, x, y + 1.72, z, 8);
   };
   /** rail around the hull outline at deck level (sampled from the hull shape; bow + sides + stern) */
   ctx.hullRail = (shape, y, inset = 0.35) => {
@@ -336,13 +355,13 @@ function makeCtx(g, C, cls, seed) {
     }
     return bays;
   };
-  ctx.anchorGear = (y, z) => { pb.box(2.2, 1.2, 1.6, P.dark, 0, y + 0.6, z); pb.cyl(0.5, 2.6, P.dark, 0, y + 0.6, z, 0.5, 10, 0, 0, Math.PI / 2); pb.box(0.8, 0.8, 0.8, P.dark, -B * 0.32, y + 0.4, z - 1); pb.box(0.8, 0.8, 0.8, P.dark, B * 0.32, y + 0.4, z - 1); };
+  ctx.anchorGear = (y, z) => { ctx.crewSpots.push([B * 0.22, y, z + 2.4]); pb.box(2.2, 1.2, 1.6, P.dark, 0, y + 0.6, z); pb.cyl(0.5, 2.6, P.dark, 0, y + 0.6, z, 0.5, 10, 0, 0, Math.PI / 2); pb.box(0.8, 0.8, 0.8, P.dark, -B * 0.32, y + 0.4, z - 1); pb.box(0.8, 0.8, 0.8, P.dark, B * 0.32, y + 0.4, z - 1); };
   ctx.bollards = (y, zs) => { for (const z of zs) { pb.cyl(0.28, 0.9, P.dark, -B * 0.42, y + 0.45, z, 0.32, 8); pb.cyl(0.28, 0.9, P.dark, B * 0.42, y + 0.45, z, 0.32, 8); } };
   return ctx;
 }
 
 /** Standard merchant hull: full-outline upper hull + narrower lower hull (bilge step), bulbous bow on big ships. */
-function merchantHull(ctx, bowFrac = 0.3, sternW = 0.86) {
+function merchantHull(ctx, bowFrac = 0.3, sternW = 0.86, { rail = true } = {}) {
   const { g, L, B, draft, freeboard, hullMat, deckMat, pb } = ctx;
   const stepY = -draft * 0.4;
   const hull = extrudeHull(hullShape(L, B, bowFrac, sternW), freeboard - stepY, [deckMat, hullMat], stepY);
@@ -351,10 +370,11 @@ function merchantHull(ctx, bowFrac = 0.3, sternW = 0.86) {
   lower.rotateX(-Math.PI / 2); lower.translate(0, -draft, 0);
   pb.geo(lower, hullMat);
   if (L >= 80) pb.geo(new THREE.CapsuleGeometry(B * 0.09, L * 0.03, 3, 8), hullMat, 0, -draft * 0.7, -L / 2 + L * 0.005, Math.PI / 2, 0, 0);
-  // bulwark lip around the deck
-  const lip = new THREE.ExtrudeGeometry(hullShape(L * 1.005, B * 1.03, bowFrac, sternW), { depth: 1.1, bevelEnabled: false, curveSegments: 10 });
+  // sheer strake / toe board around the deck edge, then the 1.1 m handrail on stanchions
+  const lip = new THREE.ExtrudeGeometry(hullShape(L * 1.005, B * 1.03, bowFrac, sternW), { depth: 0.3, bevelEnabled: false, curveSegments: 10 });
   lip.rotateX(-Math.PI / 2); lip.translate(0, freeboard, 0);
   pb.geo(lip, hullMat);
+  if (rail) ctx.hullRail(hullShape(L, B, bowFrac, sternW), ctx.deckY);
   // rudder + propeller hint
   pb.box(0.4, draft * 0.8, draft * 0.6, hullMat, 0, -draft * 0.55, L / 2 - draft * 0.2);
   pb.geo(new THREE.TorusGeometry(Math.min(B * 0.12, draft * 0.3), 0.18, 5, 10), P.steel, 0, -draft * 0.65, L / 2 - draft * 0.55, 0, 0, 0);
@@ -392,7 +412,8 @@ function superstructureBlock(ctx, x, z, w, d, decks, deckH = 2.9, withBridge = t
     win(w * 1.25 * 0.96, 1.2, x, by + 1.75, z - d * 0.1 - d * 0.36 - 0.02);
     win(d * 0.72 * 0.9, 1.0, x - w * 0.625 - 0.02, by + 1.75, z - d * 0.1, Math.PI / 2); win(d * 0.72 * 0.9, 1.0, x + w * 0.625 + 0.02, by + 1.75, z - d * 0.1, Math.PI / 2);
     pb.box(w * 1.25, 0.25, d * 0.75, mat, x, by + 3.0, z - d * 0.1);
-    ctx.rail([[x - w * 0.625, z - d * 0.46], [x - w * 0.625, z + d * 0.26]], by + 3.1, 1.0); ctx.rail([[x + w * 0.625, z - d * 0.46], [x + w * 0.625, z + d * 0.26]], by + 3.1, 1.0);
+    ctx.rail([[x - w * 0.625, z - d * 0.46], [x - w * 0.625, z + d * 0.26]], by + 3.1); ctx.rail([[x + w * 0.625, z - d * 0.46], [x + w * 0.625, z + d * 0.26]], by + 3.1);
+    ctx.crewSpots.push([x + w * 0.56, by + 3.1, z - d * 0.3]); // officer on the bridge wing
     // radar scanner + mast on top
     pb.box(2.2, 0.25, 0.4, P.white, x, by + 4.2, z - d * 0.1); pb.cyl(0.12, 1.0, P.steel, x, by + 3.6, z - d * 0.1, 0.12, 6);
     return by + 3.0;
@@ -418,7 +439,6 @@ const BUILDERS = {
     mast(0, deckY, -L / 2 + 5, 8, 0.18);
     ctx.anchorGear(deckY, -L / 2 + 3);
     ctx.bollards(deckY, [-L / 2 + 7, 0, L / 2 - 6]);
-    ctx.hullRail(hullShape(L, B, 0.3), deckY + 1.1);
     cyl(0.1, 1, P.steel, 0, deckY + 0.5, L / 2 - 1.5, 0.1, 6);
     ctx.lights = { x: sw * 0.62 + 0.3, y: top + 1.5, z: sz, mastY: top + 10, mastZ: sz - sd * 0.3, fore: { y: deckY + 8, z: -L / 2 + 5 }, stern: { y: deckY + 2, z: L / 2 - 1 } };
     return top + 9;
@@ -464,7 +484,6 @@ const BUILDERS = {
     mast(0, deckY + 2.4, -L / 2 + 6, 12, 0.22);
     ctx.anchorGear(deckY + 2.4, -L / 2 + 4);
     ctx.bollards(deckY, [-L / 2 + 12, -L / 4, L / 4, L / 2 - 8]);
-    ctx.hullRail(hullShape(L, B, 0.26, 0.9), deckY + 1.1);
     ctx.lights = { x: sw * 0.62 + 0.3, y: top + 1.5, z: sz, mastY: top + 12, mastZ: sz - sd * 0.3, fore: { y: deckY + 14, z: -L / 2 + 6 }, stern: { y: deckY + 2, z: L / 2 - 1 } };
     return top + 11;
   },
@@ -482,7 +501,7 @@ const BUILDERS = {
     const z0 = -L / 2 + L * 0.09, z1 = sz - sd / 2 - 1;
     box(2.4, 0.2, z1 - z0, P.grey, 0, deckY + 3.2, (z0 + z1) / 2);
     for (let z = z0 + 4; z < z1; z += 10) { rod(-1.1, deckY, z, -1.1, deckY + 3.2, z, 0.12, P.steel); rod(1.1, deckY, z, 1.1, deckY + 3.2, z, 0.12, P.steel); }
-    ctx.rail([[-1.2, z0], [-1.2, z1]], deckY + 3.3, 1.0); ctx.rail([[1.2, z0], [1.2, z1]], deckY + 3.3, 1.0);
+    ctx.rail([[-1.2, z0], [-1.2, z1]], deckY + 3.3); ctx.rail([[1.2, z0], [1.2, z1]], deckY + 3.3);
     for (const px of [-B * 0.22, -B * 0.14, B * 0.14, B * 0.22]) rod(px, deckY + 0.9, z0, px, deckY + 0.9, z1, 0.32, P.grey);
     for (let z = z0 + 8; z < z1; z += 18) for (const px of [-B * 0.3, B * 0.3]) { cyl(0.5, 1.6, P.grey, px, deckY + 0.8, z, 0.5, 10); } // valve stands
     const mz = (z0 + z1) / 2;
@@ -491,7 +510,6 @@ const BUILDERS = {
     mast(0, deckY + 2.2, -L / 2 + 6, 12, 0.22);
     ctx.anchorGear(deckY + 2.2, -L / 2 + 4);
     ctx.bollards(deckY, [-L / 2 + 12, -L / 4, L / 4, L / 2 - 8]);
-    ctx.hullRail(hullShape(L, B, 0.24, 0.92), deckY + 1.1);
     ctx.lights = { x: sw * 0.62 + 0.3, y: top + 1.5, z: sz, mastY: top + 12, mastZ: sz - sd * 0.3, fore: { y: deckY + 14, z: -L / 2 + 6 }, stern: { y: deckY + 2, z: L / 2 - 1 } };
     return top + 11;
   },
@@ -542,7 +560,6 @@ const BUILDERS = {
     cyl(1.3, B * 0.5, P.dark, 0, deckY + 1.5, gz - 8, 1.3, 12, 0, 0, Math.PI / 2); // net drum
     box(B * 0.5, 2.4, 5, P.net, 0, deckY + 1.5, gz - 8);
     box(B * 0.35, 0.3, 6, P.hatch, 0, deckY + 0.15, L / 2 - 3);
-    ctx.hullRail(hullShape(L, B, 0.4, 0.8), deckY + 1.1);
     box(B * 0.5, 1.2, L * 0.12, P.hatch, 0, deckY + 0.6, 0);
     ctx.anchorGear(deckY, -L / 2 + 2.5);
     ctx.lights = { x: sw * 0.4 + 0.3, y: deckY + 5, z: sz - 1, mastY: deckY + 14.5, mastZ: sz, fore: null, stern: { y: deckY + 1.5, z: L / 2 - 1 } };
@@ -566,8 +583,8 @@ const BUILDERS = {
     cyl(0.5, 1.6, P.dark, 0, deckY + 0.8, L / 2 - L * 0.16, 0.5, 10);
     box(B * 0.8, 1.8, 1.6, P.rubber, 0, ctx.freeboard - 0.2, -L / 2 + 0.2);
     for (let i = 0; i < 6; i++) for (const side of [-1, 1]) pb.geo(new THREE.TorusGeometry(0.75, 0.28, 6, 12), P.rubber, side * (B / 2 + 0.15), ctx.freeboard - 1.0, -L / 2 + L * 0.18 + i * L * 0.12, 0, Math.PI / 2, 0);
-    ctx.hullRail(hullShape(L, B, 0.42, 0.85), deckY + 1.1);
     rod(0, deckY + 1, L / 2 - L * 0.3, 0, deckY + 1, L / 2 - 0.5, 0.08, P.wood); // towline hint
+    ctx.crewSpots.push([B * 0.28, deckY, L / 2 - L * 0.2]);
     ctx.lights = { x: sw * 0.31 + 0.3, y: deckY + 7.8, z: sz, mastY: deckY + 13.5, mastZ: sz - 0.5, fore: null, stern: { y: deckY + 1.8, z: L / 2 - 1 } };
     return deckY + 15;
   },
@@ -591,7 +608,8 @@ const BUILDERS = {
     for (let i = 0; i < 5; i++) { const z = z0 + 6 + i * ((z1 - z0 - 12) / 4); if (ctx.rnd() < 0.5) box(2.44, 2.59, 6.1, CONT[Math.floor(ctx.rnd() * CONT.length)], (i % 2 ? 1 : -1) * B * 0.18, deckY + 1.3, z); else cyl(1.2, 5, P.white, (i % 2 ? 1 : -1) * B * 0.18, deckY + 1.2, z, 1.2, 12, 0, 0, Math.PI / 2); }
     ctx.crane(sw * 0.36, deckY + 3, sz + sd / 2 - 1.5, 5, 12, Math.PI, P.grey);
     ctx.anchorGear(deckY, -L / 2 + 3);
-    ctx.lights = { x: sw * 0.43 + 0.3, y: deckY + 11.5, z: sz, mastY: deckY + 21, mastZ: sz - 2, fore: null, stern: { y: deckY + 2, z: L / 2 - 1 } };
+    mast(0, deckY, -L / 2 + 3, 9, 0.12, false); // jackstaff: forward masthead light (≥ 50 m hulls carry two)
+    ctx.lights = { x: sw * 0.43 + 0.3, y: deckY + 11.5, z: sz, mastY: deckY + 21, mastZ: sz - 2, fore: { y: deckY + 9.2, z: -L / 2 + 3 }, stern: { y: deckY + 2, z: L / 2 - 1 } };
     return deckY + 23;
   },
   pilot(ctx) {
@@ -604,14 +622,14 @@ const BUILDERS = {
     mast(0, deckY + 2.4, sz - 0.5, 3.5, 0.1); rod(-0.9, deckY + 2.4, sz + 1, 0.9, deckY + 2.4, sz + 1, 0.06, P.steel);
     box(0.8, 0.25, 0.3, P.white, 0, deckY + 4.6, sz - 0.5); // radar
     box(B * 0.55, 0.9, 0.8, P.rubber, 0, ctx.freeboard - 0.3, -L / 2 + 0.3);
-    ctx.hullRail(hullShape(L, B, 0.42, 0.8), deckY + 0.3, 0.9);
     box(sw * 0.9, 0.6, L * 0.2, ctx.deckMat, 0, deckY + 0.3, L / 2 - L * 0.2);
+    ctx.crewSpots.push([-B * 0.3, deckY, -L / 2 + L * 0.3]);
     ctx.lights = { x: sw / 2 + 0.3, y: deckY + 2.6, z: sz, mastY: deckY + 6, mastZ: sz - 0.5, fore: null, stern: { y: deckY + 1, z: L / 2 - 0.8 } };
     return deckY + 8;
   },
   ferry(ctx) {
     const { L, B, deckY, box, mast, funnel, win, lifeboatPod } = ctx;
-    merchantHull(ctx, 0.26, 0.98);
+    merchantHull(ctx, 0.26, 0.98, { rail: false });
     const sw = B * 0.92, sd = L * 0.8, sz = L * 0.02;
     // car deck (hull extension) + three passenger decks with continuous window bands, a bow visor and a top bridge
     box(sw, 4.2, sd * 1.05, ctx.hullMat, 0, deckY + 2.1, sz);
@@ -619,7 +637,8 @@ const BUILDERS = {
       const w = sw * (1 - d * 0.04), dd = sd * (1 - d * 0.1), y = deckY + 4.2 + d * 3.3;
       box(w, 3.3, dd, ctx.superMat, 0, y + 1.65, sz + d * 3);
       win(dd * 0.9, 1.1, -w / 2 - 0.02, y + 2.0, sz + d * 3, Math.PI / 2); win(dd * 0.9, 1.1, w / 2 + 0.02, y + 2.0, sz + d * 3, Math.PI / 2);
-      ctx.rail([[-w / 2, sz + d * 3 - dd / 2], [-w / 2, sz + d * 3 + dd / 2]], y + 3.3, 1.0); ctx.rail([[w / 2, sz + d * 3 - dd / 2], [w / 2, sz + d * 3 + dd / 2]], y + 3.3, 1.0);
+      ctx.rail([[-w / 2, sz + d * 3 - dd / 2], [-w / 2, sz + d * 3 + dd / 2]], y + 3.3); ctx.rail([[w / 2, sz + d * 3 - dd / 2], [w / 2, sz + d * 3 + dd / 2]], y + 3.3);
+      if (d === 2) ctx.crewSpots.push([w / 2 - 0.8, y + 3.3, sz + d * 3 + dd * 0.3]); // passenger on the top deck
     }
     const bz = -L / 2 + L * 0.22, by = deckY + 4.2 + 9.9;
     box(sw * 0.88, 3.0, L * 0.12, ctx.superMat, 0, by + 1.5, bz);
@@ -633,7 +652,8 @@ const BUILDERS = {
     box(sw * 0.9, 4.0, 1.0, ctx.hullMat, 0, deckY + 2.0, -L / 2 + L * 0.06, -0.45, 0, 0);
     // stern ramp
     box(sw * 0.5, 0.4, 6, P.hatch, 0, deckY + 0.3, L / 2 - 1, 0.25, 0, 0);
-    ctx.lights = { x: sw * 0.44 + 0.3, y: by + 2, z: bz, mastY: by + 13, mastZ: bz, fore: null, stern: { y: deckY + 6, z: L / 2 - 1 } };
+    mast(0, deckY + 4.2, -L / 2 + L * 0.09, 4.5, 0.12, false); // jackstaff on the car-deck roof: forward masthead light
+    ctx.lights = { x: sw * 0.44 + 0.3, y: by + 2, z: bz, mastY: by + 13, mastZ: bz, fore: { y: deckY + 8.9, z: -L / 2 + L * 0.09 }, stern: { y: deckY + 6, z: L / 2 - 1 } };
     return by + 14;
   },
   cruiser(ctx) {
@@ -647,6 +667,7 @@ const BUILDERS = {
     win(B * 0.5, 0.25, 0, deckY + 0.5, -L * 0.28 - L * 0.11 - 0.02);
     box(B * 0.72, 0.9, L * 0.14, ctx.superMat, 0, deckY + 0.45, L * 0.05); // helm console/seat
     box(B * 0.5, 0.35, L * 0.2, P.teak, 0, deckY + 0.3, L * 0.3); // sun pad
+    ctx.crewSpots.push([-B * 0.2, deckY, L * 0.17]);
     box(0.9, 0.9, 0.9, P.white, -B * 0.25, deckY + 0.45, L * 0.1); box(0.9, 0.9, 0.9, P.white, B * 0.25, deckY + 0.45, L * 0.1);
     rod(-B * 0.35, deckY + 0.2, L * 0.12, -B * 0.25, deckY + 2.2, L * 0.16, 0.06, P.steel); rod(B * 0.35, deckY + 0.2, L * 0.12, B * 0.25, deckY + 2.2, L * 0.16, 0.06, P.steel); rod(-B * 0.25, deckY + 2.2, L * 0.16, B * 0.25, deckY + 2.2, L * 0.16, 0.08, P.steel);
     box(0.7, 0.18, 0.3, P.white, 0, deckY + 2.35, L * 0.16);
@@ -667,7 +688,8 @@ const BUILDERS = {
     box(sw * 0.88, 1.6, 0.12, P.glass, 0, deckY + 3.6, -L * 0.03 - L * 0.15 - 0.3, -0.5, 0, 0);
     win(L * 0.26, 0.9, -sw * 0.45 - 0.02, deckY + 3.9, -L * 0.03, Math.PI / 2); win(L * 0.26, 0.9, sw * 0.45 + 0.02, deckY + 3.9, -L * 0.03, Math.PI / 2);
     box(sw * 0.94, 0.25, L * 0.42, ctx.superMat, 0, deckY + 4.7, L * 0.05);
-    ctx.rail([[-sw * 0.46, -L * 0.15], [-sw * 0.46, L * 0.26], [sw * 0.46, L * 0.26], [sw * 0.46, -L * 0.15]], deckY + 4.8, 0.95);
+    ctx.rail([[-sw * 0.46, -L * 0.15], [-sw * 0.46, L * 0.26], [sw * 0.46, L * 0.26], [sw * 0.46, -L * 0.15]], deckY + 4.8);
+    ctx.crewSpots.push([sw * 0.12, deckY + 4.75, L * 0.1]); // skipper on the flybridge
     rod(-sw * 0.4, deckY + 4.8, L * 0.2, -sw * 0.3, deckY + 7.2, L * 0.23, 0.1, P.white); rod(sw * 0.4, deckY + 4.8, L * 0.2, sw * 0.3, deckY + 7.2, L * 0.23, 0.1, P.white); rod(-sw * 0.3, deckY + 7.2, L * 0.23, sw * 0.3, deckY + 7.2, L * 0.23, 0.14, P.white);
     box(1.4, 0.2, 0.4, P.white, 0, deckY + 7.4, L * 0.23); box(0.5, 0.5, 0.5, P.white, -sw * 0.15, deckY + 7.45, L * 0.23);
     box(sw * 0.5, 0.6, L * 0.08, P.white, 0, deckY + 5.1, L * 0.02); // flybridge console
@@ -689,7 +711,7 @@ const BUILDERS = {
       win(d * 0.9, 0.9, -w / 2 - 0.02, y + h * 0.6, z, Math.PI / 2); win(d * 0.9, 0.9, w / 2 + 0.02, y + h * 0.6, z, Math.PI / 2);
       if (i === 2) win(w * 0.9, 1.3, 0, y + h * 0.6, z - d / 2 - 0.02);
       box(w * 1.04, 0.25, d * 1.04, ctx.superMat, 0, y + h, z);
-      if (i < 3) { const nz = tiers[i + 1][2] + tiers[i + 1][1] / 2; ctx.rail([[-w / 2, nz], [-w / 2, z + d / 2], [w / 2, z + d / 2], [w / 2, nz]], y + h + 0.1, 1.0); }
+      if (i < 3) { const nz = tiers[i + 1][2] + tiers[i + 1][1] / 2; ctx.rail([[-w / 2, nz], [-w / 2, z + d / 2], [w / 2, z + d / 2], [w / 2, nz]], y + h + 0.1); }
       y += h;
     }
     const hz = L * 0.36;
@@ -705,7 +727,9 @@ const BUILDERS = {
     win(L * 0.5, 0.7, -B / 2 - 0.02, ctx.freeboard * 0.5, 0, Math.PI / 2); win(L * 0.5, 0.7, B / 2 + 0.02, ctx.freeboard * 0.5, 0, Math.PI / 2);
     box(B * 0.6, 0.3, 3, P.teak, 0, 0.5, L / 2 + 1.3);
     ctx.hullRail(yachtShape(L, B), deckY + 0.15, 0.6);
-    ctx.lights = { x: tiers[2][0] / 2, y: deckY + 9, z: tiers[2][2], mastY: y + 5.5, mastZ: mz + 0.5, fore: null, stern: { y: deckY + 1, z: L / 2 - 0.5 } };
+    ctx.crewSpots.push([B * 0.3, deckY + 0.05, L * 0.27], [-B * 0.18, deckY + 0.05, L * 0.42]);
+    pb.cyl(0.06, 3.2, P.steel, 0, deckY + 1.6, -L / 2 + L * 0.08, 0.05, 6); // bow jackstaff: forward masthead light
+    ctx.lights = { x: tiers[2][0] / 2, y: deckY + 9, z: tiers[2][2], mastY: y + 5.5, mastZ: mz + 0.5, fore: { y: deckY + 3.3, z: -L / 2 + L * 0.08 }, stern: { y: deckY + 1, z: L / 2 - 0.5 } };
     return y + 8;
   },
   sloop(ctx) { yachtHull(ctx); sailboatDeck(ctx, 0.15); return rig(ctx, [{ z: -ctx.L * 0.12, h: ctx.L * 1.3, boom: ctx.L * 0.38, jib: true }]); },
@@ -735,7 +759,8 @@ const BUILDERS = {
     box(B * 0.66, 0.2, L * 0.38, ctx.superMat, 0, freeboard + 2.1, L * 0.02);
     box(B * 0.5, 0.9, L * 0.12, ctx.superMat, 0, freeboard + 0.6, L * 0.3); // cockpit seats
     const tramp = new THREE.Mesh(new THREE.PlaneGeometry(B * 0.66, L * 0.26), P.tramp); tramp.rotation.x = -Math.PI / 2; tramp.position.set(0, freeboard - 0.05, -L * 0.33); g.add(tramp);
-    ctx.rail([[-B * 0.4, -L * 0.45], [-B * 0.4, L * 0.4]], freeboard + 0.1, 0.8); ctx.rail([[B * 0.4, -L * 0.45], [B * 0.4, L * 0.4]], freeboard + 0.1, 0.8);
+    ctx.rail([[-B * 0.4, -L * 0.45], [-B * 0.4, L * 0.4]], freeboard + 0.1); ctx.rail([[B * 0.4, -L * 0.45], [B * 0.4, L * 0.4]], freeboard + 0.1);
+    ctx.crewSpots.push([B * 0.15, freeboard + 0.4, L * 0.3]);
     ctx.deckY = freeboard + 0.3; ctx.bowFrac = 0.42;
     return rig(ctx, [{ z: -L * 0.05, h: L * 1.25, boom: L * 0.36, jib: true, foot: freeboard + 2.2 }]);
   },
@@ -750,8 +775,8 @@ const BUILDERS = {
     win(sw * 0.7, 0.6, 0, deckY + 1.9, sz - sd / 2 - 0.02);
     mast(0, deckY + 5.4, sz, 5, 0.18); box(2.6, 0.3, 0.3, P.white, 0, deckY + 9.8, sz);
     pb.geo(new THREE.CapsuleGeometry(0.9, 4.5, 3, 8), P.rubber, 0, deckY + 0.9, L / 2 - L * 0.2, Math.PI / 2, 0, 0); // RIB aft
+    ctx.crewSpots.push([B * 0.3, deckY, -L / 2 + L * 0.25]);
     box(B * 0.3, 0.6, 2.2, P.dark, 0, deckY + 0.3, -L / 2 + L * 0.16); // bow gun mount / winch
-    ctx.hullRail(hullShape(L, B, 0.45, 0.85), deckY + 0.3, 0.9);
     const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), new THREE.MeshStandardMaterial({ color: 0x3366ff, emissive: 0x3366ff, emissiveIntensity: 2 }));
     beacon.position.set(0, deckY + 6.2, sz - 1); ctx.g.add(beacon); ctx.g.userData.beacon = beacon;
     ctx.lights = { x: sw * 0.43 + 0.3, y: deckY + 5.2, z: sz - 1, mastY: deckY + 10.4, mastZ: sz, fore: null, stern: { y: deckY + 1.5, z: L / 2 - 0.8 } };
@@ -768,8 +793,8 @@ const BUILDERS = {
     win(sd * 0.45, 0.7, -sw * 0.4 - 0.02, deckY + 3.1, sz - 0.5, Math.PI / 2); win(sd * 0.45, 0.7, sw * 0.4 + 0.02, deckY + 3.1, sz - 0.5, Math.PI / 2);
     mast(0, deckY + 3.8, sz, 3.5, 0.12); box(1.2, 0.2, 0.3, P.white, 0, deckY + 7.4, sz);
     pb.geo(new THREE.TorusGeometry(0.9, 0.12, 5, 12), P.rubber, 0, ctx.freeboard + 0.6, -L / 2 + 0.3, 0, 0, 0);
-    ctx.hullRail(hullShape(L, B, 0.42, 0.75), deckY + 0.2, 0.9);
     box(B * 0.5, 0.3, L * 0.25, P.rubber, 0, deckY + 0.15, L / 2 - L * 0.15);
+    ctx.crewSpots.push([B * 0.28, deckY, L / 2 - L * 0.12]);
     const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 8), new THREE.MeshStandardMaterial({ color: 0x3399ff, emissive: 0x3399ff, emissiveIntensity: 2 }));
     beacon.position.set(0, deckY + 4.9, sz - 0.5); ctx.g.add(beacon); ctx.g.userData.beacon = beacon;
     ctx.lights = { x: sw * 0.4 + 0.3, y: deckY + 3.6, z: sz - 0.5, mastY: deckY + 7.6, mastZ: sz, fore: null, stern: { y: deckY + 1, z: L / 2 - 0.6 } };
@@ -839,6 +864,7 @@ function sailboatDeck(ctx, trunkFrac) {
   pb.geo(new THREE.TorusGeometry(B * 0.16, 0.035, 5, 16), P.steel, 0, deckY + 0.9, L * 0.34, 0, 0, 0); // wheel
   pb.rod(0, deckY, L * 0.34, 0, deckY + 0.9, L * 0.34, 0.05, P.steel);
   ctx.hullRail(yachtShape(L, B), deckY + 0.1, 0.45);
+  ctx.crewSpots.push([0, deckY + 0.05, L * 0.34 + 0.65]); // at the wheel
   void trunkFrac;
 }
 
@@ -904,15 +930,18 @@ export function buildShip(cls, name, seed = 1) {
   let labelY;
   try { labelY = BUILDERS[key](ctx); } catch (e) { console.warn('[ship] builder failed for', cls, e); labelY = ctx.deckY + 20; }
   const { L, B, draft, freeboard } = ctx;
+  // crew-sized scale reference (one per spot, at most three; none on derelicts / the helicopter)
+  if (!ctx.lightsOff && key !== 'helicopter') for (const [x, y, z] of ctx.crewSpots.slice(0, 3)) { try { ctx.crew(x, y, z); } catch { /* decoration only */ } }
   // merged static parts
   ctx.pb.build(g);
-  // navigation lights (port red, starboard green, masthead + stern white)
+  // navigation lights per COLREGS (arc-limited glow sprites + lamp housings)
+  const lightState = { level: 0, underSail: false };
   const navs = [];
   if (ctx.lights && !ctx.lightsOff) {
     const l = ctx.lights;
-    navs.push(ctx.nav('red', -l.x, l.y, l.z), ctx.nav('green', l.x, l.y, l.z), ctx.nav('white', 0, l.mastY, l.mastZ));
-    if (l.fore) navs.push(ctx.nav('white', 0, l.fore.y, l.fore.z));
-    if (l.stern) navs.push(ctx.nav('white', 0, l.stern.y, l.stern.z));
+    navs.push(navLight(g, 'port', -l.x, l.y, l.z, lightState), navLight(g, 'starboard', l.x, l.y, l.z, lightState), navLight(g, 'masthead', 0, l.mastY, l.mastZ, lightState));
+    if (l.fore && L >= 50) navs.push(navLight(g, 'masthead', 0, l.fore.y, l.fore.z, lightState));
+    if (l.stern) navs.push(navLight(g, 'stern', 0, l.stern.y, l.stern.z, lightState));
   }
   // bow foam strips (ship frame) + world-space wake
   const bowFrac = ctx.bowFrac ?? 0.32;
@@ -944,6 +973,7 @@ export function buildShip(cls, name, seed = 1) {
     /** sails: up/down and sheeting to the relative wind (deg, + = wind from starboard) */
     setSails(up, windRelDeg) {
       sailsUp = up !== false;
+      lightState.underSail = sailsUp && ctx.sails.length > 0; // a vessel under sail shows no masthead light
       const rel = Number.isFinite(windRelDeg) ? windRelDeg : 0;
       const a = Math.abs(((rel % 360) + 540) % 360 - 180); // 0 = head to wind, 180 = run
       const sheet = THREE.MathUtils.clamp((a - 25) / 155, 0, 1) * 82 * (Math.PI / 180);
@@ -958,11 +988,15 @@ export function buildShip(cls, name, seed = 1) {
     },
     /** navigation + window lights (night 0..1) */
     setLights(night) {
-      const n = THREE.MathUtils.clamp(night, 0, 1);
+      const n = THREE.MathUtils.clamp(Number(night) || 0, 0, 1);
       if (ctx.lightsOff) return;
       for (const k in navMats) navMats[k].emissiveIntensity = 0.3 + 3.2 * n;
+      lightState.level = n;
+      for (const nl of navs) nl.setLevel(n);
       windowMat.emissiveIntensity = 1.7 * n;
     },
+    /** the COLREGS lights (port, starboard, masthead ×1–2, stern) — sprites with userData.kind / userData.arc */
+    navLights: navs.map((nl) => nl.sprite),
     /** helicopter rotor spin (t = seconds) */
     setRotor(t) { if (ctx.rotor) { ctx.rotor.main.rotation.y = t * 28; ctx.rotor.tail.rotation.x = t * 50; } },
     dispose() { wake?.dispose(); disposeGroup(g); },
@@ -970,6 +1004,87 @@ export function buildShip(cls, name, seed = 1) {
   if (ctx.sails.length) g.userData.setSails(true, 90);
   if (name) { const l = makeLabel(name); l.position.set(0, labelY + 4, 0); g.add(l); g.userData.label = l; }
   return g;
+}
+
+// ----------------------------------------------------------------------------------------------- COLREGS lights
+const D2R = Math.PI / 180;
+/** arcs in degrees of relative bearing (0 = right ahead, + = starboard), COLREGS Annex I / Rule 21 */
+export const NAV_ARCS = {
+  masthead: { color: 0xfff1d6, arc: 225, test: (b) => Math.abs(b) <= 112.5 },
+  starboard: { color: 0x29ff6a, arc: 112.5, test: (b) => b >= 0 && b <= 112.5 },
+  port: { color: 0xff2a2a, arc: 112.5, test: (b) => b <= 0 && b >= -112.5 },
+  stern: { color: 0xfff1d6, arc: 135, test: (b) => Math.abs(b) >= 112.5 },
+};
+const ARC_SOFT = 2; // degrees of practical cut-off at each sector edge (COLREGS Annex I: between 1° and 3°)
+const sstep = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+/** visibility 0..1 of a light of `kind` seen from relative bearing b (deg, −180..180): full inside its sector, fading
+ *  to nothing within ARC_SOFT outside it (so both sidelights show at full strength right ahead) */
+export function navArcFactor(kind, b) {
+  const a = Math.abs(b);
+  switch (kind) {
+    case 'masthead': return sstep(112.5 + ARC_SOFT, 112.5, a);
+    case 'stern': return sstep(112.5 - ARC_SOFT, 112.5, a);
+    case 'starboard': return sstep(-ARC_SOFT, 0, b) * sstep(112.5 + ARC_SOFT, 112.5, b);
+    case 'port': return sstep(ARC_SOFT, 0, b) * sstep(-112.5 - ARC_SOFT, -112.5, b);
+    default: return 1;
+  }
+}
+let _glow = null;
+function glowTexture() {
+  if (_glow) return _glow;
+  const S = 64, c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d'), gr = x.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.18, 'rgba(255,255,255,0.85)'); gr.addColorStop(0.45, 'rgba(255,255,255,0.22)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, S, S);
+  _glow = new THREE.CanvasTexture(c); _glow.colorSpace = THREE.SRGBColorSpace; _glow.userData.shared = true;
+  return _glow;
+}
+const _lp = new THREE.Vector3(), _cp = new THREE.Vector3(), _sz = new THREE.Vector2();
+/** metres per screen pixel at the distance of world point p for this camera / renderer (0 when unknown) */
+function metresPerPixel(renderer, camera, p) {
+  if (!camera?.isPerspectiveCamera) return 0;
+  _cp.setFromMatrixPosition(camera.matrixWorld);
+  const d = Math.max(0.1, p.distanceTo(_cp));
+  renderer.getSize(_sz);
+  return (2 * d * Math.tan((camera.fov * D2R) / 2)) / Math.max(1, _sz.y) / (camera.zoom || 1);
+}
+/** after changing a sprite's scale inside onBeforeRender, refresh its world matrix for this very draw */
+function refreshMatrix(o) { o.updateMatrix(); if (o.parent) o.matrixWorld.multiplyMatrices(o.parent.matrixWorld, o.matrix); else o.matrixWorld.copy(o.matrix); }
+/**
+ * One navigation light: a dark lamp housing, a lens that lights up inside the arc and an additive glow sprite whose
+ * opacity is the arc factor for the current camera (≈ 2 m halo near, clamped to 5–20 px far away).
+ */
+function navLight(g, kind, x, y, z, state) {
+  const def = NAV_ARCS[kind];
+  const housing = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.4, 0.34), P.housing); housing.position.set(x, y, z); g.add(housing);
+  const color = new THREE.Color(def.color);
+  const lensMat = new THREE.MeshStandardMaterial({ color: color.clone().multiplyScalar(0.35), emissive: color, emissiveIntensity: 0, roughness: 0.3 });
+  const lens = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), lensMat); lens.position.set(x, y + 0.02, z + (kind === 'stern' ? 0.18 : kind === 'masthead' ? -0.18 : 0)); g.add(lens);
+  const mat = new THREE.SpriteMaterial({ map: glowTexture(), color, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: true });
+  const sprite = new THREE.Sprite(mat);
+  sprite.position.copy(lens.position); sprite.visible = false; sprite.frustumCulled = false; sprite.renderOrder = 3;
+  sprite.userData.kind = kind; sprite.userData.arc = def.arc;
+  sprite.onBeforeRender = (renderer, scene, camera) => {
+    const lvl = state.level;
+    if (lvl <= 0 || (kind === 'masthead' && state.underSail)) { mat.opacity = 0; lensMat.emissiveIntensity = 0; return; }
+    _lp.setFromMatrixPosition(sprite.matrixWorld);
+    _cp.setFromMatrixPosition(camera.matrixWorld);
+    const m = g.matrixWorld.elements;
+    // ship axes in world space: forward = −z column, starboard = +x column
+    const fx = -m[8], fy = -m[9], fz = -m[10], sx = m[0], sy = m[1], sz = m[2];
+    // sectors are measured from the centreline at the lamp's station (both sidelights show right ahead, as at sea)
+    const rx = _cp.x - (_lp.x - sx * x), ry = _cp.y - (_lp.y - sy * x), rz = _cp.z - (_lp.z - sz * x);
+    const b = Math.atan2(rx * sx + ry * sy + rz * sz, rx * fx + ry * fy + rz * fz) / D2R;
+    const arc = navArcFactor(kind, b);
+    mat.opacity = arc * lvl;
+    lensMat.emissiveIntensity = arc * lvl * 2.5;
+    const mpp = metresPerPixel(renderer, camera, _lp);
+    const size = mpp > 0 ? THREE.MathUtils.clamp(2.2, 5 * mpp, 20 * mpp) : 2.2;
+    sprite.scale.set(size, size, 1);
+    refreshMatrix(sprite);
+  };
+  g.add(sprite);
+  return { sprite, lens, housing, setLevel(n) { sprite.visible = n > 0.01; if (n <= 0.01) lensMat.emissiveIntensity = 0; } };
 }
 
 /** Bake `shipPos` (vertex position in the group frame) into every geometry rendered with a wear material. */
@@ -992,23 +1107,57 @@ function bakeShipPos(g) {
  *  is the geometry of Sprites (one BufferGeometry shared by every THREE.Sprite). Disposing a material twice is harmless. */
 export function disposeGroup(g) {
   g.traverse((o) => {
-    if (o.isSprite) { o.material.map?.dispose(); o.material.dispose(); return; }
+    if (o.isSprite) { if (o.material.map && !o.material.map.userData.shared) o.material.map.dispose(); o.material.dispose(); return; }
     if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
     const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
     for (const m of ms) { if (!m || m.userData.shared) continue; if (m.map && !m.map.userData.shared) m.map.dispose(); m.dispose(); }
   });
 }
 
-export function makeLabel(text, color = '#ffffff', size = 36) {
+/**
+ * Name label sprite. Real-world sized: `height` metres tall (the whole 512×96 board) while that is readable, clamped to
+ * minPx…maxPx screen pixels otherwise, so a label never towers over the ship or harbour it names when close, and stays
+ * legible far away. The sprite's anchor is its bottom centre (it stands on its position).
+ */
+export function makeLabel(text, color = '#ffffff', size = 36, { height = 3.2, minPx = 28, maxPx = 40 } = {}) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 96;
   const x = c.getContext('2d');
-  x.font = `600 ${size}px Segoe UI, system-ui, sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle';
-  x.fillStyle = 'rgba(4,12,20,0.55)'; const w = Math.min(500, x.measureText(text).width + 30); x.fillRect(256 - w / 2, 18, w, 60);
-  x.fillStyle = color; x.fillText(text, 256, 48);
+  const font = `600 ${size}px Segoe UI, system-ui, sans-serif`;
+  let aspect = 512 / 96;
+  /** the board is as wide as its text (256…1024 px) so long names ('Nordic Merchant · Rotterdam') are never cut */
+  const paint = (t) => {
+    t = String(t ?? '');
+    x.font = font;
+    const tw = x.measureText(t).width;
+    const W = Math.min(1024, Math.max(256, Math.ceil((tw + 64) / 32) * 32));
+    const resized = c.width !== W;
+    if (resized) c.width = W; // resets the context state
+    x.font = font; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.clearRect(0, 0, W, 96);
+    const bw = Math.min(W - 4, tw + 30);
+    x.fillStyle = 'rgba(4,12,20,0.55)'; x.fillRect(W / 2 - bw / 2, 18, bw, 60);
+    x.fillStyle = color; x.fillText(t, W / 2, 48, W - 24);
+    aspect = W / 96;
+    return resized;
+  };
+  paint(text);
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, fog: true }));
-  s.scale.set(44, 8.25, 1);
-  s.userData.setText = (t) => { x.clearRect(0, 0, 512, 96); x.fillStyle = 'rgba(4,12,20,0.55)'; const w2 = Math.min(500, x.measureText(t).width + 30); x.fillRect(256 - w2 / 2, 18, w2, 60); x.fillStyle = color; x.fillText(t, 256, 48); tex.needsUpdate = true; };
+  s.center.set(0.5, 0);
+  s.scale.set(height * aspect, height, 1);
+  s.frustumCulled = false; // the scale is decided per draw; never cull on last frame's size
+  s.userData.labelSize = { height, minPx, maxPx };
+  s.onBeforeRender = (renderer, scene, camera) => {
+    const cfg = s.userData.labelSize;
+    _lp.setFromMatrixPosition(s.matrixWorld);
+    const mpp = metresPerPixel(renderer, camera, _lp);
+    if (!(mpp > 0)) return;
+    const h = THREE.MathUtils.clamp(cfg.height, cfg.minPx * mpp, Math.max(cfg.minPx, cfg.maxPx) * mpp);
+    s.scale.set(h * aspect, h, 1);
+    refreshMatrix(s);
+  };
+  // a wider canvas needs fresh GPU storage (three allocates immutable storage at the first upload)
+  s.userData.setText = (t) => { if (paint(t)) tex.dispose(); tex.needsUpdate = true; };
   return s;
 }
 
@@ -1025,7 +1174,7 @@ export function buildWreck(cls) {
   b.build(g);
   const buoy = new THREE.Mesh(new THREE.SphereGeometry(1.6, 10, 10), new THREE.MeshStandardMaterial({ color: 0xffd400, emissive: 0x806000, emissiveIntensity: 0.6 }));
   buoy.position.set(B, 1.2, 0); g.add(buoy);
-  const l = makeLabel('WRECK', '#ffd400', 30); l.position.set(0, 16, 0); g.add(l);
+  const l = makeLabel('WRECK', '#ffd400', 30, { height: 4, minPx: 24, maxPx: 34 }); l.position.set(0, 12, 0); g.add(l);
   g.userData.dispose = () => disposeGroup(g);
   return g;
 }
@@ -1090,7 +1239,7 @@ export function buildPlatform(platform) {
   b.build(g);
   const flame = new THREE.Mesh(new THREE.ConeGeometry(2.2, 9, 10), P.flame); flame.position.set(fx + 30, top + 27, fz - 26); g.add(flame);
   const glow = new THREE.Mesh(new THREE.SphereGeometry(4, 10, 8), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false })); glow.position.copy(flame.position); glow.position.y += 2; g.add(glow);
-  const label = makeLabel(name, '#ffd877', 34); label.position.set(0, top + dh + 14, 0); label.scale.set(90, 17, 1); g.add(label);
+  const label = makeLabel(name, '#ffd877', 34, { height: 8, minPx: 30, maxPx: 42 }); label.position.set(0, top + dh + 8, 0); g.add(label);
   g.userData.platform = platform; g.userData.label = label; g.userData.lampPos = new THREE.Vector3(-16, top + 16, 10);
   g.userData.setNight = (n) => { const k = THREE.MathUtils.clamp(n, 0, 1); lampMat.emissiveIntensity = 0.5 + 3.5 * k; windowMat.emissiveIntensity = 1.8 * k; };
   g.userData.update = (t) => { const f = 1 + 0.25 * Math.sin(t * 9.3) + 0.15 * Math.sin(t * 23.1); flame.scale.set(1, f, 1); flame.rotation.y = t * 2; glow.scale.setScalar(0.8 + 0.3 * f); aviMat.emissiveIntensity = (Math.sin(t * 2.5) > 0.6 ? 2.5 : 0.4); };

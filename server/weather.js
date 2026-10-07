@@ -71,7 +71,7 @@ export class WeatherService {
     const q = `latitude=${lat.toFixed(2)}&longitude=${lon.toFixed(2)}`;
     const f = await this.get(`${FORECAST}?${q}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,temperature_2m,precipitation,visibility,cloud_cover&wind_speed_unit=ms`);
     let m = null;
-    try { m = await this.get(`${MARINE}?${q}&current=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period`); } catch { m = null; } // inland cells have no marine data
+    try { m = await this.get(`${MARINE}?${q}&current=wave_height,wave_direction,wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,ocean_current_velocity,ocean_current_direction,sea_surface_temperature`); } catch { m = null; } // inland cells have no marine data
     const c = f?.current || {}, mc = m?.current || {};
     const num = (v, d) => (Number.isFinite(+v) && v !== null ? +v : d);
     const spd = num(c.wind_speed_10m, 5);
@@ -80,6 +80,11 @@ export class WeatherService {
       wind: { spd, dir: num(c.wind_direction_10m, 240), gust: num(c.wind_gusts_10m, spd * 1.3) },
       waves: { height: num(mc.wave_height, Math.min(8, 0.021 * spd * spd)), dir: num(mc.wave_direction, num(c.wind_direction_10m, 240)), period: num(mc.wave_period, 3 + spd * 0.35) },
       swell: { height: num(mc.swell_wave_height, 0.3), dir: num(mc.swell_wave_direction, 270), period: num(mc.swell_wave_period, 9) },
+      // wind sea and swell separately (Open-Meteo wave_height is the combined sea); null when the marine model has no value
+      windWaves: Number.isFinite(+mc.wind_wave_height) && mc.wind_wave_height !== null ? { height: +mc.wind_wave_height, dir: num(mc.wind_wave_direction, num(c.wind_direction_10m, 240)), period: num(mc.wind_wave_period, 3 + spd * 0.35) } : null,
+      // surface current: Open-Meteo gives km/h and the direction the current flows TOWARDS
+      current: Number.isFinite(+mc.ocean_current_velocity) && mc.ocean_current_velocity !== null ? { speed: +mc.ocean_current_velocity / 3.6, dir: num(mc.ocean_current_direction, 0) } : null,
+      sst: Number.isFinite(+mc.sea_surface_temperature) && mc.sea_surface_temperature !== null ? +mc.sea_surface_temperature : null,
       pressure: num(c.pressure_msl, 1013), temp: num(c.temperature_2m, 12), precip: num(c.precipitation, 0),
       visibility: num(c.visibility, 20000), cloud: num(c.cloud_cover, 40) / 100,
     };

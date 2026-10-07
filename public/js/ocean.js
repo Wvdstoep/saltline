@@ -6,6 +6,10 @@
 // roughness-dependent sun lobe, sky reflection, crest subsurface, whitecaps above 8 m/s, shore foam from a CPU-built
 // depth texture, rain ripples, night darkening and the usual three.js tone-mapping / fog tail. The CPU `heightAt` sums
 // exactly the same component table (Gerstner vertical part) so ships, wakes and the camera ride the same water.
+// v0.4: inside a harbour patch the coarse depth-texture surf is replaced by a soft shoreline band from the patch's
+// signed distance field (terrain.js publishes one RGBA field per patch through setShoreField): a thin wash line along
+// every wall and beach that hides the hard water/land intersection, plus rows of surf on exposed natural shores whose
+// width follows the significant wave height. The two fields nearest the camera are sampled.
 import * as THREE from 'three';
 
 const G = 9.81;
@@ -19,6 +23,24 @@ const DIR_OFF = [0, 17, -13, 29, -24, 9, -34, 21, 0, 11];
 export const WAVES = LADDER.map((len, i) => ({ dx: 0, dz: -1, amp: 0, len, k: (2 * Math.PI) / len, w: Math.sqrt((G * 2 * Math.PI) / len), q: 0, ph: i * 1.7, ang: 0 }));
 /** Mirror of the ocean's time / tide level for modules that only know world xz (wakes). */
 export const oceanState = { time: 0, level: 0, hs: 0.8, wind: 5, windDir: 240 };
+
+/**
+ * Shoreline foam fields, one per harbour patch (written by terrain.js): `tex` is an RGBA DataTexture over the patch
+ * footprint — R = signed distance to any obstacle, G = signed distance to a natural shore (land / rubble), both encoded
+ * as (d + 8 m) × 4 per byte, B = exposure to the open sea (0 sheltered basin … 255 open coast); `x0, z0` = the NORTH-WEST
+ * corner in the current floating-origin frame, `size` = edge length in metres (row 0 = north, like the patch).
+ */
+export const shoreFields = new Map();
+/** Register / move (same id) or remove (field null) a harbour's shoreline foam field. */
+export function setShoreField(id, field) {
+  if (field && field.tex && Number.isFinite(field.x0) && Number.isFinite(field.z0) && field.size > 0) shoreFields.set(String(id), field);
+  else shoreFields.delete(String(id));
+}
+let _noShore = null;
+function noShoreTexture() {
+  if (!_noShore) { _noShore = new THREE.DataTexture(new Uint8Array([255, 255, 0, 255]), 1, 1, THREE.RGBAFormat); _noShore.needsUpdate = true; }
+  return _noShore;
+}
 
 /** Gerstner vertical part of the surface at world (x, z) — tide level NOT included (see Ocean.heightAt). */
 export function waveHeight(x, z, t, windF = 1) {
@@ -71,6 +93,7 @@ const FRAG = /* glsl */`
 uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uSkyTop; uniform vec3 uSkyHorizon; uniform vec3 uSunDir; uniform vec3 uSunColor;
 uniform sampler2D uDepth; uniform vec2 uDepthOrigin; uniform float uDepthSize; uniform float uTime; uniform float uWind; uniform vec2 uWindDir;
 uniform float uNight; uniform float uRain; uniform float uStorm; uniform float uSteep; uniform float uAmpSum; uniform float uLevel; uniform float uDetail;
+uniform sampler2D uShoreA; uniform sampler2D uShoreB; uniform vec4 uShoreRectA; uniform vec4 uShoreRectB; uniform float uHs;
 varying vec3 vWorld; varying vec3 vNormal; varying float vHeight; varying float vCrest; varying float vFade;
 #include <fog_pars_fragment>
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -85,10 +108,33 @@ vec3 noised(vec2 p) {
   float k1 = b - a, k2 = c - a, k3 = a - b - c + d;
   return vec3(a + k1*u.x + k2*u.y + k3*u.x*u.y, du * (vec2(k1, k2) + k3 * u.yx));
 }
+// shoreline foam from a patch SDF field (see shoreFields): returns foam 0..1; inside = 1 within the field
+float shoreFoam(sampler2D tex, vec4 rect, vec2 p, float n, float t, out float inside) {
+  inside = 0.0;
+  if (rect.w < 0.5) return 0.0;
+  vec2 uv = (p - rect.xy) / rect.z;
+  if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return 0.0;
+  vec2 e = min(uv, 1.0 - uv);
+  inside = smoothstep(0.0, 0.012, min(e.x, e.y));          // feather the field's square edge
+  vec4 s = texture2D(tex, uv);
+  float dAny = s.r * 63.75 - 8.0, dNat = s.g * 63.75 - 8.0, expo = s.b;
+  // contact wash: a thin, soft, flickering line along every wall and beach (hides the hard water/land seam)
+  float wash = smoothstep(3.2, 0.0, dAny) * smoothstep(-1.5, 0.0, dAny) * (0.5 + 0.45 * n);
+  // surf: rows of breaking waves running in on exposed natural shores; the zone widens with the sea state
+  float width = (3.0 + 8.0 * uHs) * (0.3 + 0.7 * expo);
+  float zone = smoothstep(width, 0.0, dNat) * smoothstep(-1.0, 0.5, dNat);
+  float rows = 0.5 + 0.5 * sin(dNat * (0.9 - 0.4 * expo) + t * 1.4 + n * 5.0);
+  float surf = zone * smoothstep(0.42, 0.9, rows * 0.75 + n * 0.45) * (0.2 + 0.8 * expo) * clamp(0.25 + uHs * 0.6, 0.0, 1.0);
+  return clamp(max(wash, surf), 0.0, 1.0) * inside;
+}
 void main() {
   vec2 duv = (vWorld.xz - uDepthOrigin) / uDepthSize;
   float depth = 255.0;
-  if (duv.x > 0.0 && duv.x < 1.0 && duv.y > 0.0 && duv.y < 1.0) depth = texture2D(uDepth, duv).r * 255.0;
+  if (duv.x > 0.0 && duv.x < 1.0 && duv.y > 0.0 && duv.y < 1.0) {
+    // fade to open-sea depth towards the texture border so its square edge never shows on the water
+    vec2 de = min(duv, 1.0 - duv);
+    depth = mix(255.0, texture2D(uDepth, duv).r * 255.0, smoothstep(0.0, 0.1, min(de.x, de.y)));
+  }
   depth = max(0.0, depth + uLevel);
   vec3 toCam = cameraPosition - vWorld;
   float dist = length(toCam);
@@ -144,6 +190,11 @@ void main() {
   float n = noise(dp * 0.12 + uTime * 0.05) * 0.6 + noise(dp * 0.5 - uTime * 0.1) * 0.4;
   float surf = n + 0.12 * sin(uTime * 0.9 + depth * 1.6);
   float shore = smoothstep(5.5, 0.3, depth) * smoothstep(0.38, 0.72, surf);
+  // inside a harbour patch the 10 m SDF field replaces the coarse (30 m texel) depth-texture surf
+  float inA, inB;
+  float fA = shoreFoam(uShoreA, uShoreRectA, dp, n, uTime, inA);
+  float fB = shoreFoam(uShoreB, uShoreRectB, dp, n, uTime, inB);
+  shore = mix(shore, max(fA, fB), max(inA, inB));
   float crestN = vCrest / max(0.05, uSteep);
   float capK = clamp((uWind - 8.0) / 14.0, 0.0, 0.6);
   float caps = step(0.001, capK) * smoothstep(1.0 - capK, 1.06 - capK * 0.5, crestN) * smoothstep(0.28, 0.7, n) * vFade;
@@ -189,6 +240,7 @@ export class Ocean {
       uSunDir: { value: new THREE.Vector3(0.4, 0.7, 0.3).normalize() }, uSunColor: { value: new THREE.Color(0xfff2d0) },
       uDepth: { value: this.depthTex }, uDepthOrigin: { value: new THREE.Vector2(0, 0) }, uDepthSize: { value: this.depthSize }, uNight: { value: 0 },
       uRain: { value: 0 }, uStorm: { value: 0 }, uSteep: { value: 0.3 }, uAmpSum: { value: 0.4 }, uLevel: { value: 0 }, uDetail: { value: 1 },
+      uShoreA: { value: noShoreTexture() }, uShoreB: { value: noShoreTexture() }, uShoreRectA: { value: new THREE.Vector4(0, 0, 1, 0) }, uShoreRectB: { value: new THREE.Vector4(0, 0, 1, 0) }, uHs: { value: 0.8 },
     };
     const mat = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, fog: true });
     this.material = mat;
@@ -345,12 +397,26 @@ export class Ocean {
     this.refreshTable();
     const u = this.uniforms;
     u.uTime.value = time; u.uWind.value = this.wind; u.uRain.value = this.rain; u.uStorm.value = this.storm; u.uLevel.value = this.level;
+    u.uHs.value = this.hs;
+    this.bindShoreFields(cx, cz);
     const wa = (this.windDir + 180) * (Math.PI / 180);
     u.uWindDir.value.set(Math.sin(wa), -Math.cos(wa));
     const q = this.snapQ;
     this.mesh.position.set(Math.round(cx / q) * q, this.level, Math.round(cz / q) * q);
     this.far.position.set(this.mesh.position.x, FAR_Y + this.level, this.mesh.position.z);
     oceanState.time = time; oceanState.level = this.level; oceanState.hs = this.hs; oceanState.wind = this.wind; oceanState.windDir = this.windDir;
+  }
+  /** Bind the (up to) two shoreline foam fields whose footprint is nearest to the camera. */
+  bindShoreFields(cx, cz) {
+    const u = this.uniforms;
+    let a = null, b = null, da = Infinity, db = Infinity;
+    for (const f of shoreFields.values()) {
+      const dx = Math.max(f.x0 - cx, 0, cx - (f.x0 + f.size)), dz = Math.max(f.z0 - cz, 0, cz - (f.z0 + f.size));
+      const d = dx * dx + dz * dz;
+      if (d < da) { b = a; db = da; a = f; da = d; } else if (d < db) { b = f; db = d; }
+    }
+    const bind = (f, tex, rect) => { if (f) { tex.value = f.tex; rect.value.set(f.x0, f.z0, f.size, 1); } else { tex.value = noShoreTexture(); rect.value.set(0, 0, 1, 0); } };
+    bind(a, u.uShoreA, u.uShoreRectA); bind(b, u.uShoreB, u.uShoreRectB);
   }
   /** Rebuild the depth texture around (cx,cz) using sampler(x,z) → real metres height (null = unknown). */
   rebuildDepth(cx, cz, sampler, force) {
