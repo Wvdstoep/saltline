@@ -104,6 +104,8 @@ export class Hud {
     const sheet = $('moreSheet');
     if (sheet) for (const id of ['btnFish', 'btnPatch', 'btnAuto', 'btnSails', 'btnWeather', 'btnTow', 'btnHelp', 'btnCastOff']) { const b = $(id); if (b) sheet.appendChild(b); }
     sheet?.addEventListener('click', (e) => { if (e.target.closest('button')) sheet.classList.remove('open'); });
+    // no key hints on a phone: the bar has room for one word per button
+    for (const [id, t] of [['btnChart', 'Chart'], ['btnShips', 'Ships'], ['btnInterior', 'Walk'], ['btnCamera', 'Camera'], ['btnFish', 'Fish'], ['btnAuto', 'Autopilot'], ['btnHelp', 'Help'], ['btnWeather', 'Weather'], ['btnDeck', 'Back on deck']]) { const b = $(id); if (b) b.textContent = t; }
     $('telemetry')?.classList.add('collapsed');
     const root = $('touchHelm');
     if (root) {
@@ -192,9 +194,10 @@ export class Hud {
     $('hbPing').textContent = latency + ' ms';
     $('hbOnline').textContent = `${onlineCount} online`;
     $('btnFish').classList.toggle('on', !!you.fishing);
-    $('btnPatch').textContent = `Kit (K) ×${you.kits || 0}`;
+    $('btnPatch').textContent = `Kit${this.touch ? '' : ' (K)'} ×${you.kits || 0}`;
     const moored = !!you.docked;
-    $('btnDock').textContent = moored ? (this.harborOpen() ? 'Cast off (T)' : 'Harbour (T)') : you.nearBerth && you.nearBerth.distM <= (INTERACT.BERTH_RANGE_U || 60) ? 'Moor (T)' : 'Dock (T)';
+    const key = this.touch ? '' : ' (T)';
+    $('btnDock').textContent = (moored ? (this.harborOpen() ? 'Cast off' : 'Harbour') : you.nearBerth && you.nearBerth.distM <= (INTERACT.BERTH_RANGE_U || 60) ? 'Moor' : 'Dock') + key;
     $('btnCastOff').classList.toggle('hidden', !moored);
     $('btnTow').classList.toggle('hidden', moored);
     $('btnInterior')?.classList.toggle('on', !!this.interiorOn);
@@ -203,7 +206,7 @@ export class Hud {
     this.showFishing(you.fishing ? you.fishInfo || { ground: '—', rate: 0, caught: 0, tooFast: false } : null);
     this.showRescue(you.rescue || null);
     this.showBerth(you.nearBerth || null, you.berth || null, you.assist || null, this.tugCost());
-    if (!$('weatherPanel').classList.contains('hidden')) this.showWeather(you.weather, you.tide);
+    if (!$('weatherPanel').classList.contains('hidden') && performance.now() - (this._wxAt || 0) > 1000) { this._wxAt = performance.now(); this.showWeather(you.weather, you.tide); }
   }
   tugCost() { const you = this.app.you; const h = this.harborData; if (Number.isFinite(you?.tugCost)) return you.tugCost; if (Number.isFinite(h?.tugCost)) return h.tugCost; const C = you ? SHIP_CLASSES[you.ship.cls] : null; return C ? Math.max(400, Math.round(C.displacement * 0.35)) : 400; }
   /** Range estimate at the current throttle: (fuel / burn per hour) × SOG, in nm; null when stopped. */

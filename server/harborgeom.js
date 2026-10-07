@@ -452,7 +452,7 @@ function extentAlong(ctx, x, z, dx, dz) {
  * warehouses, cranes and optional dock basins; records mooring faces and vector features. `lay` = {cx, cz, tx, tz,
  * nx, nz} coast frame (t along the coast, n seaward). Returns the u-extent used [uMin, uMax] (local to the frame).
  */
-const ROOT_M = 100, ROOT_P = 200;   // breakwater roots beyond the row ends (−u side / +u marina side)
+const ROOT_M = 100, ROOT_P = 230;   // breakwater roots beyond the row ends (−u side / +u marina side)
 function placeQuayRow(ctx, lay, S, rnd, opts = {}) {
   const { tx, tz, nx, nz } = lay;
   let { cx, cz } = lay;
@@ -658,9 +658,12 @@ export function buildSynthetic(harbor, w = world) {
     if (ring.length >= 3) ctx.features.breakwaters.push({ pts: ring.map((p) => xzToLL(ctx, p[0], p[1])) });
   };
   addBreakwater(mainPts); addBreakwater(leePts);
-  // 6. pontoon marina in the lee corner of the basin (each finger moors on both edges)
+  // 6. pontoon marina in the lee corner of the basin (a shallow cut-out of the shore; each finger moors on both edges)
+  const marina = [P(row.U / 2 + 20, faceV), P(uB - 25, faceV), P(uB - 25, faceV + 125), P(row.U / 2 + 20, faceV + 125)];
+  fillRings(ctx, [ringXZToCells(ctx, marina)], mask, WATER, { allow: ALLOW_SOFT });
+  fillRings(ctx, [ringXZToCells(ctx, marina)], ctx.dredge, 3.5, { max: true });
   for (let f = 0; f < S.fingers; f++) {
-    const u = row.U / 2 + 40 + f * 40;
+    const u = row.U / 2 + 45 + f * 55;
     if (u + 20 > uB - 30) break;
     const a = P(u, faceV + 18), b = P(u, faceV + 98);
     strokeXZ(ctx, [a, b], 6, mask, PONTOON, { allow: ALLOW_WATER });
@@ -930,7 +933,7 @@ function generateBerths(ctx) {
   cand.sort((a, b) => b.length - a.length);
   const kept = [];
   for (const b of cand) {
-    if (kept.some((k) => (k.x - b.x) ** 2 + (k.z - b.z) ** 2 < 24 * 24)) continue;
+    if (kept.some((k) => (k.x - b.x) ** 2 + (k.z - b.z) ** 2 < 20 * 20)) continue;
     kept.push(b);
   }
   const big = (b) => b.kind === 'quay' && b.length >= 120 && b.depth >= 8;

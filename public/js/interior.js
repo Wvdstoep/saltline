@@ -539,13 +539,14 @@ export class Interior {
     this.chartTable(ctx, W / 2 - 1.1, y2, bz + 1.6, 1.4, 0.9);
     this.radio(ctx, -Math.min(2.2, W / 2 - 0.8), y2 + 1.75, bz - 2.3, 0);
     this.spawn = { x: 0, y: y2, z: bz + 0.6, yaw: 0 };
-    // --- accommodation deck
-    const lobby = { id: 'lobby', x0: -W / 2, x1: -0.8, z0: bz - 2.5, z1: bz + 0.2, y: y1, h: 2.5 };
+    // --- accommodation deck: fore-aft passage, cabins port/starboard forward, lobby (stair foot) aft-port, mess aft-starboard
     const pass = { id: 'passage', x0: -0.8, x1: 0.8, z0: bz - 2.5, z1: bz + 7.5, y: y1, h: 2.5 };
-    this.room(ctx, lobby); this.room(ctx, pass);
-    this.door(lobby, pass, 'e', bz - 1.15, 2.4, 2.4); // open lobby
+    const lobby = { id: 'lobby', x0: -W / 2, x1: -0.8, z0: bz + 2.9, z1: bz + 7.5, y: y1, h: 2.5 };
+    this.room(ctx, pass); this.room(ctx, lobby);
+    this.door(lobby, pass, 'e', bz + 4.6, 2.2, 2.4); // wide opening
+    for (let i = 0; i < 3; i++) ctx.g.add(box(0.5, 0.5, 0.5, i % 2 ? ctx.M.yellow : ctx.M.wood, -W / 2 + 0.6, y1 + 0.25 + i * 0.5, bz + 7.0));
     const bunks = clamp(C.pax || 4, 2, 8), cabinsN = Math.ceil(bunks / 2);
-    const slots = [{ side: 'e', z0: bz - 2.5, z1: bz + 0.2 }, { side: 'e', z0: bz + 0.2, z1: bz + 2.9 }, { side: 'w', z0: bz + 0.2, z1: bz + 2.9 }, { side: 'w', z0: bz + 2.9, z1: bz + 5.6 }];
+    const slots = [{ side: 'e', z0: bz - 2.5, z1: bz + 0.2 }, { side: 'w', z0: bz - 2.5, z1: bz + 0.2 }, { side: 'e', z0: bz + 0.2, z1: bz + 2.9 }, { side: 'w', z0: bz + 0.2, z1: bz + 2.9 }];
     let placed = 0;
     for (let i = 0; i < slots.length && placed < cabinsN; i++) {
       const s = slots[i];
@@ -558,23 +559,24 @@ export class Interior {
       placed++;
     }
     const mess = { id: 'mess', x0: 0.8, x1: W / 2, z0: bz + 2.9, z1: bz + 7.5, y: y1, h: 2.5 };
-    this.room(ctx, mess); this.door(mess, pass, 'w', bz + 3.5, 0.95);
-    this.table(ctx, (0.8 + W / 2) / 2 + 0.2, y1, bz + 4.4, Math.min(1.8, W / 2 - 1.6), 0.8, true);
-    this.galley(ctx, (0.8 + W / 2) / 2, y1, bz + 7.1, Math.min(2.4, W / 2 - 1.2), 0);
-    this.window(mess, 'e', bz + 3.4, bz + 6.8, 1.3, 1.9);
-    const store = { id: 'store', x0: -W / 2, x1: -0.8, z0: bz + 5.6, z1: bz + 7.5, y: y1, h: 2.5 };
-    this.room(ctx, store); this.door(store, pass, 'e', bz + 6.3, 0.9);
-    for (let i = 0; i < 3; i++) ctx.g.add(box(0.5, 0.5, 0.5, i % 2 ? ctx.M.yellow : ctx.M.wood, -W / 2 + 0.6, y1 + 0.25 + i * 0.5, bz + 6.5));
-    // stairs: bridge → lobby (aft-port corner of the bridge, descending forward)
+    this.room(ctx, mess); this.door(mess, pass, 'w', bz + 3.6, 0.95);
+    const messW = W / 2 - 0.8;
+    this.table(ctx, 0.8 + messW * 0.42, y1, bz + 4.3, Math.min(1.6, messW * 0.6), 0.8, true);
+    this.galley(ctx, 0.8 + Math.max(0.9, (messW - 1.6) / 2), y1, bz + 7.1, Math.max(1.2, messW - 1.9), 0);
+    this.window(mess, 'e', bz + 3.4, bz + 5.6, 1.3, 1.9);
+    // stairs: bridge → lobby, through the bridge's aft wall, a short landing, then down aft inside the lobby
     const s1len = clamp((y2 - y1) * 0.95, 2.6, 4);
-    this.ramp(ctx, { x0: -W / 2 + 0.3, x1: -W / 2 + 1.5, z0: bz + 2.5 - s1len, z1: bz + 2.5, y0: y1, y1: y2 });
-    // --- engine room (below) + its ladder from the aft end of the passage
+    const sx0 = -W / 2 + 0.3, sx1 = -W / 2 + 1.5;
+    bridge.openings.s.push({ from: sx0, to: sx1, bottom: 0, top: 2.1 });
+    this.landing(ctx, sx0, sx1, bz + 2.45, bz + 2.9, y2, 2.2);
+    this.ramp(ctx, { x0: sx0, x1: sx1, z0: bz + 2.9, z1: bz + 2.9 + s1len, y0: y2, y1: y1 });
+    // --- engine room (below) + its ladder from the starboard aft corner of the mess
     const eng = { id: 'engine', x0: -W / 2, x1: W / 2, z0: bz - 3, z1: bz + 8, y: y0, h: Math.min(3.2, y1 - y0 - 0.3), floorMat: ctx.M.floorEng, wallMat: ctx.M.wallDark };
     this.room(ctx, eng);
     const s2len = clamp((y1 - y0) * 0.7, 2.6, 4.2);
-    this.ramp(ctx, { x0: -0.6, x1: 0.6, z0: bz + 7.5 - s2len, z1: bz + 7.5, y0: y0, y1: y1 });
-    this.engineBlock(ctx, W * 0.12, y0, bz + 1.0, L);
-    this.gaugePanel(ctx, -W / 2 + 1.6, y0 + 1.5, bz - 2.9, 0);
+    this.ramp(ctx, { x0: W / 2 - 1.3, x1: W / 2 - 0.2, z0: bz + 7.3 - s2len, z1: bz + 7.3, y0: y0, y1: y1 });
+    this.engineBlock(ctx, -W * 0.12, y0, bz + 1.0, L);
+    this.gaugePanel(ctx, W / 2 - 1.6, y0 + 1.5, bz - 2.9, 0);
     for (let i = 0; i < 3; i++) ctx.g.add(cyl(0.12, y1 - y0 - 0.4, ctx.M.rail, -W / 2 + 0.5, y0 + (y1 - y0 - 0.4) / 2, bz - 1 + i * 2.5, 8));
     this.finishWalls(ctx);
   }
@@ -585,10 +587,10 @@ export class Interior {
     const wh = { id: 'wheelhouse', x0: -W / 2, x1: W / 2, z0: bz - 1.8, z1: bz + 1.8, y: y2, h: 2.3 };
     this.room(ctx, wh);
     this.window(wh, 'n', -W / 2 + 0.25, W / 2 - 0.25, 1.0, 2.1); this.window(wh, 'e', bz - 1.6, bz + 1.0, 1.0, 2.1); this.window(wh, 'w', bz - 1.6, bz + 1.0, 1.0, 2.1); this.window(wh, 's', W / 2 - 1.6, W / 2 - 0.25, 1.1, 2.0);
-    this.helmConsole(ctx, 0, y2, bz - 1.3, Math.min(W - 1.0, 3.2));
+    this.helmConsole(ctx, -W * 0.12, y2, bz - 1.3, Math.min(W - 1.4, 2.6));
     this.radio(ctx, -W / 2 + 0.5, y2 + 1.7, bz - 1.5, 0);
-    this.chartTable(ctx, W / 2 - 0.55, y2, bz + 1.2, 0.9, 0.7);
-    this.spawn = { x: 0, y: y2, z: bz + 0.6, yaw: 0 };
+    this.chartTable(ctx, -W / 2 + 0.55, y2, bz + 1.2, 0.9, 0.7);
+    this.spawn = { x: -W * 0.12, y: y2, z: bz + 0.6, yaw: 0 };
     const zMin = Math.max(-L / 2 + 1.5, bz - 5), zMid = bz + 4, zMax = Math.min(L / 2 - 1.5, bz + 8);
     const cab = { id: 'cabin', x0: -W / 2, x1: W / 2, z0: zMin, z1: zMid, y: y0, h: 2.1 };
     const eng = { id: 'engine', x0: -W / 2, x1: W / 2, z0: zMid, z1: zMax, y: y0, h: 2.1, floorMat: ctx.M.floorEng, wallMat: ctx.M.wallDark };
@@ -601,7 +603,7 @@ export class Interior {
     this.table(ctx, W * 0.15, y0, zMid - 1.8, 1.2, 0.7, true);
     this.galley(ctx, -W / 2 + 0.35, y0, zMid - 1.5, 1.4, Math.PI / 2);
     const s1len = clamp((y2 - y0) * 0.6, 2.4, 3.2);
-    this.ramp(ctx, { x0: -0.55, x1: 0.55, z0: bz + 1.8 - s1len, z1: bz + 1.8, y0: y0, y1: y2 });
+    this.ramp(ctx, { x0: W / 2 - 1.2, x1: W / 2 - 0.15, z0: bz + 1.8 - s1len, z1: bz + 1.8, y0: y0, y1: y2 });
     this.engineBlock(ctx, 0, y0, (zMid + zMax) / 2 + 0.4, L);
     this.gaugePanel(ctx, -W / 2 + 0.95, y0 + 1.4, zMid + 0.12, 0);
     this.finishWalls(ctx);

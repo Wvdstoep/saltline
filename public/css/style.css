@@ -175,7 +175,7 @@ body.interior #telemetry, body.interior #radarWrap, body.interior #actions, body
 #chartTools button.wide { font-size: 13px; }
 #chartTools button.on { background: rgba(88, 214, 141, 0.3); border-color: var(--green); }
 #chartTools button.primary { background: var(--accent); color: #1a1200; }
-#chartPopup { position: absolute; z-index: 3; width: min(360px, calc(100% - 16px)); max-height: 60%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(8px); font-size: 12.5px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+#chartPopup { position: absolute; z-index: 3; width: min(440px, calc(100% - 16px)); max-height: 60%; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(8px); font-size: 12.5px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
 #chartPopup .popHead { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(8, 20, 34, 0.95); }
 #chartPopup .popHead .close { margin-left: auto; padding: 2px 10px; }
 #chartPopup .popBody { padding: 8px 10px; }
@@ -239,7 +239,7 @@ body.touch #log { top: calc(44px + var(--sat)); width: 62vw; max-height: 22vh; }
 body.touch #log .ev { font-size: 12px; padding: 3px 6px; }
 body.touch #topbar { gap: 10px; font-size: 11.5px; padding-top: calc(4px + var(--sat)); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
 body.touch #topbar::-webkit-scrollbar { display: none; }
-body.touch #topbar .stat { white-space: nowrap; }
+body.touch #topbar .stat, body.touch #topbar #hbName, body.touch #hbOnline { white-space: nowrap; flex: none; }
 body.touch #alerts { top: calc(40px + var(--sat)); }
 body.touch #alerts .alert { font-size: 12px; padding: 4px 8px; }
 body.touch .sidePanel { position: fixed; inset: 0; width: auto; border-radius: 0; z-index: 22; display: flex; flex-direction: column; font-size: 14px; }
@@ -257,6 +257,13 @@ body.touch .overlay { padding: 0; align-items: stretch; }
 body.touch .panel, body.touch .panel.wide { width: 100%; max-height: none; height: 100dvh; border-radius: 0; border: 0; }
 body.touch .panelHead { position: sticky; top: 0; z-index: 2; background: rgba(8, 20, 34, 0.96); padding: calc(10px + var(--sat)) calc(12px + var(--sar)) 10px calc(12px + var(--sal)); }
 body.touch .panelHead .close, body.touch .panelHead [data-close] { min-width: 44px; min-height: 44px; font-size: 20px; }
+body.touch #harborWrap .panelHead { flex-wrap: nowrap; gap: 6px; }
+body.touch #harborWrap .panelHead #hName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+body.touch #harborWrap .panelHead #hSub { display: none; }
+body.touch #harborWrap .panelHead #btnUndock { font-size: 14px; white-space: nowrap; flex: none; }
+body.touch #harborWrap .panelHead [data-close] { flex: none; margin-left: 0; }
+body.touch .box { padding: 8px; }
+body.touch .box.board h4 { font-size: 13px; }
 body.touch .tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; padding-bottom: 0; }
 body.touch .tabs::-webkit-scrollbar { display: none; }
 body.touch .tabs button { white-space: nowrap; flex: none; }

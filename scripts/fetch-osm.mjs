@@ -14,7 +14,8 @@
 //   --synthetic-only   no network at all: build the procedural harbours only (keeps existing builds unless --force)
 //   --timeout ms       per-request timeout (default 45000)
 //   --radius m         Overpass search radius around the harbour point (default 3200)
-//   --data dir         data directory (default: data/ next to server.js, or $SALTLINE_DATA)
+//   --data dir         where data/osm and data/geom go (default: data/ next to server.js, or $SALTLINE_DATA);
+//                      the world sources (Natural Earth GeoJSON) are always read from the normal data directory
 //
 // Node 20+, ESM, no dependencies beyond Node built-ins (global fetch). Exit code 1 when nothing could be built.
 import path from 'node:path';
@@ -55,12 +56,11 @@ const USAGE = `fetch-osm — build Saltline harbour geometry (OSM + synthetic) i
   --synthetic-only   no network: procedural harbours only
   --timeout ms       per-request timeout (default ${DEFAULTS.timeout})
   --radius m         Overpass search radius (default ${DEFAULTS.radius})
-  --data dir         data directory (default data/ or $SALTLINE_DATA)`;
+  --data dir         where data/osm and data/geom are written (default data/ or $SALTLINE_DATA)`;
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.help) { console.log(USAGE); return 0; }
-  if (args.data) process.env.SALTLINE_DATA = path.resolve(args.data);
   const log = args.quiet ? () => {} : (...m) => console.log(...m);
 
   // The world is needed for the synthetic coast (and for the OSM fairway / no-coastline fallback); same loading as server.js.
@@ -71,7 +71,7 @@ export async function main(argv = process.argv.slice(2)) {
   const t0 = Date.now();
   const world = new World().load(carvingsForWorld(), log);
   log(`[fetch-osm] world ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-  harborgeom.configure({ offline: args.syntheticOnly, timeoutMs: args.timeout, radiusM: args.radius, log, preload: false });
+  harborgeom.configure({ offline: args.syntheticOnly, timeoutMs: args.timeout, radiusM: args.radius, log, preload: false, ...(args.data ? { dataDir: path.resolve(args.data) } : {}) });
   harborgeom.init(world);
 
   let only = null;
