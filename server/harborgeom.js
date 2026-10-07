@@ -397,21 +397,22 @@ function analyseCoast(ctx, sx, sz, maxDist = 2300) {
 }
 
 /** Paint a reclaimed-land lobe at `dist` metres along (dx,dz) from (sx,sz) — used when no coast is close enough. */
-function paintLandLobe(ctx, sx, sz, dx, dz, dist, rnd) {
+function paintLandLobe(ctx, sx, sz, dx, dz, dist, rnd, halfW = 900) {
   const cx = sx + dx * dist, cz = sz + dz * dist;
   const ring = [];
   const ax = -dz, az = dx;                                           // long axis across the approach direction
-  for (let k = 0; k < 40; k++) {
-    const a = (k / 40) * Math.PI * 2;
-    const ru = 900 * (1 + 0.12 * Math.sin(a * 3 + rnd() * 6)), rv = 520 * (1 + 0.1 * Math.cos(a * 2 + rnd() * 6));
+  const p1 = rnd() * 6, p2 = rnd() * 6;
+  for (let k = 0; k < 48; k++) {
+    const a = (k / 48) * Math.PI * 2;
+    const ru = halfW * (1 + 0.1 * Math.sin(a * 3 + p1)), rv = 520 * (1 + 0.1 * Math.cos(a * 2 + p2));
     const u = Math.cos(a) * ru, v = Math.sin(a) * rv;
     ring.push([cx + ax * u + dx * v, cz + az * u + dz * v]);
   }
   fillRings(ctx, [ringXZToCells(ctx, ring)], ctx.mask, LAND, { allow: ALLOW_WATER });
   // and everything further along the direction, so the lobe is a peninsula when the real land is behind it
-  const far = 3200;
-  fillRings(ctx, [ringXZToCells(ctx, [[cx + ax * 1500 + dx * 0, cz + az * 1500], [cx + ax * 1500 + dx * far, cz + az * 1500 + dz * far],
-    [cx - ax * 1500 + dx * far, cz - az * 1500 + dz * far], [cx - ax * 1500, cz - az * 1500]])], ctx.mask, LAND, { allow: ALLOW_WATER });
+  const far = 3200, wide = halfW + 600;
+  fillRings(ctx, [ringXZToCells(ctx, [[cx + ax * wide, cz + az * wide], [cx + ax * wide + dx * far, cz + az * wide + dz * far],
+    [cx - ax * wide + dx * far, cz - az * wide + dz * far], [cx - ax * wide, cz - az * wide]])], ctx.mask, LAND, { allow: ALLOW_WATER });
 }
 
 /** Direction toward the nearest world land from a point (ring search up to 25 km) or null. */
@@ -432,7 +433,7 @@ function directionToWorldLand(ctx, w, lat, lon) {
 // Synthetic harbour
 // ---------------------------------------------------------------------------------------------------------------
 const SIZES = {
-  mega: { quayLen: 380, nQuays: 4, docks: 2, dockLen: 800, dockW: 200, B: 650, leg2: 550, leg3: 350, entrance: 350, basinDepth: 14, berthDepth: 16, cranes: 5, tanks: 8, bwHalf: 10, fairHalf: 60, fairDepth: 16, fingers: 2 },
+  mega: { quayLen: 380, nQuays: 4, docks: 2, dockLen: 800, dockW: 200, B: 600, leg2: 600, leg3: 450, entrance: 350, basinDepth: 14, berthDepth: 16, cranes: 5, tanks: 8, bwHalf: 10, fairHalf: 60, fairDepth: 16, fingers: 2 },
   major: { quayLen: 300, nQuays: 4, docks: 1, dockLen: 600, dockW: 180, B: 560, leg2: 450, leg3: 300, entrance: 300, basinDepth: 12, berthDepth: 13, cranes: 4, tanks: 5, bwHalf: 9, fairHalf: 50, fairDepth: 14, fingers: 3 },
   regional: { quayLen: 220, nQuays: 3, docks: 1, dockLen: 450, dockW: 150, B: 480, leg2: 330, leg3: 220, entrance: 250, basinDepth: 10, berthDepth: 10.5, cranes: 2, tanks: 2, bwHalf: 8, fairHalf: 45, fairDepth: 14, fingers: 3 },
   minor: { quayLen: 160, nQuays: 2, docks: 0, dockLen: 0, dockW: 0, B: 400, leg2: 240, leg3: 150, entrance: 180, basinDepth: 9, berthDepth: 8.5, cranes: 1, tanks: 0, bwHalf: 7, fairHalf: 40, fairDepth: 14, fingers: 3 },
@@ -617,18 +618,21 @@ export function buildSynthetic(harbor, w = world) {
       fillRings(ctx, [ringXZToCells(ctx, ring)], mask, WATER);
     }
   }
-  // 3. coast frame; invent a reclaimed lobe when the real coast is too far (or absent) within the patch
+  // 3. coast frame; invent a reclaimed lobe when the real coast is too far, absent, or leaves no room in the patch
   let lay = analyseCoast(ctx, sx, sz);
-  if (!lay || lay.dMin > 1450) {
+  const roomOK = (l) => l && l.dMin <= 1450 && extentAlong(ctx, l.cx, l.cz, -l.nx, -l.nz) >= 420
+    && extentAlong(ctx, l.cx, l.cz, l.tx, l.tz) + extentAlong(ctx, l.cx, l.cz, -l.tx, -l.tz) >= 900;
+  if (!roomOK(lay)) {
     let dir = lay ? [(lay.cx - sx) / Math.hypot(lay.cx - sx, lay.cz - sz), (lay.cz - sz) / Math.hypot(lay.cx - sx, lay.cz - sz)] : directionToWorldLand(ctx, w, harbor.lat, harbor.lon);
     if (!dir) { const b = rnd() * Math.PI * 2; dir = [Math.sin(b), -Math.cos(b)]; }
-    paintLandLobe(ctx, sx, sz, dir[0], dir[1], 1250, rnd);
+    const halfW = Math.max(900, (S.nQuays * S.quayLen + 300) / 2 + 350);
+    paintLandLobe(ctx, sx, sz, dir[0], dir[1], 1250, rnd, halfW);
     removeSpecks(mask, n, WATER, LAND, 30);
     lay = analyseCoast(ctx, sx, sz) || { cx: sx + dir[0] * 1250, cz: sz + dir[1] * 1250, tx: -dir[1], tz: dir[0], nx: -dir[0], nz: -dir[1], dMin: 1250 };
   }
-  // 4. quays, docks, warehouses, cranes
+  // 4. quays, docks, warehouses, cranes (the row may slide along the coast to fit the patch)
   const row = placeQuayRow(ctx, lay, S, rnd);
-  const { cx, cz, tx, tz, nx, nz } = lay;
+  const { cx, cz, tx, tz, nx, nz } = row.lay;
   const P = (u, v) => [cx + tx * u + nx * v, cz + tz * u + nz * v];
   const faceV = row.faceV;
   // 5. breakwaters (stroked over water only; the ring in the JSON starts at the shore)
@@ -637,7 +641,7 @@ export function buildSynthetic(harbor, w = world) {
   let B = S.B * (0.92 + rnd() * 0.16);
   B = Math.min(B, seaExtent - 60, wWater > 0 ? wWater * 0.55 + 100 : Infinity);
   B = Math.max(200, B);
-  const uA = row.uMin - 120, uB = row.uMax + 200;
+  const uA = row.uA, uB = row.uB;
   const span = uB - uA;
   const leg2 = Math.min(S.leg2, Math.max(80, (span - S.entrance) * 0.6)), leg3 = Math.min(S.leg3, Math.max(60, (span - S.entrance) * 0.4));
   const mainPts = [P(uA, faceV - 260), P(uA, faceV + B), P(uA + leg2, faceV + B)];
@@ -649,14 +653,14 @@ export function buildSynthetic(harbor, w = world) {
     let start = a;
     for (let r = 0; r <= L; r += ctx.res) { const px = a[0] + (b[0] - a[0]) * r / L, pz = a[1] + (b[1] - a[1]) * r / L; const m = maskAtXZ(ctx, px, pz); if (m >= 0 && IS_WATER[m]) { start = [px - (b[0] - a[0]) / L * 25, pz - (b[1] - a[1]) / L * 25]; break; } }
     const line = [start].concat(pts.slice(1));
-    strokeXZ(ctx, line, S.bwHalf, mask, BREAKWATER, { allow: ALLOW_WATER_OR_LAND });
+    strokeXZ(ctx, line, S.bwHalf, mask, BREAKWATER, { allow: ALLOW_WATER });
     const ring = bufferPolylineXZ(line, S.bwHalf);
     if (ring.length >= 3) ctx.features.breakwaters.push({ pts: ring.map((p) => xzToLL(ctx, p[0], p[1])) });
   };
   addBreakwater(mainPts); addBreakwater(leePts);
   // 6. pontoon marina in the lee corner of the basin
   for (let f = 0; f < S.fingers; f++) {
-    const u = row.uMax + 50 + f * 45;
+    const u = row.U / 2 + 45 + f * 45;
     if (u + 20 > uB - 40) break;
     const a = P(u, faceV + 18), b = P(u, faceV + 98);
     strokeXZ(ctx, [a, b], 6, mask, PONTOON, { allow: ALLOW_WATER });
