@@ -1,34 +1,28 @@
-# Build status — v0.3 (written 2026-10-07 16:52 UTC, mid-build)
+# Build status (updated 2026-10-07 20:45 UTC)
 
-The v0.3 build runs as six parallel agents against `docs/V3-CONTRACTS.md`. This file records what has landed
-so the work can be finished from any machine if the session ends.
+## Live on the server
+- **v0.4** (commit dd7cdab): time warp, full-screen harbour UI with rendered ship pictures, going ashore in the real
+  harbour, map tile proxy + street-level imagery, COLREGS lights, real wind waves / currents / sea temperature fetched.
+- **Hotfix** (15e8415): real Port of Rotterdam waterways carved into the world raster and dredged to 16 m.
+- **v0.3**: harbours from OpenStreetMap with berths and collision, tug assist, tides, live weather, 90 AI ships,
+  walkable interior with third-person crew member.
 
-## Landed (complete, tests green: `npm test` = 49 pass)
-- `server/harborgeom.js`, `server/osm.js` — OSM + synthetic harbour patches, berths, SDF, binary patch API
-- `server/game.js`, `server/economy.js`, `shared/physics.js`, `shared/constants.js` — berthing, tugs, tide,
-  weather merge, per-socket AI snapshots, supply/demand markets, sell_ship, service, fees, collision action
-- `server/lanes.js` — sea-lane graph with land-checked edges and Dijkstra routing
-- `public/js/ocean.js`, `public/js/weather.js`, `public/js/ship.js`, `public/js/models.js`, `public/js/harbor.js`
-  — realistic water, weather FX, all ship models + wake, OSM-based harbour rendering
-- `public/js/chart.js`, `public/js/touch.js`, `public/js/hud.js`, `public/index.html`, `public/css/style.css`
-  — interactive Mercator chart with OSM/OpenSeaMap tiles and job boards, touch helm, mobile layout, new panels
-- `public/js/harborgeom.js`, `public/js/collision.js`, `public/js/terrain.js`, `public/js/net.js`,
-  `public/js/interior.js` — client SDF, hull collision, patch terrain, walkable interior
-- `server.js` routes: `/api/harbor/:id/geom|patch`, `/api/weather`, `/api/tide`, `/api/ai`
+## Built but not wired yet (in the session scratchpad, next deploy)
+- `public/js/sound.js` — procedural WebAudio engine (engine by rpm/class, sea, wind, rain, harbour, horn, footsteps, UI).
+- `public/js/ais.js` — client layer for live AIS ships at real size with smooth dead reckoning and info cards.
 
-## Still stubs at the time of writing (agents were mid-write)
-- `server/weather.js` (Open-Meteo service), `server/traffic.js` (AI ships), `shared/tide.js` (harmonic tide)
-  — the stubs return safe fallbacks so the server runs without them.
-- `public/js/main.js` — the orchestration (§5 of the contract) that wires geometry loading, collision, assist,
-  tide/weather, AI ships, interior toggle, routes, touch helm. **Until this lands the client cannot berth:
-  the server's new `dock` rule needs the client to come alongside a berth (`you.nearBerth`) or call `tug_assist`.**
-- `scripts/fetch-osm.mjs` — to be rewritten as a thin CLI over `harborgeom.prefetchAll`.
+## Still building when this was written
+- `server/ais/*` — live AIS ingestion: AISStream.io (worldwide; key stored on the production server in
+  `data/secrets/aisstream.key`, never in git; verified 1,876 ships in 30 s for the North Sea) + Fintraffic Digitraffic
+  (Baltic, open data). Wiring: `LiveAis` in server.js → per-socket `ais` messages + `/api/ais`; switch synthetic AI off
+  where `covers()` is true; `AisLayer` in main.js, chart, radar, collision.
+- `server/harbor-positions.js` — accurate harbour positions from OpenSeaMap/OSM for all 86 harbours (apply to HARBORS).
+- `public/js/ocean2.js` + `public/js/motion.js` — realistic sea state from live wave/swell data (spectral cascades,
+  dense near grid, breaking whitecaps, spray) and per-class ship motion; swap the ocean import in main.js, use motion.js
+  in shipVisual, pass `windWaves`/`current`/`sst` through `game.weatherAt`, harbour shelter from the patch SDF.
 
-## How to finish and deploy
-1. Complete the files above per `docs/V3-CONTRACTS.md` (every signature is fixed there).
-2. `npm test`; `PORT=3100 node server.js`; run `../pw/test-v3.mjs` (Playwright scenario in the session scratchpad)
-   or the equivalent manual checks: login, cast off, sail, hit a quay (must stop, not pass through), moor at a
-   berth (T within 60 m under 2 kn) or `tug_assist`, chart zoom, interior (I), mobile viewport.
-3. Push to `main`; on the my-app.engineer workspace: `cd saltline-app && git pull --ff-only && npm install &&
-   node scripts/build-world.mjs && node scripts/fetch-osm.mjs` (background, Overpass is reachable there), then
-   redeploy `saltline` (`node server.js`, port 3000, workdir `saltline-app`).
+## Next (v0.5, see docs/V5-PLAN.md)
+Berth guidance marker + fairway lines, engine telegraph with astern, tugs with water-only path planning and visible tug
+boats, company / home harbour / loans / crew, open decks + realistic bridge instruments + stairs fix, per-class ship
+models, accounts + onboarding (250k start, starter ship choice), ship stats and spare parts, world detail streaming
+(inland waterways with buildings, bridges, locks) and all seamarks in 3D.
