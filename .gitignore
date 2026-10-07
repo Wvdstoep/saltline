@@ -1,6 +1,10 @@
-node_modules/
+.DS_Store
 data/cache/
+data/geom/
+data/osm-harbors.json
+data/osm/
+data/secrets/
 data/state.json
 data/state.json.tmp
-data/osm-harbors.json
-.DS_Store
+data/tiles/
+node_modules/
