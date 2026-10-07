@@ -485,7 +485,7 @@ class App {
     this.hud.event({ kind: 'info', text: `Route set: ${pts.length} waypoint${pts.length > 1 ? 's' : ''}, ${fmtDistance(total)}, first leg bearing ${Math.round(bearing(this.ship.lat, this.ship.lon, pts[0].lat, pts[0].lon))}°. Press P for autopilot.` });
     void last;
   }
-  clearRoute() { this.route = []; this.autopilot = false; this.hud.chart?.clearRoute?.(); }
+  clearRoute() { this.route = []; this.autopilot = false; this.hud.chart?.clearRoute?.(true); }
   setWaypoint(lat, lon) { this.setRoute([{ lat, lon }]); }
   routeLength() { let d = 0, a = this.ship; for (const p of this.route) { d += haversine(a.lat, a.lon, p.lat, p.lon); a = p; } return d; }
   nearestOther(range) { let best = null, bd = range; for (const o of this.others.values()) { const d = unitsBetween(this.ship.lat, this.ship.lon, o.cur.lat, o.cur.lon); if (d < bd) { bd = d; best = o; } } return best; }
@@ -508,7 +508,7 @@ class App {
       const reach = this.route.length > 1 ? Math.max(300, C.length * 3) : Math.max(200, C.length * 2);
       if (d < reach) {
         this.route.shift();
-        if (!this.route.length) { this.autopilot = false; this.input.rudderCmd = 0; this.hud.event({ kind: 'info', text: 'Route complete — waypoint reached.' }); this.hud.chart?.clearRoute?.(); }
+        if (!this.route.length) { this.autopilot = false; this.input.rudderCmd = 0; this.hud.event({ kind: 'info', text: 'Route complete — waypoint reached.' }); this.hud.chart?.clearRoute?.(true); }
         else this.hud.event({ kind: 'info', text: `Waypoint reached, ${this.route.length} to go.` });
       }
     } else if (this.input.left || this.input.right) {

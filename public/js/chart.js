@@ -113,7 +113,11 @@ export class Chart {
   }
   centerOnShip() { const s = this.app.ship; if (s) this.setCenter(s.lat, s.lon, Math.max(this.zoom, 8)); }
   getRoute() { return this.route.map((p) => ({ lat: p.lat, lon: p.lon })); }
-  clearRoute() { this.route = []; this.app.clearRoute?.(); this.requestDraw(); }
+  /** Clear the plotted route; `fromApp` is set when the app itself is clearing (avoids app ↔ chart recursion). */
+  clearRoute(fromApp) {
+    this.route = []; this.requestDraw();
+    if (!fromApp && !this._clearing) { this._clearing = true; try { this.app.clearRoute?.(); } finally { this._clearing = false; } }
+  }
   setLayer(name, on) {
     if (!(name in this.layers)) return;
     this.layers[name] = !!on;

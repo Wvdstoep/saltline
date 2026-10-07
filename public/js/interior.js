@@ -59,7 +59,7 @@ export class Interior {
     this.group = null; this.builtFor = null; this.builtCls = null;
     this.pos = new THREE.Vector3(); this.y = 0; this.yaw = 0; this.pitch = 0; this.bob = 0;
     this.keys = new Set(); this.run = false; this.atHelm = false; this.touchLook = null;
-    this.rooms = []; this.doors = []; this.ramps = []; this.hotspots = []; this.nearHotspot = null;
+    this.rooms = []; this.doors = []; this.ramps = []; this.hotspots = []; this.solids = []; this.nearHotspot = null;
     this.gauge = null; this.radarTex = null; this.lastRadarT = 0; this.lastGauge = 0;
     this.prevNear = null; this.restUntil = 0;
     this.light = new THREE.PointLight(0xfff1dc, 0, 24, 2); this.light.visible = true; app.scene.add(this.light);
@@ -67,6 +67,12 @@ export class Interior {
     this.prompt.style.cssText = 'position:fixed;left:50%;bottom:17%;transform:translateX(-50%);padding:8px 14px;background:rgba(4,12,20,.78);border:1px solid rgba(140,190,230,.35);border-radius:8px;font:14px/1.3 "Segoe UI",system-ui,sans-serif;color:#dbe9f4;pointer-events:none;z-index:15;display:none;white-space:nowrap';
     document.body.appendChild(this.prompt);
     this.isTouch = (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1;
+    // third-person view: a crew member you walk around with (V / C or the button), camera kept inside the room
+    this.view = 'third'; this.camDist = 2.6; this.avatar = null; this.walkT = 0;
+    this.viewBtn = document.createElement('button'); this.viewBtn.id = 'interiorView'; this.viewBtn.type = 'button';
+    this.viewBtn.style.cssText = 'position:fixed;right:16px;top:calc(64px + env(safe-area-inset-top));z-index:16;min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid rgba(140,190,230,.45);background:rgba(4,12,20,.8);color:#dbe9f4;font:14px "Segoe UI",system-ui,sans-serif;display:none;cursor:pointer';
+    this.viewBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleView(); this.viewBtn.blur(); });
+    document.body.appendChild(this.viewBtn);
     this.bind();
   }
   get active() { return this._active; }
@@ -98,6 +104,62 @@ export class Interior {
     };
     canvas.addEventListener('pointerup', endTouch); canvas.addEventListener('pointercancel', endTouch);
     window.addEventListener('blur', () => { this.keys.clear(); this.run = false; });
+    canvas.addEventListener('wheel', (e) => { if (!this._active || this.view !== 'third') return; this.camDist = clamp(this.camDist * (1 + Math.sign(e.deltaY) * 0.12), 1.2, 5); e.preventDefault(); }, { passive: false });
+  }
+  toggleView() {
+    this.view = this.view === 'third' ? 'first' : 'third';
+    this.updateViewBtn();
+    this.app.hud.event?.({ kind: 'info', text: this.view === 'third' ? 'Third-person view: you see yourself walking through the ship.' : 'First-person view.' });
+  }
+  updateViewBtn() { this.viewBtn.textContent = this.view === 'third' ? '👁 First person (V)' : '🧍 Third person (V)'; this.viewBtn.style.display = this._active ? 'block' : 'none'; }
+  /** A simple crew member in a high-visibility jacket; faces -z (the bow) at yaw 0. */
+  makeAvatar() {
+    const g = new THREE.Group(); g.name = 'crew';
+    const jacket = new THREE.MeshStandardMaterial({ color: 0xff7a1a, roughness: 0.7 }), trousers = new THREE.MeshStandardMaterial({ color: 0x1f2a3a, roughness: 0.8 });
+    const skin = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 }), boots = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
+    const stripe = new THREE.MeshStandardMaterial({ color: 0xd8e0e6, roughness: 0.4, metalness: 0.4, emissive: 0x333333 });
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 10), jacket); torso.position.y = 1.2; g.add(torso);
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.205, 0.05, 14), stripe); band.position.y = 1.12; g.add(band);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 14, 10), skin); head.position.y = 1.62; g.add(head);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.125, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x14305a, roughness: 0.8 })); cap.position.y = 1.66; g.add(cap);
+    const limb = (r, len, mat, x, y) => { const pivot = new THREE.Group(); pivot.position.set(x, y, 0); const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 3, 8), mat); m.position.y = -len / 2 - r; pivot.add(m); g.add(pivot); return pivot; };
+    this.legL = limb(0.085, 0.62, trousers, -0.1, 0.86); this.legR = limb(0.085, 0.62, trousers, 0.1, 0.86);
+    this.armL = limb(0.06, 0.48, jacket, -0.27, 1.43); this.armR = limb(0.06, 0.48, jacket, 0.27, 1.43);
+    for (const leg of [this.legL, this.legR]) { const b = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.08, 0.24), boots); b.position.set(0, -0.85, -0.05); leg.add(b); }
+    g.traverse((o) => { if (o.isMesh) o.castShadow = false; });
+    return g;
+  }
+  /** Hide the ship's exterior parts that overlap the interior volume (superstructure blocks, masts, funnels, hatches):
+   *  seen from inside they would z-fight with the floors or stand in the middle of a room. The hull, labels and the
+   *  wake stay, so the deck and the sea outside the windows are still there. Restored on exit. */
+  hideExterior(mesh) {
+    this.restoreExterior();
+    if (!mesh || !this.group) return;
+    mesh.updateMatrixWorld(true);
+    const inner = new THREE.Box3();
+    for (const r of this.rooms) {
+      const a = new THREE.Vector3(r.x0, r.y - 0.05, r.z0).applyMatrix4(mesh.matrixWorld), b = new THREE.Vector3(r.x1, r.y + (r.h || 2.5) + 0.05, r.z1).applyMatrix4(mesh.matrixWorld);
+      inner.expandByPoint(a); inner.expandByPoint(b);
+    }
+    for (const r of this.ramps) {
+      inner.expandByPoint(new THREE.Vector3(r.x0, Math.min(r.y0, r.y1), r.z0).applyMatrix4(mesh.matrixWorld));
+      inner.expandByPoint(new THREE.Vector3(r.x1, Math.max(r.y0, r.y1) + 2.2, r.z1).applyMatrix4(mesh.matrixWorld));
+    }
+    this.hidden = [];
+    const box = new THREE.Box3();
+    for (const c of mesh.children) {
+      if (c === this.group || c === mesh.userData.wake || c === mesh.userData.label || c.isSprite || !c.visible) continue;
+      if (c.isMesh && c.geometry && c.geometry.type === 'ExtrudeGeometry') continue; // hull + bulwark: keep the deck
+      box.setFromObject(c);
+      if (!box.isEmpty() && box.intersectsBox(inner)) { c.visible = false; this.hidden.push(c); }
+    }
+  }
+  restoreExterior() { for (const c of this.hidden || []) c.visible = true; this.hidden = []; }
+  /** The room (AABB) the walker stands in, for keeping the third-person camera off the walls. */
+  roomAt(x, z, y) {
+    let best = null;
+    for (const r of this.rooms) if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1 && Math.abs(r.y - y) < 1.4) { if (!best || (r.x1 - r.x0) * (r.z1 - r.z0) < (best.x1 - best.x0) * (best.z1 - best.z0)) best = r; }
+    return best;
   }
   lock() { try { const p = this.app.canvas.requestPointerLock?.(); if (p && p.catch) p.catch(() => {}); } catch {} }
   unlock() { try { if (document.pointerLockElement === this.app.canvas) document.exitPointerLock(); } catch {} }
@@ -106,6 +168,7 @@ export class Interior {
     if (!this._active) return false;
     const k = e.key.toLowerCase();
     if (k === 'e') { this.interact(); return true; }
+    if (k === 'v' || k === 'c') { this.toggleView(); return true; }
     if (k === 'escape' && this.atHelm) { this.leaveHelm(); return true; }
     if (this.atHelm) return false; // helm taken: W/S/A/D/space drive the ship through main.js
     if (k === 'shift') { this.run = true; return true; }
@@ -121,14 +184,16 @@ export class Interior {
     if (!this.group) return false;
     this._active = true; this.atHelm = false; this.keys.clear();
     this.group.visible = true;
+    this.hideExterior(app.myMesh);
     const s = this.spawn; this.pos.set(s.x, s.y, s.z); this.y = s.y; this.yaw = s.yaw || 0; this.pitch = 0;
     this.camState = { near: app.camera.near, fov: app.camera.fov };
     app.camera.near = 0.12; app.camera.fov = 70; app.camera.updateProjectionMatrix();
     if (app.myMesh.userData.label) app.myMesh.userData.label.visible = false;
     if (!this.isTouch) this.lock();
     app.hud.showInterior?.(true);
-    app.hud.event?.({ kind: 'info', text: this.isTouch ? 'Below decks. Stick to walk, drag right half to look, tap to use. Interior button to go back on deck.' : 'Below decks. WASD walk, mouse look, E to use things, I to go back on deck.' });
-    this.light.intensity = 26;
+    this.updateViewBtn();
+    app.hud.event?.({ kind: 'info', text: this.isTouch ? 'Below decks. Stick to walk, drag right half to look, tap to use, view button for first / third person. Interior button to go back on deck.' : 'Below decks. WASD walk (Shift runs), mouse look, E to use things, V first / third person, wheel to zoom, I to go back on deck.' });
+    this.light.intensity = 7;
     return true;
   }
   exit() {
@@ -142,6 +207,9 @@ export class Interior {
     this.unlock();
     this.prompt.style.display = 'none';
     this.light.intensity = 0;
+    if (this.avatar) this.avatar.visible = false;
+    this.restoreExterior();
+    this.viewBtn.style.display = 'none';
     app.hud.showInterior?.(false);
   }
   toggle() { if (this._active) this.exit(); else this.enter(); }
@@ -227,13 +295,43 @@ export class Interior {
     if (label !== this.prevLabel) { this.prevLabel = label; this.prompt.textContent = label; this.prompt.style.display = label ? 'block' : 'none'; }
     // ---- camera (ship frame → world through the ship's matrix so heave/pitch/roll carry over)
     const mesh = app.myMesh; mesh.updateMatrixWorld(true);
-    const bobY = Math.sin(this.bob) * 0.03;
-    const eye = new THREE.Vector3(this.pos.x, this.y + EYE + bobY, this.pos.z).applyMatrix4(mesh.matrixWorld);
-    const dir = new THREE.Vector3(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch)).applyQuaternion(mesh.quaternion);
+    const third = this.view === 'third' && !this.atHelm;
+    if (!this.avatar || this.avatar.parent !== this.group) { this.avatar = this.makeAvatar(); this.group.add(this.avatar); }
+    const moving = !this.atHelm && (this.keys.size > 0 || app.touchHelm?.stick?.active);
+    this.walkT += moving ? dt * (this.run ? 11 : 7) : 0;
+    const swing = moving ? Math.sin(this.walkT) * (this.run ? 0.7 : 0.45) : 0;
+    this.legL.rotation.x += (swing - this.legL.rotation.x) * Math.min(1, dt * 12); this.legR.rotation.x += (-swing - this.legR.rotation.x) * Math.min(1, dt * 12);
+    this.armL.rotation.x += (-swing * 0.8 - this.armL.rotation.x) * Math.min(1, dt * 12); this.armR.rotation.x += (swing * 0.8 - this.armR.rotation.x) * Math.min(1, dt * 12);
+    this.avatar.visible = third;
+    this.avatar.position.set(this.pos.x, this.y + (moving ? Math.abs(Math.sin(this.walkT)) * 0.03 : 0), this.pos.z);
+    this.avatar.rotation.y = -this.yaw;
+    const bobY = third ? 0 : Math.sin(this.bob) * 0.03;
+    const dirL = new THREE.Vector3(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));
+    let eyeL = new THREE.Vector3(this.pos.x, this.y + EYE + bobY, this.pos.z), lookL;
+    if (third) {
+      // orbit behind and slightly above the head, then keep the camera inside the room the crew member is in
+      const head = new THREE.Vector3(this.pos.x, this.y + 1.55, this.pos.z);
+      const camL = head.clone().addScaledVector(dirL, -this.camDist).add(new THREE.Vector3(0, 0.35, 0));
+      const r = this.roomAt(this.pos.x, this.pos.z, this.y);
+      if (r) {
+        const m = 0.18;
+        camL.x = clamp(camL.x, r.x0 + m, r.x1 - m); camL.z = clamp(camL.z, r.z0 + m, r.z1 - m);
+        let top = r.y + (r.h || 2.5) - 0.12;
+        if (Number.isFinite(this.deckF) && r.y < this.deckF - 0.5) top = Math.min(top, this.deckF - 0.12);
+        camL.y = clamp(camL.y, r.y + 0.4, top);
+      }
+      eyeL = camL; lookL = head;
+    } else lookL = eyeL.clone().add(dirL);
+    const eye = eyeL.applyMatrix4(mesh.matrixWorld), look = lookL.clone().applyMatrix4(mesh.matrixWorld);
+    const dir = look.clone().sub(eye).normalize();
     app.camera.up.set(0, 1, 0).applyQuaternion(mesh.quaternion);
     app.camera.position.copy(eye);
-    app.camera.lookAt(eye.clone().add(dir));
-    this.light.position.copy(eye).add(dir.clone().multiplyScalar(0.6)).add(new THREE.Vector3(0, 0.8, 0));
+    app.camera.lookAt(look);
+    { // the lamp hangs under the ceiling of the room the crew member is in (never inside a wall or above the roof)
+      const r = this.roomAt(this.pos.x, this.pos.z, this.y);
+      const lampL = new THREE.Vector3(this.pos.x, r ? r.y + (r.h || 2.5) - 0.25 : this.y + 2.2, this.pos.z);
+      this.light.position.copy(lampL.applyMatrix4(mesh.matrixWorld));
+    }
     // ---- screens
     const now = performance.now();
     if (this.radarTex && app.lastRadar !== this.lastRadarT) { this.lastRadarT = app.lastRadar; this.radarTex.needsUpdate = true; }
@@ -255,16 +353,25 @@ export class Interior {
     for (const r of this.ramps) if (x >= r.x0 + 0.08 && x <= r.x1 - 0.08 && z >= r.z0 && z <= r.z1) consider(r.y0 + ((r.y1 - r.y0) * (z - r.z0)) / Math.max(0.01, r.z1 - r.z0));
     return best;
   }
+  blocked(x, z) {
+    const R = 0.25;
+    for (const b of this.solids) if (Math.abs(b.y - this.y) < 1.2 && x > b.x0 - R && x < b.x1 + R && z > b.z0 - R && z < b.z1 + R) return true;
+    return false;
+  }
+  canStand(x, z) { return this.floorAt(x, z, this.y) != null && !this.blocked(x, z); }
   tryMove(dx, dz) {
     const p = this.pos;
-    if (this.floorAt(p.x + dx, p.z + dz, this.y) != null) { p.x += dx; p.z += dz; return; }
-    if (this.floorAt(p.x + dx, p.z, this.y) != null) { p.x += dx; return; }
-    if (this.floorAt(p.x, p.z + dz, this.y) != null) { p.z += dz; }
+    const inside = this.blocked(p.x, p.z); // spawned / teleported into furniture: let the walker step out freely
+    const ok = (x, z) => this.floorAt(x, z, this.y) != null && (inside || !this.blocked(x, z));
+    if (ok(p.x + dx, p.z + dz)) { p.x += dx; p.z += dz; return; }
+    if (ok(p.x + dx, p.z)) { p.x += dx; return; }
+    if (ok(p.x, p.z + dz)) { p.z += dz; }
   }
 
   // ------------------------------------------------------------------ construction
   dispose() {
     if (this.group) { this.group.parent?.remove(this.group); (ShipMod.disposeGroup || disposeFallback)(this.group); this.group = null; }
+    this.avatar = null; this.solids = [];
     this.rooms = []; this.doors = []; this.ramps = []; this.hotspots = []; this.gauge = null; this.radarTex = null; this.wheel = null; this.lever = null;
     this.builtFor = null; this.builtCls = null;
   }
@@ -276,6 +383,7 @@ export class Interior {
     const L = mesh.userData.length || C.length, B = mesh.userData.beam || C.beam, F = mesh.userData.freeboard || Math.max(3, L * 0.045);
     const deckY = mesh.userData.deckY ?? F + 1.1;
     const lay = LAYOUT[cls] || DEFAULT_LAYOUT;
+    this.deckF = F; // the hull's top (main deck) is solid from above: cameras below it must stay below it
     const g = new THREE.Group(); g.name = 'interior'; g.visible = false;
     const M = this.makeMaterials(lay.type);
     this.mats = M;
@@ -400,6 +508,8 @@ export class Interior {
     this.doors.push({ x0: x0 + 0.1, x1: x1 - 0.1, z0: z0 - 0.5, z1: z1 + 0.4, y });
   }
   hotspot(kind, label, x, y, z, r = 1.7) { this.hotspots.push({ kind, label, x, y, z, r }); }
+  /** Furniture footprint the walker cannot pass through (ship frame, on the deck at height y). */
+  solid(x0, x1, z0, z1, y) { this.solids.push({ x0: Math.min(x0, x1), x1: Math.max(x0, x1), z0: Math.min(z0, z1), z1: Math.max(z0, z1), y }); }
 
   // ---- furniture
   helmConsole(ctx, x, y, z, w, facing = -1) {
@@ -430,6 +540,7 @@ export class Interior {
     for (let i = 0; i < 5; i++) g.add(box(0.05, 0.05, 0.02, i % 2 ? M.red : new THREE.MeshStandardMaterial({ color: 0x58d68d, emissive: 0x58d68d, emissiveIntensity: 1.2 }), x - w * 0.25 + i * (w * 0.12), y + 1.3, z + facing * 0.385));
     // chair
     g.add(cyl(0.05, 0.6, M.rail, x, y + 0.3, z - facing * 1.6, 8)); g.add(box(0.5, 0.08, 0.5, M.fabric, x, y + 0.62, z - facing * 1.6)); g.add(box(0.5, 0.5, 0.08, M.fabric, x, y + 0.9, z - facing * 1.6 - facing * -0.22));
+    this.solid(x - w / 2, x + w / 2, z - d / 2 - 0.05, z + d / 2 + 0.05, y);
     this.hotspot('helm', 'Take the helm', x, y, z - facing * 1.0, 1.5);
     this.helmPos = { x, y, z: z - facing * 1.0 };
   }
@@ -446,6 +557,7 @@ export class Interior {
     paper.rotation.x = -Math.PI / 2; paper.position.set(x, y + 0.935, z); g.add(paper);
     try { new THREE.TextureLoader().load('/api/chart/region.png', (t) => { t.colorSpace = THREE.SRGBColorSpace; paper.material.map = t; paper.material.color.set(0xffffff); paper.material.needsUpdate = true; }); } catch {}
     const pencil = cyl(0.012, 0.18, M.yellow, x + w * 0.3, y + 0.95, z + d * 0.2, 6); pencil.rotation.z = 1.2; g.add(pencil);
+    this.solid(x - w / 2, x + w / 2, z - d / 2, z + d / 2, y);
     this.hotspot('chart', 'Open the chart', x, y, z, 1.6);
   }
   bunk(ctx, x, y, z, along = 'z', len = 2.0, tiers = 2, flip = false) {
@@ -458,12 +570,15 @@ export class Interior {
       const px = along === 'z' ? x : x + (flip ? -1 : 1) * (len / 2 - 0.3), pz = along === 'z' ? z + (flip ? 1 : -1) * (len / 2 - 0.3) : z;
       g.add(box(along === 'z' ? 0.5 : 0.4, 0.1, along === 'z' ? 0.4 : 0.5, M.pillow, px, yy + 0.22, pz));
     }
+    { const sx = along === 'z' ? w : len, sz = along === 'z' ? len : w; this.solid(x - sx / 2, x + sx / 2, z - sz / 2, z + sz / 2, y); }
     this.hotspot('bunk', 'Rest in the bunk', x, y, z, 1.4);
   }
   table(ctx, x, y, z, w = 1.6, d = 0.8, sofa = true) {
     const { g, M } = ctx;
     g.add(box(w, 0.05, d, M.wood, x, y + 0.75, z)); g.add(box(0.1, 0.72, 0.1, M.rail, x, y + 0.36, z));
     if (sofa) { g.add(box(w + 0.3, 0.45, 0.55, M.fabric2, x, y + 0.23, z + d / 2 + 0.4)); g.add(box(w + 0.3, 0.5, 0.15, M.fabric2, x, y + 0.7, z + d / 2 + 0.6)); }
+    this.solid(x - w / 2, x + w / 2, z - d / 2, z + d / 2, y);
+    if (sofa) this.solid(x - (w + 0.3) / 2, x + (w + 0.3) / 2, z + d / 2 + 0.12, z + d / 2 + 0.68, y);
   }
   galley(ctx, x, y, z, w = 1.8, rotY = 0) {
     const { g, M } = ctx;
@@ -472,6 +587,7 @@ export class Interior {
     k.add(box(0.5, 0.03, 0.4, M.steel, -w * 0.25, 0.96, 0)); for (let i = 0; i < 4; i++) k.add(cyl(0.07, 0.02, M.dark, -w * 0.25 + (i % 2 ? 0.14 : -0.14), 0.98, i < 2 ? -0.1 : 0.1, 10));
     k.add(box(0.45, 0.02, 0.35, M.rail, w * 0.25, 0.95, 0)); k.add(box(w * 0.8, 0.6, 0.35, M.white, 0, 1.75, -0.12));
     g.add(k);
+    { const c = Math.abs(Math.cos(rotY)), sn = Math.abs(Math.sin(rotY)); const hx = (w / 2) * c + 0.3 * sn, hz = (w / 2) * sn + 0.3 * c; this.solid(x - hx, x + hx, z - hz, z + hz, y); }
   }
   engineBlock(ctx, x, y, z, L) {
     const { g, M } = ctx;
@@ -483,6 +599,8 @@ export class Interior {
     const shaft = cyl(ew * 0.12, el * 0.9, M.rail, x - ew * 0.5, y + eh * 0.6, z, 8); shaft.rotation.x = Math.PI / 2; g.add(shaft);
     g.add(box(0.35, 0.5, 0.6, M.yellow, x + ew * 0.7 + 0.3, y + 0.45, z - el * 0.3));
     g.add(box(0.4, 1.9, 0.5, M.wallDark, x - ew - 0.6, y + 0.95, z + el * 0.3)); g.add(box(0.8, 0.5, 0.5, M.steel, x - ew - 0.6, y + 0.25, z - el * 0.1));
+    this.solid(x - (ew + 0.5) / 2 - ew * 0.5, x + (ew + 0.5) / 2 + 0.5, z - (el + 0.6) / 2, z + (el + 0.6) / 2, y);
+    this.solid(x - ew - 1.0, x - ew - 0.2, z + el * 0.3 - 0.25, z + el * 0.3 + 0.25, y);
   }
   gaugePanel(ctx, x, y, z, rotY = 0) {
     const { g, M } = ctx;
