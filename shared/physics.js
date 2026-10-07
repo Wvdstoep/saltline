@@ -37,8 +37,16 @@ export function stepShip(s, input, env, dt) {
   s.throttleCmd = thrCmd; s.rudderCmd = rudderCmd;
 
   // Speed follows a first-order lag towards the target.
-  const speedPenalty = Math.max(0.1, 1 - 0.35 * (1 - cond) - 0.5 * flooding - 0.15 * loadFrac);
-  let target = C.maxKn * s.throttle * speedPenalty;
+  const sea = Math.max(0, Math.min(1, num(env.sea, 0)));           // 0 calm .. 1 storm
+  const speedPenalty = Math.max(0.1, 1 - 0.35 * (1 - cond) - 0.5 * flooding - 0.15 * loadFrac - 0.35 * sea * sea) * (env.towing ? (C.towPower ? 0.95 : 0.65) : 1);
+  let target;
+  if (C.sail) {
+    // Sailing yacht: wind drives the hull through a simple polar; the auxiliary engine adds up to auxKn.
+    const sailPower = env.sailsUp === false ? 0 : sailPolar(s.hdg, env.wind);
+    const aux = Math.max(-0.3, Math.min(1, s.throttle)) * (C.auxKn || 5);
+    target = Math.max(aux, C.maxKn * sailPower) * speedPenalty;
+    if (s.throttle < 0) target = aux * speedPenalty;
+  } else target = C.maxKn * s.throttle * speedPenalty;
   if (env.grounded) target = 0;
   const tau = Math.abs(target) > Math.abs(s.spd) ? 25 : 45;
   s.spd += (target - s.spd) * Math.min(1, dt / tau);
@@ -71,13 +79,13 @@ export function fuelBurnPerSimHour(cls, throttle, loadFrac, headwind, cond) {
   const C = SHIP_CLASSES[cls] || SHIP_CLASSES.coaster;
   const t = Math.abs(throttle);
   return C.burn * (0.1 + 0.9 * t ** 3) * (1 + 0.4 * loadFrac) * (1 + 0.3 * Math.max(0, headwind)) *
-    (1 + 0.25 * (1 - cond / 100));
+    (1 + 0.25 * (1 - cond / 100)) * (C.sail && t < 0.05 ? 0 : 1);
 }
 
 // Condition loss in points per SIM hour while under way.
-export function wearPerSimHour(throttle, windSpeed) {
+export function wearPerSimHour(throttle, windSpeed, wearMul = 1) {
   const t = Math.abs(throttle);
-  return 0.15 + 0.6 * t * t + 0.3 * Math.min(2, windSpeed / 20);
+  return (0.15 + 0.6 * t * t + 0.3 * Math.min(2, windSpeed / 20) + (windSpeed > 17 ? 0.8 * Math.min(2, (windSpeed - 17) / 8) : 0)) * wearMul;
 }
 
 // Analytic surface current field (m/s, east/north). Coarse but recognisable.
@@ -100,6 +108,19 @@ export function currentAt(lat, lon, simTimeSec) {
     u += 0.4; // Antarctic circumpolar
   }
   return { u, v };
+}
+
+// Sail polar: fraction of hull speed as a function of the true wind angle and strength. No-go zone < 35°.
+export function sailPolar(hdgDeg, wind) {
+  if (!wind) return 0;
+  const spd = Math.hypot(num(wind.u, 0), num(wind.v, 0));
+  if (spd < 0.5) return 0;
+  const fromDeg = (Math.atan2(-num(wind.u, 0), -num(wind.v, 0)) * 180) / Math.PI; // direction the wind blows FROM
+  let a = Math.abs((((hdgDeg - fromDeg) % 360) + 540) % 360 - 180);           // 0 = head to wind, 180 = dead run
+  let f;
+  if (a < 35) f = 0; else if (a < 60) f = 0.45 + ((a - 35) / 25) * 0.4; else if (a <= 120) f = 0.85 + Math.sin(((a - 60) / 60) * Math.PI) * 0.15; else if (a <= 150) f = 0.85 - ((a - 120) / 30) * 0.1; else f = 0.75 - ((a - 150) / 30) * 0.15;
+  const strength = Math.min(1.1, spd / 9) * (spd > 22 ? 0.6 : 1); // reef in a gale
+  return f * strength;
 }
 
 export function headwindFactor(hdgDeg, wind) {

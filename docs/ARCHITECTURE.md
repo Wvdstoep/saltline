@@ -106,3 +106,54 @@ Ship classes (prototype): `coaster` (starter, 90 m, 14 kn, 1 200 t, fuel 80 t), 
 Procedural (prototype): hulls, superstructures, containers, cranes, warehouses, piers, buoys, lighthouses,
 coast-guard cutters, wreck markers, water shader, sky gradient, terrain vertex colouring. Production: PBR ship
 kits with wear masks, harbour kits, vegetation cards, skybox HDRIs, audio.
+
+---
+
+# v0.2 addendum (real time, weather, market, interior)
+
+## Scale and time
+* **1 game unit = 1 real metre** (`GEO.SCALE = 1`) and **kinematics run in real time** (`SIM.MOTION_SCALE = 1`).
+  The sim clock IS the wall clock (`simTime` = Unix seconds); day/night follows real local solar time.
+* Voyages take as long as they really take. The crew keeps sailing an autopilot course while the skipper is
+  offline (`action: set_voyage {lat, lon, throttle}` / `{clear: true}`; the server runs `stepShip` for offline
+  players with a voyage and stops them on shoal water). The only way to skip ahead is a paid **express passage**
+  (`action: express {lat, lon}`: `SIM.EXPRESS_CR_PER_NM` credits per nautical mile, plus the fuel and wear the leg
+  would have cost; refused while hailed or docked).
+* Interaction ranges (`INTERACT`) are metres now.
+
+## Weather
+* `game.weatherAt(lat, lon)` → `{ wind:{u,v,spd,dir}, sea (0..1), storm (0..1), rain (0..1) }`: the global
+  wandering wind plus cyclonic storm cells (`storms[]`: `{id,name,lat,lon,radiusKm,intensity}`), which spawn,
+  drift, peak and die over hours. Storms slow ships (`env.sea`), triple wear above 17 m/s, flood a failed hull
+  faster, cut fishing, and are broadcast in every snapshot (`snap.storms`) and the player's `you.weather`.
+* Client: `you.weather` drives sea state, spray/rain, sky, fog and lightning; chart/radar show storm cells.
+
+## Ships and market
+* 17 classes in `SHIP_CLASSES` with `cat` (cargo / working / passenger / motor yacht / sailing yacht), `crewCost`
+  (credits per hour under way), `wearMul`, `towPower` (tugs) and `sail`/`auxKn` (sailing yachts drive through a
+  polar in `shared/physics.js: sailPolar`; `action: sails {up}` furls/sets them; engine throttle is the auxiliary).
+* Shipyard sells new hulls (`harbor.shipyard`, grouped by `cat`); each harbour also lists second-hand hulls
+  (`harbor.used`: `{id, cls, cond, price}`, `action: buy_used {listingId}`); your current ship is traded in at
+  `shipValue(cls, cond)`. Repairs cost `repairCostFor(cls, cond)` (scales with hull value); port dues scale with
+  displacement and harbour class; crew wages are deducted per hour at sea.
+
+## Contracts (all types, with earnings, visible for every harbour at `GET /api/jobs`)
+`freight` (A→B tonnes), `passengers`, `charter` (needs a yacht or ferry, `needsCat`), `fishing` (catch on a named
+ground; only *caught* fish count — `cargo[].caught`), `supply` (load offshore supplies, hold station within
+`PLATFORM_RANGE_U` of a real platform from `PLATFORMS`, `action: deliver_offshore {jobId}`), `tow` (a disabled
+vessel at `job.at`; `action: tow_pickup {jobId}` within `TOW_RANGE_U` at < 3 kn; towing cuts speed by a third
+unless you are a tug, burns 30 % more fuel; paid on docking at `job.to`), `smuggling` (black market).
+Contract cargo is never sellable; abandoning returns/dumps it and charges a 10 % fee. Short deliveries pay pro rata.
+
+## Sinking and rescue
+Flooding ≥ 1 → wreck (cargo persists for salvage) → the player is **adrift** (`you.rescue`): the nearest
+harbour launches a lifeboat (25 kn, < 40 km) or a SAR helicopter (150 kn), visible to everyone (`snap.rescues`),
+capped at 25 minutes. On arrival the player lands at that harbour with the insurance coaster (or a forced reset).
+
+## Fishing telemetry
+`you.fishInfo = { ground, rate (t/h), caught (t this haul), tooFast }` while nets are out.
+
+## Anti-cheat
+Movement plausibility is a distance budget (max speed × elapsed, capped at 5 s of banked distance); every
+rejection answers with `{t:'you', correction:true}` which the client must snap to. All numeric fields are
+sanitised; prototype keys are rejected as goods; hails cannot be escaped by docking, towing or disconnecting.

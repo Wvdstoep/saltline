@@ -108,6 +108,24 @@ export const CHANNELS = [
   { id: 'kattegat_oresund', widthM: 2500, pts: [[56.05, 12.65], [55.90, 12.70], [55.80, 12.68], [55.70, 12.64]] },
 ];
 
+// Offshore installations served by supply contracts (real field positions).
+export const PLATFORMS = [
+  { id: 'ekofisk', name: 'Ekofisk complex', lat: 56.55, lon: 3.21 },
+  { id: 'troll', name: 'Troll A', lat: 60.64, lon: 3.72 },
+  { id: 'brent', name: 'Brent field', lat: 61.07, lon: 1.70 },
+  { id: 'gullfaks', name: 'Gullfaks C', lat: 61.20, lon: 2.27 },
+  { id: 'sleipner', name: 'Sleipner', lat: 58.37, lon: 1.91 },
+  { id: 'forties', name: 'Forties Alpha', lat: 57.72, lon: 0.97 },
+  { id: 'tyra', name: 'Tyra East', lat: 55.72, lon: 4.80 },
+  { id: 'f3', name: 'F3-FA platform', lat: 54.85, lon: 4.72 },
+  { id: 'leman', name: 'Leman field', lat: 53.10, lon: 2.10 },
+  { id: 'l9', name: 'L9 (Dutch sector)', lat: 53.60, lon: 4.90 },
+  { id: 'gom', name: 'Mars TLP (Gulf of Mexico)', lat: 28.17, lon: -89.22 },
+  { id: 'campos', name: 'Campos Basin FPSO', lat: -22.5, lon: -40.0 },
+  { id: 'gulf', name: 'South Pars platform', lat: 26.5, lon: 52.5 },
+  { id: 'bass', name: 'Bass Strait platform', lat: -38.5, lon: 148.0 },
+];
+
 export const FISHING_GROUNDS = [
   { id: 'dogger', name: 'Dogger Bank', lat: 54.7, lon: 2.8, radiusKm: 70, richness: 1.0 },
   { id: 'fladen', name: 'Fladen Ground', lat: 58.8, lon: 0.5, radiusKm: 60, richness: 0.9 },

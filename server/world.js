@@ -157,14 +157,16 @@ export function heightFromDistance(isLand, dCells) {
 
 function carve(land, layer, carvings) {
   const { w, h } = layer;
+  // rCells is the radius in LATITUDE cells; longitude cells are shorter by cos(lat), so paint an ellipse.
   const setWater = (cx, cy, rCells) => {
-    const r2 = rCells * rCells;
-    for (let y = Math.floor(cy - rCells); y <= Math.ceil(cy + rCells); y++) {
+    const lat = layer.def.latMax - cy * layer.res;
+    const rx = rCells / Math.max(0.2, Math.cos((lat * Math.PI) / 180)), ry = rCells;
+    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) {
       if (y < 0 || y >= h) continue;
-      for (let x = Math.floor(cx - rCells); x <= Math.ceil(cx + rCells); x++) {
+      for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
         if (x < 0 || x >= w) continue;
-        const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
-        if (dx * dx + dy * dy <= r2) land[y * w + x] = 0;
+        const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
+        if (dx * dx + dy * dy <= 1) land[y * w + x] = 0;
       }
     }
   };
@@ -191,15 +193,19 @@ function carve(land, layer, carvings) {
 
 function buildLayer(layer, carvings, log) {
   const t0 = Date.now();
-  const rings = [];
+  // Each source is rasterised separately (even-odd within a source) and OR-ed, so minor islands that overlap
+  // the land polygons do not cancel out.
+  let land = null, nRings = 0;
   for (const file of SOURCES[layer.def.name]) {
     const p = path.join(DATA_DIR, file);
     if (!fs.existsSync(p)) { log(`[world] missing ${p} — layer ${layer.def.name} will be all water`); continue; }
     const gj = JSON.parse(fs.readFileSync(p, 'utf8'));
-    rings.push(...collectRings(gj, layer.def));
+    const rings = collectRings(gj, layer.def); nRings += rings.length;
+    const m = rasterize(layer, rings);
+    if (!land) land = m; else for (let i = 0; i < m.length; i++) if (m[i]) land[i] = 1;
   }
-  log(`[world] ${layer.def.name}: ${rings.length} rings, grid ${layer.w}x${layer.h}`);
-  const land = rasterize(layer, rings);
+  if (!land) land = new Uint8Array(layer.w * layer.h);
+  log(`[world] ${layer.def.name}: ${nRings} rings, grid ${layer.w}x${layer.h}`);
   carve(land, layer, carvings);
   const dLand = chamfer(land, layer.w, layer.h, 0);   // for land cells: distance to water
   const dWater = chamfer(land, layer.w, layer.h, 1);  // for water cells: distance to land
@@ -280,6 +286,7 @@ export class World {
 
   // Find nearest water cell (in the finest layer containing the point) within maxCells; used to place spawns.
   nearestWater(lat, lon, maxCells = 20) {
+    if (this.heightAt(lat, lon) < -6) return { lat, lon };
     const layer = this.layerFor(lat, lon);
     const { cx, cy } = layer.cellXY(lat, lon);
     const x0 = Math.floor(cx), y0 = Math.floor(cy);

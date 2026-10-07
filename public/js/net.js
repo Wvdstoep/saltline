@@ -11,12 +11,15 @@ export class Net {
     this.lastStateSent = 0;
     this.reconnectDelay = 1000;
     this.pingTimer = null;
+    this.reconnectTimer = null;
   }
   get token() { try { return localStorage.getItem(TOKEN_KEY) || null; } catch { return null; } }
   set token(t) { try { localStorage.setItem(TOKEN_KEY, t); } catch {} }
 
   connect(name) {
     this.name = name;
+    if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) return; // already connecting / connected
+    clearTimeout(this.reconnectTimer);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.ws = ws;
@@ -33,9 +36,10 @@ export class Net {
       this.h.message?.(m);
     };
     ws.onclose = (ev) => {
+      if (this.ws !== ws) return; // a newer socket superseded this one
       this.connected = false; clearInterval(this.pingTimer);
       this.h.status?.(ev.code === 4001 ? 'replaced' : 'disconnected');
-      if (ev.code !== 4001) setTimeout(() => this.connect(this.name), this.reconnectDelay = Math.min(15000, this.reconnectDelay * 1.6));
+      if (ev.code !== 4001) this.reconnectTimer = setTimeout(() => this.connect(this.name), this.reconnectDelay = Math.min(15000, this.reconnectDelay * 1.6));
     };
     ws.onerror = () => {};
   }
@@ -46,6 +50,7 @@ export class Net {
     this.lastStateSent = now;
     this.send({ t: 'state', lat: s.lat, lon: s.lon, hdg: s.hdg, spd: s.spd, throttle: s.throttle, rudder: s.rudder });
   }
-  action(action, extra = {}) { this.send({ t: 'action', action, ...extra }); }
+  // Envelope fields go last so an extra payload field can never clobber `t` / `action`.
+  action(action, extra = {}) { this.send({ ...extra, t: 'action', action }); }
   chat(text) { this.send({ t: 'chat', text }); }
 }

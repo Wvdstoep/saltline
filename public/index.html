@@ -21,7 +21,7 @@
     <button id="startBtn">Set sail</button>
     <p id="connStatus" class="muted">Connecting…</p>
     <div class="help">
-      <b>W/S</b> throttle · <b>A/D</b> rudder · <b>T</b> dock / undock · <b>M</b> chart (click to set waypoint) · <b>P</b> autopilot ·
+      <b>W/S</b> throttle · <b>A/D</b> rudder · <b>T</b> dock / harbour panel · <b>M</b> chart (click to set waypoint) · <b>P</b> autopilot ·
       <b>Tab</b> ships nearby · <b>F</b> fish · <b>K</b> damage-control kit · <b>Enter</b> chat · <b>C</b> camera · <b>H</b> help · drag mouse to look, wheel to zoom
     </div>
   </div>
@@ -39,6 +39,7 @@
     <span class="stat"><label>Sim clock</label><b id="hbClock">00:00</b></span>
     <span class="stat"><label>Wind</label><b id="hbWind">—</b></span>
     <span class="stat"><label>Ping</label><b id="hbPing">—</b></span>
+    <span id="connPill" class="pill bad hidden">offline — reconnecting</span>
     <span id="hbOnline" class="muted"></span>
   </div>
 
@@ -62,8 +63,16 @@
     <div id="radarCtl"><button data-r="-">−</button><span id="radarRange">10 km</span><button data-r="+">+</button></div>
   </div>
 
+  <div id="touch" aria-label="Touch helm">
+    <button id="tchThrDn" title="Throttle down">−</button>
+    <button id="tchPort" title="Rudder to port (hold)">◀</button>
+    <button id="tchStbd" title="Rudder to starboard (hold)">▶</button>
+    <button id="tchThrUp" title="Throttle up">+</button>
+  </div>
+
   <div id="actions">
     <button id="btnDock">Dock (T)</button>
+    <button id="btnCastOff" class="hidden">Cast off</button>
     <button id="btnChart">Chart (M)</button>
     <button id="btnShips">Ships (Tab)</button>
     <button id="btnFish">Fish (F)</button>
@@ -116,9 +125,9 @@
     <div class="panelHead"><b>How to play</b><button class="close" data-close="helpWrap">×</button></div>
     <div class="prose">
       <p><b>Survive.</b> Fuel burns with throttle³, load and headwind — bunker at harbour fuel docks. Hull condition decays under way; below 30 % steering goes sluggish and leaks start; at 0 % you take on water and sink. Repairs at the yard, or a damage-control kit (K) at sea. Run aground and you lose 5 % per bump.</p>
-      <p><b>Trade.</b> Dock (T, under 3 kn, within 220 m of a harbour) to take freight, passenger and fishing contracts, buy low / sell high on the commodity market, or <i>look around</i> for the black-market contact whose runs pay 5× — with contraband aboard.</p>
+      <p><b>Trade.</b> Dock (T, under 3 kn, within about 1.5 nm of a harbour) to take freight, passenger and fishing contracts, buy low / sell high on the commodity market, or <i>look around</i> for the black-market contact whose runs pay 5× — with contraband aboard. While docked, T reopens the harbour panel; <b>Cast off</b> puts you back to sea.</p>
       <p><b>The law.</b> Coast-guard cutters patrol chokepoints and hail ships. Heave to (under 2 kn) within 30 s or become wanted. Caught with contraband: heavy fine, impound if you cannot pay, forced reset for repeat offenders. Port authorities also inspect at the quay.</p>
-      <p><b>Multiplayer.</b> Everyone sails the same persistent ocean. Alongside another ship (150 m) or in the same harbour you can trade cargo, form a convoy (escorts halve boarding odds), or board a slow ship and take half its cargo — which makes you wanted. Sunk ships leave salvageable wrecks.</p>
+      <p><b>Multiplayer.</b> Everyone sails the same persistent ocean. Close to another ship (about 1 nm) or in the same harbour you can trade cargo, form a convoy (escorts halve boarding odds), or board a slow ship and take half its cargo — which makes you wanted. Sunk ships leave salvageable wrecks.</p>
       <p><b>Navigation.</b> Radar (bottom right), chart (M), telemetry (bottom left), waypoint + autopilot (P). The map is the real Earth at 1:13; ships move 39× real time so a Rotterdam–Hull run takes ~14 minutes.</p>
       <p class="muted">Design document: <a href="/docs/GDD.md" target="_blank">GDD.md</a> · Architecture: <a href="/docs/ARCHITECTURE.md" target="_blank">ARCHITECTURE.md</a></p>
     </div>

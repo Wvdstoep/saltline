@@ -15,6 +15,7 @@ export class Hud {
     this.logEntries = [];
     this.harborTab = 'jobs';
     this.harborData = null;
+    this.harborDirty = false; // a harbour re-render was skipped because the player was typing in the panel
     this.bind();
   }
   bind() {
@@ -23,8 +24,19 @@ export class Hud {
     $('nameInput').onkeydown = (e) => { if (e.key === 'Enter') a.start($('nameInput').value.trim()); };
     try { $('nameInput').value = localStorage.getItem('saltline.name') || ''; } catch {}
     document.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => $(b.dataset.close).classList.add('hidden'); });
+    // A clicked button would otherwise keep keyboard focus, and Space ('all stop') would re-fire it.
+    document.addEventListener('click', (e) => { const b = e.target.closest?.('button'); if (b) b.blur(); });
+    const hw = $('harborWrap');
+    hw.addEventListener('click', (e) => {
+      if (!e.target.closest?.('button')) return;
+      const ae = document.activeElement; // clicking any harbour button ends text entry in the panel (Safari keeps inputs focused)
+      if (ae && ae !== document.body && hw.contains(ae)) ae.blur();
+      if (this.harborDirty) this.renderHarborTabs();
+    });
+    hw.addEventListener('focusout', (e) => { if (this.harborDirty && !(e.relatedTarget && hw.contains(e.relatedTarget))) this.renderHarborTabs(); });
     $('btnDock').onclick = () => a.toggleDock();
-    $('btnUndock').onclick = () => a.toggleDock();
+    $('btnCastOff').onclick = () => a.castOff();
+    $('btnUndock').onclick = () => a.castOff();
     $('btnChart').onclick = () => this.toggleChart();
     $('btnShips').onclick = () => this.toggleShips();
     $('btnFish').onclick = () => a.net.action('fish', { on: !a.you?.fishing });
@@ -42,8 +54,15 @@ export class Hud {
     };
   }
   setStatus(t) { $('connStatus').textContent = t; }
+  /** Connection pill in the HUD top bar: 'connected' | 'disconnected' | 'replaced'. */
+  setConn(s) {
+    const el = $('connPill'); if (!el) return;
+    el.classList.toggle('hidden', s === 'connected');
+    el.textContent = s === 'replaced' ? 'offline — logged in elsewhere' : 'offline — reconnecting';
+  }
   showWelcome(show) { $('welcome').classList.toggle('hidden', !show); $('hud').classList.toggle('hidden', show); }
   anyOverlayOpen() { return ['chartWrap', 'harborWrap', 'shipsWrap', 'helpWrap'].some((id) => !$(id).classList.contains('hidden')); }
+  transientOpen() { return ['chartWrap', 'shipsWrap', 'helpWrap'].some((id) => !$(id).classList.contains('hidden')); }
   closeOverlays() { for (const id of ['chartWrap', 'shipsWrap', 'helpWrap']) $(id).classList.add('hidden'); }
 
   // ---------------------------------------------------------------- log / chat / alerts
@@ -94,7 +113,8 @@ export class Hud {
     $('hbOnline').textContent = `${onlineCount} online`;
     $('btnFish').classList.toggle('on', !!you.fishing);
     $('btnPatch').textContent = `Kit (K) ×${you.kits || 0}`;
-    $('btnDock').textContent = you.docked ? 'Cast off (T)' : 'Dock (T)';
+    $('btnDock').textContent = you.docked ? (this.harborOpen() ? 'Cast off (T)' : 'Harbour (T)') : 'Dock (T)';
+    $('btnCastOff').classList.toggle('hidden', !you.docked);
     $('btnTow').classList.toggle('hidden', !!you.docked);
   }
   updateTelemetry(ship, info) {
@@ -106,8 +126,8 @@ export class Hud {
     $('tCur').textContent = info.current ? `${Math.round(info.current.set)}° ${info.current.drift.toFixed(1)} kn` : '—';
     $('tThr').textContent = Math.round(ship.throttleCmd * 100) + '%'; $('tRud').textContent = ship.rudder > 0.05 ? `S${Math.round(ship.rudder * 35)}` : ship.rudder < -0.05 ? `P${Math.round(-ship.rudder * 35)}` : '0';
     $('tFlood').textContent = Math.round(info.flooding * 100) + '%'; $('tFlood').style.color = info.flooding > 0.05 ? 'var(--red)' : '';
-    $('tNear').textContent = info.nearest ? `${info.nearest.name.split(' (')[0]} ${info.nearest.dist}` : '—';
-    $('tWp').textContent = info.wp ? `${info.wp.dist} brg ${String(Math.round(info.wp.brg)).padStart(3, '0')}°${info.autopilot ? ' AP' : ''}` : 'none';
+    $('tNear').textContent = info.nearest ? `${info.nearest.dist} ${info.nearest.name.split(' (')[0]}` : '—'; // distance first: a long name truncates, not the range
+    $('tWp').textContent = info.wp ? `${info.wp.dist} ${String(Math.round(info.wp.brg)).padStart(3, '0')}°${info.autopilot ? ' AP' : ''}` : 'none';
     $('tEta').textContent = info.wp ? info.wp.eta : '—';
     $('tJobs').textContent = info.jobs; $('tStatus').textContent = info.status;
     const thr = ship.throttle; $('barThr').style.width = Math.max(0, thr) * 100 + '%'; $('barThr').style.background = thr < 0 ? 'var(--accent)' : 'var(--green)';
@@ -166,8 +186,13 @@ export class Hud {
     const W = cv.width, H = cv.height;
     const img = this.chartImg[this.chartMode];
     if (!img) {
-      const im = new Image(); im.onload = () => { this.chartImg[this.chartMode] = im; if (this.chartOpen()) this.drawChart(); };
-      im.src = `/api/chart/${this.chartMode}.png`;
+      if (img !== false) { // not yet requested (false = in flight): store it under the mode it was requested FOR, not the mode current at load time
+        const mode = this.chartMode; this.chartImg[mode] = false;
+        const im = new Image();
+        im.onload = () => { this.chartImg[mode] = im; if (this.chartOpen() && this.chartMode === mode) this.drawChart(); };
+        im.onerror = () => { this.chartImg[mode] = null; };
+        im.src = `/api/chart/${mode}.png`;
+      }
       ctx.fillStyle = '#0a2238'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#9ad7ff'; ctx.font = '16px sans-serif'; ctx.fillText('Loading chart…', 20, 30);
     } else ctx.drawImage(img, 0, 0, W, H);
     const a = this.app;
@@ -215,6 +240,12 @@ export class Hud {
   showTab(t) { this.harborTab = t; document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t)); document.querySelectorAll('.tab').forEach((el) => el.classList.toggle('hidden', el.id !== 'tab-' + t)); }
   renderHarborTabs() {
     const h = this.harborData, you = this.app.you, net = this.app.net; if (!h || !you) return;
+    const root = $('harborWrap'), ae = document.activeElement;
+    // Never rebuild the panel under the player's fingers: a focused quantity box would lose its value and focus
+    // (and the next keystrokes would become hotkeys). Mark it dirty; the click/focusout handlers catch up.
+    if (ae && ae.tagName === 'INPUT' && root.contains(ae)) { this.harborDirty = true; return; }
+    this.harborDirty = false;
+    const qty = {}; root.querySelectorAll('[data-qty]').forEach((i) => { qty[i.dataset.qty] = i.value; }); // typed quantities survive the rebuild
     const C = SHIP_CLASSES[you.ship.cls];
     const mass = you.cargo.reduce((s, c) => s + c.qty, 0);
     const hname = (id) => this.app.world.harbors.find((x) => x.id === id)?.name || id;
@@ -239,10 +270,10 @@ export class Hud {
     $('tab-shady').innerHTML = !h.contactLooked ? `<p>Wander the quays and see who wants to talk.</p><button data-look="1">Look around</button>` : h.contact ? `<p><b>${h.contact.name}</b> keeps their voice low. Illegal cargo pays five times the going rate — if the coast guard does not find it.</p><table>${h.contact.jobs.map((j) => jobRow(j, true)).join('')}</table>` : '<p class="muted">Nobody here wants to talk business today. Try another harbour.</p>';
     $('tab-players').innerHTML = h.dockedPlayers.length ? `<table>${h.dockedPlayers.map((p) => `<tr><td>${p.name}</td><td>${this.playerActions(p.id)}</td></tr>`).join('')}</table>` : '<p class="muted">No other skippers are docked here right now.</p>';
     $('tab-shipyard').innerHTML = `<table><tr><th>Class</th><th>Spec</th><th class="num">Price</th><th></th></tr>${h.shipyard.map((s) => { const c = SHIP_CLASSES[s.id]; return `<tr><td><b>${s.name}</b><br><span class="muted">${s.desc}</span></td><td>${c.length} m · ${c.maxKn} kn · ${c.capacity} t · ${c.pax} pax · ${c.fuelCap} t fuel</td><td class="num">${fmt(s.price)}</td><td><button data-ship="${s.id}" ${you.ship.cls === s.id ? 'disabled' : ''}>${you.ship.cls === s.id ? 'Owned' : 'Buy'}</button></td></tr>`; }).join('')}</table><p class="muted">Trade-in: half of your current ship's price, scaled by condition.</p>`;
-    const root = $('harborWrap');
+    root.querySelectorAll('[data-qty]').forEach((i) => { if (qty[i.dataset.qty] != null) i.value = qty[i.dataset.qty]; });
     root.querySelectorAll('[data-job]').forEach((b) => (b.onclick = () => net.action('accept_job', { jobId: b.dataset.job })));
     root.querySelectorAll('[data-abandon]').forEach((b) => (b.onclick = () => net.action('abandon_job', { jobId: b.dataset.abandon })));
-    root.querySelectorAll('[data-fuel]').forEach((b) => (b.onclick = () => net.action('buy_fuel', { t: +b.dataset.fuel })));
+    root.querySelectorAll('[data-fuel]').forEach((b) => (b.onclick = () => net.action('buy_fuel', { tonnes: +b.dataset.fuel })));
     root.querySelectorAll('[data-repair]').forEach((b) => (b.onclick = () => net.action('repair')));
     root.querySelectorAll('[data-kit]').forEach((b) => (b.onclick = () => net.action('buy_kit')));
     root.querySelectorAll('[data-dump]').forEach((b) => (b.onclick = () => { if (confirm('Dump this cargo overboard?')) net.action('dump_cargo', { good: b.dataset.dump }); }));

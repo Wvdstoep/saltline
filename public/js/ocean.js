@@ -39,7 +39,8 @@ void main() {
   float hx = hgt(p + vec2(e, 0.0)); float hz = hgt(p + vec2(0.0, e));
   vNormal = normalize(vec3(h - hx, e, h - hz));
   vHeight = h;
-  vec3 pos = vec3(wp.x + off.x, h, wp.z + off.y);
+  // keep the mesh's own y (the far ring is translated below the near plane) and add the wave on top of it
+  vec3 pos = vec3(wp.x + off.x, wp.y + h, wp.z + off.y);
   vWorld = pos;
   vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mvPosition;
@@ -81,8 +82,15 @@ void main() {
   col = mix(col, vec3(0.92, 0.95, 0.97), foam * 0.85);
   col *= 1.0 - 0.45 * uNight;
   gl_FragColor = vec4(col, 1.0);
+  // same tail as three's built-in materials: tone-map, encode linear → output colour space, then fog (fogColor is
+  // already in the output space)
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
+
+/** Model-space y of the far ring: below the deepest trough (sum of amplitudes 1.88 × max wind factor 2.2 ≈ 4.1). */
+const FAR_Y = -6;
 
 export class Ocean {
   constructor(scene, size = 4400, segs = 176) {
@@ -111,9 +119,17 @@ export class Ocean {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 1;
     scene.add(this.mesh);
-    // far, coarse ring so the horizon is water all the way into the fog
+    // far, coarse ring so the horizon is water all the way into the fog. Its 48×48 grid is 12 cells across the near
+    // plane, so the triangles under the near mesh are dropped (the two surfaces never intersect) and it sits FAR_Y below.
     const farGeo = new THREE.PlaneGeometry(size * 4, size * 4, 48, 48); farGeo.rotateX(-Math.PI / 2);
-    this.far = new THREE.Mesh(farGeo, mat); this.far.position.y = -2.5; this.far.frustumCulled = false; this.far.renderOrder = 0; scene.add(this.far);
+    const fp = farGeo.attributes.position, fi = farGeo.getIndex().array, keep = [], inner = size / 2 - 1;
+    for (let t = 0; t < fi.length; t += 3) {
+      const cx = (fp.getX(fi[t]) + fp.getX(fi[t + 1]) + fp.getX(fi[t + 2])) / 3, cz = (fp.getZ(fi[t]) + fp.getZ(fi[t + 1]) + fp.getZ(fi[t + 2])) / 3;
+      if (Math.abs(cx) < inner && Math.abs(cz) < inner) continue;
+      keep.push(fi[t], fi[t + 1], fi[t + 2]);
+    }
+    farGeo.setIndex(keep);
+    this.far = new THREE.Mesh(farGeo, mat); this.far.position.y = FAR_Y; this.far.frustumCulled = false; this.far.renderOrder = 0; scene.add(this.far);
     this.windF = 1;
   }
   /** windSpeed m/s → wave factor */
@@ -127,7 +143,7 @@ export class Ocean {
     this.uniforms.uTime.value = time; this.uniforms.uWind.value = this.windF;
     const q = this.size / this.segs;
     this.mesh.position.set(Math.round(cx / q) * q, 0, Math.round(cz / q) * q);
-    this.far.position.set(this.mesh.position.x, -2.5, this.mesh.position.z);
+    this.far.position.set(this.mesh.position.x, FAR_Y, this.mesh.position.z);
   }
   /** Rebuild the depth texture around (cx,cz) using sampler(x,z) → real metres height (null = unknown). */
   rebuildDepth(cx, cz, sampler, force) {

@@ -19,8 +19,8 @@ class App {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.0;
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(0xbfd9ee, 1200, 5200);
-    this.camera = new THREE.PerspectiveCamera(60, 1, 1, 12000);
+    this.scene.fog = new THREE.Fog(0xbfd9ee, 3000, 15000);
+    this.camera = new THREE.PerspectiveCamera(60, 1, 0.5, 40000);
     this.sun = new THREE.DirectionalLight(0xfff2d0, 2.2); this.scene.add(this.sun); this.scene.add(this.sun.target);
     this.hemi = new THREE.HemisphereLight(0x9fc4e8, 0x3a4a3a, 0.9); this.scene.add(this.hemi);
     this.sky = this.makeSky();
@@ -45,22 +45,31 @@ class App {
   }
   resize() { const w = innerWidth, h = innerHeight; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
   makeSky() {
-    const geo = new THREE.SphereGeometry(9000, 24, 12);
+    const geo = new THREE.SphereGeometry(30000, 24, 12);
     const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false, fog: false,
       uniforms: { top: { value: new THREE.Color(0x3f7fc9) }, horizon: { value: new THREE.Color(0xbfd9ee) }, sunDir: { value: new THREE.Vector3(0, 1, 0) }, sunCol: { value: new THREE.Color(0xfff0c0) } },
       vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
       fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol; varying vec3 vDir;
         void main(){ float t = clamp(vDir.y, -0.1, 1.0); vec3 c = mix(horizon, top, pow(max(0.0,t), 0.55)); float s = max(0.0, dot(normalize(vDir), sunDir));
-        c += sunCol * (pow(s, 600.0) * 1.5 + pow(s, 8.0) * 0.12); if (vDir.y < 0.0) c = mix(c, horizon * 0.55, min(1.0, -vDir.y * 8.0)); gl_FragColor = vec4(c, 1.0); }`,
+        c += sunCol * (pow(s, 600.0) * 1.5 + pow(s, 8.0) * 0.12); if (vDir.y < 0.0) c = mix(c, horizon * 0.55, min(1.0, -vDir.y * 8.0)); gl_FragColor = vec4(c, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        }`,
     });
     const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; this.scene.add(m); return m;
   }
 
   // ------------------------------------------------------------------ networking
-  onStatus(s) { this.hud.setStatus(s === 'connected' ? 'Connected to the shard.' : s === 'replaced' ? 'This skipper logged in from another tab.' : 'Disconnected — reconnecting…'); if (s === 'connected' && this.started) this.net.send({ t: 'hello', token: this.net.token, name: this.net.name }); }
+  onStatus(s) {
+    this.hud.setStatus(s === 'connected' ? 'Connected to the shard.' : s === 'replaced' ? 'This skipper logged in from another tab. Set sail again to take the helm back here.' : 'Disconnected — reconnecting…');
+    this.hud.setConn(s);
+    if (s === 'replaced') { this.started = false; this.hud.showWelcome(true); return; } // the socket is dead for good: bring the login card back
+    if (s === 'connected' && this.pendingName != null) { const n = this.pendingName; this.pendingName = null; this.start(n); return; }
+    if (s === 'connected' && this.started) this.net.send({ t: 'hello', token: this.net.token, name: this.net.name });
+  }
   start(name) {
-    if (!this.net.connected) { this.hud.setStatus('Still connecting… try again in a second.'); return; }
+    if (!this.net.connected) { this.pendingName = name; this.hud.setStatus('Connecting… you will set sail as soon as the shard answers.'); this.net.connect(name); return; }
     try { localStorage.setItem('saltline.name', name); } catch {}
     this.started = true; this.net.name = name;
     this.net.send({ t: 'hello', token: this.net.token, name });
@@ -70,12 +79,12 @@ class App {
     switch (m.t) {
       case 'welcome': this.onWelcome(m); break;
       case 'snap': this.onSnap(m); break;
-      case 'you': this.onYou(m.you); break;
+      case 'you': this.onYou(m.you, false, !!m.correction); break;
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
       case 'harbor': this.hud.showHarbor(m.harbor); break;
       case 'chat': this.hud.chat(m); break;
       case 'join': this.hud.event({ kind: 'info', text: `${m.player.name} came online.` }); break;
-      case 'leave': { const o = this.others.get(m.id); if (o) { this.hud.event({ kind: 'info', text: `${o.name} went offline.` }); this.scene.remove(o.mesh); this.others.delete(m.id); } break; }
+      case 'leave': { const o = this.others.get(m.id); if (o) { this.hud.event({ kind: 'info', text: `${o.name} went offline.` }); this.drop(o.mesh); this.others.delete(m.id); } break; }
       case 'rename': { const o = this.others.get(m.id); if (o) { o.name = m.name; o.mesh.userData.label?.userData.setText(m.name); } break; }
       case 'wrecks': this.wrecks = m.wrecks; this.syncWrecks(); break;
       case 'trade': this.hud.prompt(m.offer.id, `<b>${m.offer.fromName}</b> offers <b>${m.offer.qty} t ${m.offer.goodName}</b>${m.offer.contraband ? ' <span class="pill bad">contraband</span>' : ''} for <b>${m.offer.price.toLocaleString()} cr</b>.`, [{ label: 'Accept', primary: true, fn: () => this.net.action('trade_accept', { offerId: m.offer.id }) }, { label: 'Decline', fn: () => this.net.action('trade_decline', { offerId: m.offer.id }) }]); break;
@@ -93,39 +102,54 @@ class App {
     this.ready = true;
     if (!this.started) this.hud.setStatus('Connected. Pick a name and set sail.');
   }
-  onYou(you, first) {
+  // `correction` is set by the server when it rejected / moved our position: always snap to its ship then, otherwise
+  // the two sides disagree forever (the server keeps rejecting every state sent from the stale client position).
+  onYou(you, first, correction) {
     const prev = this.you;
     this.you = you;
     const s = you.ship;
-    if (!this.ship || first || !prev || prev.ship.cls !== s.cls || !!prev.docked !== !!you.docked || unitsBetween(this.ship.lat, this.ship.lon, s.lat, s.lon) > 400) {
-      this.ship = { ...s, throttleCmd: s.throttle, rudderCmd: 0 };
-      this.input.throttleCmd = you.docked ? 0 : s.throttle; this.input.rudderCmd = 0;
+    const hard = !this.ship || first || !prev || prev.ship.cls !== s.cls || !!prev.docked !== !!you.docked || unitsBetween(this.ship.lat, this.ship.lon, s.lat, s.lon) > 400;
+    if (hard || correction) {
+      // a plain correction is a few hundred metres: keep the helm commands and do not force a frame rebuild
+      this.ship = { ...s, throttleCmd: hard ? s.throttle : this.input.throttleCmd, rudderCmd: hard ? 0 : this.input.rudderCmd };
+      if (hard) { this.input.throttleCmd = you.docked ? 0 : s.throttle; this.input.rudderCmd = 0; }
       if (!this.myMesh || prev?.ship.cls !== s.cls) {
-        if (this.myMesh) this.scene.remove(this.myMesh);
+        if (this.myMesh) this.drop(this.myMesh);
         this.myMesh = buildShip(s.cls, you.name, 7); this.scene.add(this.myMesh);
       }
-      this.recentre(true);
+      this.recentre(hard);
     }
     if (prev && prev.docked && !you.docked) { this.hud.hideHarbor(); }
     if (!prev?.docked && you.docked) { this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.autopilot = false; }
     if (prev?.name !== you.name) this.myMesh?.userData.label?.userData.setText(you.name);
     this.myMesh?.userData.setWear(1 - you.cond / 100); this.myMesh?.userData.setFlood(you.flooding);
-    if (this.hud.harborOpen()) this.hud.renderHarborTabs();
+    if (this.hud.harborOpen()) {
+      // 'you' arrives every second while docked: only rebuild the panel when something it shows actually changed
+      // (or a rebuild was deferred because the player was typing in it); the 'harbor' message re-renders on its own.
+      const key = [you.money, you.fuel, you.cond, you.flooding, you.kits, you.ship.cls, JSON.stringify(you.cargo), JSON.stringify(you.jobs), you.convoy?.members?.length ?? 0].join('|');
+      if (key !== this.lastHarborKey || this.hud.harborDirty) { this.lastHarborKey = key; this.hud.renderHarborTabs(); }
+    }
   }
   onSnap(m) {
     const now = performance.now();
     this.simTime = m.simTime; this.wind = m.wind; this.ocean.setWind(m.wind.spd);
+    if (Number.isFinite(m.time)) { // server clock offset (ms) for countdowns that compare against server timestamps
+      const off = m.time - Date.now();
+      this.clockOffset = this.clockOffset == null || Math.abs(off - this.clockOffset) > 2000 ? off : this.clockOffset + (off - this.clockOffset) * 0.1;
+    }
     const seen = new Set();
     for (const p of m.players) { if (p.id === this.you?.id) continue; seen.add(p.id); this.upsertOther(p, now); }
-    for (const [id, o] of this.others) if (!seen.has(id)) { this.scene.remove(o.mesh); this.others.delete(id); }
+    for (const [id, o] of this.others) if (!seen.has(id)) { this.drop(o.mesh); this.others.delete(id); }
     for (const c of m.cutters) this.upsertCutter(c, now);
   }
+  /** Remove a ship / harbour / wreck / marker group from the scene and free its GPU resources. */
+  drop(obj) { if (!obj) return; this.scene.remove(obj); obj.userData.dispose?.(); }
   upsertOther(p, now) {
     let o = this.others.get(p.id);
     if (!o) {
       o = { id: p.id, name: p.name, cls: p.cls, mesh: buildShip(p.cls, p.name, p.id.charCodeAt(0)), samples: [], cur: { lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }, vis: { heave: 0, pitch: 0, roll: 0 } };
       this.scene.add(o.mesh); this.others.set(p.id, o);
-    } else if (o.cls !== p.cls) { this.scene.remove(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); }
+    } else if (o.cls !== p.cls) { this.drop(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); }
     Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking });
     o.samples.push({ t: now, lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }); if (o.samples.length > 4) o.samples.shift();
     o.mesh.userData.setWear(1 - p.cond / 100); o.mesh.userData.setFlood(p.flooding);
@@ -139,20 +163,24 @@ class App {
   }
   syncWrecks() {
     const ids = new Set(this.wrecks.map((w) => w.id));
-    for (const [id, m] of this.wreckMeshes) if (!ids.has(id)) { this.scene.remove(m); this.wreckMeshes.delete(id); }
-    for (const w of this.wrecks) if (!this.wreckMeshes.has(w.id)) { const m = buildWreck(w.cls); this.scene.add(m); this.wreckMeshes.set(w.id, m); }
+    for (const [id, m] of this.wreckMeshes) if (!ids.has(id)) { this.drop(m); this.wreckMeshes.delete(id); }
+    for (const w of this.wrecks) if (!this.wreckMeshes.has(w.id)) { const m = buildWreck(w.cls); this.place(m, w.lat, w.lon, -2); this.scene.add(m); this.wreckMeshes.set(w.id, m); }
   }
 
   // ------------------------------------------------------------------ world placement
   recentre(force) {
     if (!this.ship) return;
-    const p = toLocal(this.ship.lat, this.ship.lon, this.origin);
+    const p = toLocal(this.ship.lat, this.ship.lon, this.origin); // = the new origin expressed in the old frame
     if (!force && Math.hypot(p.x, p.z) < SIM.ORIGIN_RESHIFT_UNITS) return;
     this.origin = { lat: this.ship.lat, lon: this.ship.lon };
+    // Everything cached in the old frame shifts by -p so there is no frame of nothing: the camera keeps its offset
+    // from the ship, and scenery is re-placed instead of thrown away and rebuilt 500 ms later.
+    this.camera.position.x -= p.x; this.camera.position.z -= p.z;
     this.terrain.setOrigin(this.origin);
     this.ocean.rebuildDepth(0, 0, (x, z) => this.heightLocal(x, z), true);
-    for (const [id, m] of this.harborMeshes) this.scene.remove(m); this.harborMeshes.clear();
-    for (const [id, m] of this.groundMeshes) this.scene.remove(m); this.groundMeshes.clear();
+    for (const [id, m] of this.harborMeshes) { const h = this.world.harbors.find((x) => x.id === id); if (h) this.place(m, h.lat, h.lon); else { this.drop(m); this.harborMeshes.delete(id); } }
+    for (const [id, m] of this.groundMeshes) { const g = this.world.fishing.find((x) => x.id === id); if (g) this.place(m, g.lat, g.lon); else { this.drop(m); this.groundMeshes.delete(id); } }
+    for (const w of this.wrecks) { const m = this.wreckMeshes.get(w.id); if (m) this.place(m, w.lat, w.lon, -2); }
   }
   heightLocal(x, z) { const ll = fromLocal(x, z, this.origin); return this.terrain.heightAt(ll.lat, ll.lon); }
   place(obj, lat, lon, y = 0) { const p = toLocal(lat, lon, this.origin); obj.position.set(p.x, y, p.z); return p; }
@@ -163,13 +191,13 @@ class App {
       const d = unitsBetween(s.lat, s.lon, h.lat, h.lon);
       const has = this.harborMeshes.has(h.id);
       if (d < 9000 && !has) { const m = buildHarbor(h, this.osm?.[h.id]); this.place(m, h.lat, h.lon); this.scene.add(m); this.harborMeshes.set(h.id, m); }
-      else if (d > 11000 && has) { this.scene.remove(this.harborMeshes.get(h.id)); this.harborMeshes.delete(h.id); }
+      else if (d > 11000 && has) { this.drop(this.harborMeshes.get(h.id)); this.harborMeshes.delete(h.id); }
     }
     for (const g of this.world.fishing) {
       const d = unitsBetween(s.lat, s.lon, g.lat, g.lon);
       const has = this.groundMeshes.has(g.id);
       if (d < 9000 && !has) { const m = buildFishingMarker(g); this.place(m, g.lat, g.lon); this.scene.add(m); this.groundMeshes.set(g.id, m); }
-      else if (d > 11000 && has) { this.scene.remove(this.groundMeshes.get(g.id)); this.groundMeshes.delete(g.id); }
+      else if (d > 11000 && has) { this.drop(this.groundMeshes.get(g.id)); this.groundMeshes.delete(g.id); }
     }
     for (const w of this.wrecks) { const m = this.wreckMeshes.get(w.id); if (m) this.place(m, w.lat, w.lon, -2); }
     const cam = this.camera.position;
@@ -185,7 +213,7 @@ class App {
       if (typing()) return;
       const k = e.key.toLowerCase();
       if (k === 'enter') { document.getElementById('chatInput').focus(); e.preventDefault(); return; }
-      if (k === 'escape') { this.hud.closeOverlays(); if (this.hud.harborOpen()) this.hud.hideHarbor(); return; }
+      if (k === 'escape') { if (this.hud.transientOpen()) this.hud.closeOverlays(); else if (this.hud.harborOpen()) this.hud.hideHarbor(); return; } // chart/ships/help first, harbour panel next
       if (k === 'm') return this.hud.toggleChart();
       if (k === 'tab') { e.preventDefault(); return this.hud.toggleShips(); }
       if (k === 'h') return document.getElementById('helpWrap').classList.toggle('hidden');
@@ -197,8 +225,8 @@ class App {
       if (k === 'c') { this.cam.mode = (this.cam.mode + 1) % 3; return; }
       if (k === 'x') { this.waypoint = null; this.autopilot = false; return; }
       if (this.you?.docked) return;
-      if (k === 'w' || k === 'arrowup') { this.input.throttleCmd = Math.min(1, Math.round((this.input.throttleCmd + 0.1) * 10) / 10); this.autopilotThrottle = false; }
-      if (k === 's' || k === 'arrowdown') { this.input.throttleCmd = Math.max(-0.3, Math.round((this.input.throttleCmd - 0.1) * 10) / 10); }
+      if (k === 'w' || k === 'arrowup') this.nudgeThrottle(0.1);
+      if (k === 's' || k === 'arrowdown') this.nudgeThrottle(-0.1);
       if (k === 'a' || k === 'arrowleft') { this.input.left = true; this.autopilot = false; }
       if (k === 'd' || k === 'arrowright') { this.input.right = true; this.autopilot = false; }
       if (k === ' ') { this.input.rudderCmd = 0; this.input.throttleCmd = 0; e.preventDefault(); }
@@ -208,16 +236,55 @@ class App {
     window.addEventListener('keyup', (e) => { const k = e.key.toLowerCase(); if (k === 'a' || k === 'arrowleft') this.input.left = false; if (k === 'd' || k === 'arrowright') this.input.right = false; });
     let drag = null;
     this.canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; this.canvas.setPointerCapture(e.pointerId); });
-    this.canvas.addEventListener('pointermove', (e) => { if (!drag) return; this.cam.yaw -= (e.clientX - drag.x) * 0.006; this.cam.pitch = THREE.MathUtils.clamp(this.cam.pitch + (e.clientY - drag.y) * 0.004, 0.05, 1.3); this.cam.free = true; this.cam.lastDrag = performance.now(); drag = { x: e.clientX, y: e.clientY }; });
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      if (this.cam.mode === 2) this.cam.look = (this.cam.look || 0) + dx * 0.006; // bridge view: look around relative to the bow
+      else this.cam.yaw -= dx * 0.006;
+      this.cam.pitch = THREE.MathUtils.clamp(this.cam.pitch + (e.clientY - drag.y) * 0.004, 0.05, 1.3); this.cam.free = true; this.cam.lastDrag = performance.now(); drag = { x: e.clientX, y: e.clientY };
+    });
     this.canvas.addEventListener('pointerup', () => { drag = null; });
+    this.canvas.addEventListener('pointercancel', () => { drag = null; });
+    this.canvas.addEventListener('lostpointercapture', () => { drag = null; });
     this.canvas.addEventListener('wheel', (e) => { this.cam.dist = THREE.MathUtils.clamp(this.cam.dist * (1 + Math.sign(e.deltaY) * 0.12), 60, 1800); e.preventDefault(); }, { passive: false });
+    // A key held while focus leaves the page never gets its keyup (alt-tab, confirm() dialogs): release everything.
+    const reset = () => { this.releaseControls(); drag = null; };
+    window.addEventListener('blur', reset);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) reset(); });
+    this.bindTouch();
   }
-  toggleDock() { if (!this.you) return; if (this.you.docked) this.net.action('undock'); else this.net.action('dock'); }
+  nudgeThrottle(d) { if (this.you?.docked) return; this.input.throttleCmd = THREE.MathUtils.clamp(Math.round((this.input.throttleCmd + d) * 10) / 10, -0.3, 1); }
+  releaseControls() { this.input.left = this.input.right = false; for (const id of ['tchPort', 'tchStbd']) document.getElementById(id)?.classList.remove('on'); }
+  /** On-screen throttle / rudder buttons for touch devices; they drive the same input state as the keys. */
+  bindTouch() {
+    const touch = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1;
+    if (!touch) return;
+    document.body.classList.add('touch');
+    const hold = (id, key) => {
+      const b = document.getElementById(id); if (!b) return;
+      const on = (e) => { e.preventDefault(); if (this.you?.docked) return; this.input[key] = true; this.autopilot = false; b.classList.add('on'); };
+      const off = () => { this.input[key] = false; b.classList.remove('on'); };
+      b.addEventListener('pointerdown', on);
+      for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, off);
+    };
+    hold('tchPort', 'left'); hold('tchStbd', 'right');
+    document.getElementById('tchThrUp')?.addEventListener('click', () => this.nudgeThrottle(0.1));
+    document.getElementById('tchThrDn')?.addEventListener('click', () => this.nudgeThrottle(-0.1));
+  }
+  // T / the Dock button: dock when at sea; while docked they (re)open the harbour panel if it is closed (the server
+  // answers 'dock' from a docked player with the harbour payload) and cast off when it is open. Cast off is explicit too.
+  toggleDock() {
+    if (!this.you) return;
+    if (!this.you.docked) return this.net.action('dock');
+    if (!this.hud.harborOpen()) return this.net.action('dock');
+    this.castOff();
+  }
+  castOff() { if (this.you?.docked) this.net.action('undock'); }
   toggleAutopilot() { if (!this.waypoint) { this.hud.event({ kind: 'warn', text: 'Set a waypoint on the chart (M) first.' }); return; } this.autopilot = !this.autopilot; }
   setWaypoint(lat, lon) { this.waypoint = { lat, lon }; this.hud.event({ kind: 'info', text: `Waypoint set: ${fmtDistance(haversine(this.ship.lat, this.ship.lon, lat, lon))}, bearing ${Math.round(bearing(this.ship.lat, this.ship.lon, lat, lon))}°. Press P for autopilot.` }); }
   nearestOther(range) { let best = null, bd = range; for (const o of this.others.values()) { const d = unitsBetween(this.ship.lat, this.ship.lon, o.cur.lat, o.cur.lon); if (d < bd) { bd = d; best = o; } } return best; }
-  boardNearest() { const o = this.nearestOther(INTERACT.BOARD_RANGE_U * 1.5); if (!o) return this.hud.event({ kind: 'warn', text: 'No ship within boarding range (120 m).' }); if (confirm(`Board ${o.name}? Piracy makes you wanted.`)) this.net.action('board', { targetId: o.id }); }
-  salvageNearest() { let best = null, bd = INTERACT.SALVAGE_RANGE_U * 1.5; for (const w of this.wrecks) { const d = unitsBetween(this.ship.lat, this.ship.lon, w.lat, w.lon); if (d < bd) { bd = d; best = w; } } if (!best) return this.hud.event({ kind: 'warn', text: 'No wreck within 100 m.' }); this.net.action('salvage', { wreckId: best.id }); }
+  boardNearest() { const o = this.nearestOther(INTERACT.BOARD_RANGE_U * 1.5); if (!o) return this.hud.event({ kind: 'warn', text: `No ship within boarding range (${fmtDistance(INTERACT.BOARD_RANGE_U * GEO.SCALE)}).` }); if (confirm(`Board ${o.name}? Piracy makes you wanted.`)) this.net.action('board', { targetId: o.id }); }
+  salvageNearest() { let best = null, bd = INTERACT.SALVAGE_RANGE_U * 1.5; for (const w of this.wrecks) { const d = unitsBetween(this.ship.lat, this.ship.lon, w.lat, w.lon); if (d < bd) { bd = d; best = w; } } if (!best) return this.hud.event({ kind: 'warn', text: `No wreck within ${fmtDistance(INTERACT.SALVAGE_RANGE_U * GEO.SCALE)}.` }); this.net.action('salvage', { wreckId: best.id }); }
   flash() { document.body.style.boxShadow = 'inset 0 0 120px rgba(255,60,60,0.6)'; setTimeout(() => { document.body.style.boxShadow = ''; }, 600); }
 
   // ------------------------------------------------------------------ simulation
@@ -238,15 +305,22 @@ class App {
     const env = { cond: you.cond, flooding: you.flooding, loadFrac: you.cargo.reduce((a, c) => a + c.qty, 0) / C.capacity, wind: this.wind, current: currentAt(s.lat, s.lon, this.simTime), fuelEmpty: you.fuelEmpty, grounded: false };
     const sub = Math.max(1, Math.min(8, Math.ceil(dt / 0.02)));
     for (let i = 0; i < sub; i++) stepShip(s, { throttleCmd: this.input.throttleCmd, rudderCmd: this.input.rudderCmd }, env, dt / sub);
-    // grounding check against loaded terrain
+    // grounding check against loaded terrain: refuse only moves that go SHALLOWER than where we already are, so a
+    // ship sitting on a shallow reading can still back (or push) off towards deeper water
     const h = this.terrain.heightAt(s.lat, s.lon);
     if (h != null && -h < C.draft) {
-      s.lat = prevLat; s.lon = prevLon;
-      if (Math.abs(s.spd) > 0.5) {
-        s.spd *= 0.15;
+      const hPrev = this.terrain.heightAt(prevLat, prevLon);
+      if (hPrev == null || h > hPrev) {
+        s.lat = prevLat; s.lon = prevLon;
+        const bump = Math.abs(s.spd) > 0.5;
+        if (bump) s.spd *= 0.15; else s.spd = 0;
         const now = performance.now();
-        if (now - this.lastGrounding > 4000) { this.lastGrounding = now; this.net.action('grounding'); this.hud.alert('ground', 'AGROUND — reverse off (S)', ''); setTimeout(() => this.hud.clearAlert('ground'), 4000); }
-      } else s.spd = 0;
+        if (now - this.lastGrounding > 4000) { // always tell the player; only a real bump costs hull condition
+          this.lastGrounding = now;
+          if (bump) this.net.action('grounding');
+          this.hud.alert('ground', 'AGROUND — reverse off (S)', ''); setTimeout(() => this.hud.clearAlert('ground'), 4000);
+        }
+      }
     }
     this.net.sendState(s);
   }
@@ -285,6 +359,7 @@ class App {
     mesh.position.y = vis.heave - flooding * (mesh.userData.freeboard + 2) - sink;
     mesh.rotation.set(vis.pitch, -h, vis.roll, 'YXZ');
     mesh.userData.setWake?.(Math.abs(spd) / 10);
+    mesh.userData.setWaterY?.(mesh.position.y);
   }
   updateCamera(dt) {
     const s = this.ship; if (!s || !this.myMesh) return;
@@ -295,9 +370,11 @@ class App {
     let dist = this.cam.dist, pitch = this.cam.pitch;
     if (this.cam.mode === 1) { dist = this.cam.dist * 2.2; pitch = 1.1; }
     const pos = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist + 6, Math.cos(yaw) * Math.cos(pitch) * dist).add(target);
-    if (this.cam.mode === 2) { // bridge view
+    if (this.cam.mode === 2) { // bridge view: look azimuth = heading + the mouse yaw offset (which eases back to dead ahead)
       const L = this.myMesh.userData.length; const bp = new THREE.Vector3(0, this.myMesh.userData.freeboard + 16, L * 0.35).applyMatrix4(this.myMesh.matrixWorld);
-      this.camera.position.copy(bp); const la = this.cam.free ? -(this.cam.yaw) + Math.PI : h; const look = new THREE.Vector3(Math.sin(la), -0.05, -Math.cos(la)).add(bp); this.camera.lookAt(look); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
+      if (!this.cam.free) this.cam.look = (this.cam.look || 0) * Math.max(0, 1 - dt * 1.5);
+      const la = h + (this.cam.look || 0);
+      this.camera.position.copy(bp); const look = new THREE.Vector3(Math.sin(la), -0.05, -Math.cos(la)).add(bp); this.camera.lookAt(look); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
     }
     if (this.myMesh.userData.label) this.myMesh.userData.label.visible = true;
     const wave = this.ocean.heightAt(pos.x, pos.z, this.time);
@@ -308,8 +385,10 @@ class App {
   updateDayNight() {
     const dayFrac = (this.simTime % 86400) / 86400; // 0 = midnight
     const elev = Math.sin((dayFrac - 0.25) * Math.PI * 2);
+    // azimuth from north through east (x = east, -z = north): east at 06:00, south (+z) at noon, west at 18:00
     const az = dayFrac * Math.PI * 2;
-    const dir = new THREE.Vector3(Math.cos(az) * Math.cos(Math.asin(THREE.MathUtils.clamp(elev, -1, 1))), Math.max(-0.2, elev), Math.sin(az) * 0.6).normalize();
+    const cosE = Math.cos(Math.asin(THREE.MathUtils.clamp(elev, -1, 1)));
+    const dir = new THREE.Vector3(Math.sin(az) * cosE, Math.max(-0.2, elev), -Math.cos(az) * cosE).normalize();
     const day = THREE.MathUtils.smoothstep(elev, -0.08, 0.25);
     const dusk = Math.exp(-Math.pow((elev - 0.02) / 0.12, 2));
     const top = new THREE.Color(0x101e33).lerp(new THREE.Color(0x3f7fc9), day).lerp(new THREE.Color(0x8c5a6a), dusk * 0.35);
@@ -322,7 +401,7 @@ class App {
     this.scene.fog.color.copy(hor);
     this.ocean.setSun(dir, sunCol, 1 - day, top, hor);
     const night = 1 - day;
-    for (const m of this.harborMeshes.values()) if (m.userData.light) m.userData.light.intensity = 40 * night;
+    for (const m of this.harborMeshes.values()) m.userData.setNight?.(night);
     this.sky.position.copy(this.camera.position);
   }
 
@@ -348,7 +427,7 @@ class App {
     // HUD
     if (now - this.lastTelemetry > 120) { this.lastTelemetry = now; this.updateHud(now); }
     if (now - this.lastRadar > 100) { this.lastRadar = now; this.drawRadar(now); }
-    this.hud.tickLog(now); this.hud.updateHail(this.you, Date.now());
+    this.hud.tickLog(now); this.hud.updateHail(this.you, Date.now() + (this.clockOffset || 0)); // hail deadline is a server timestamp
   }
   updateHud(now) {
     const s = this.ship, you = this.you, C = SHIP_CLASSES[s.cls];

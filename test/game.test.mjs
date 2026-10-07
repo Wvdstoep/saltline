@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { World } from '../server/world.js';
 import { carvingsForWorld, harborById } from '../server/harbors.js';
 import { Game } from '../server/game.js';
-import { SHIP_CLASSES, LAW } from '../shared/constants.js';
+import { SHIP_CLASSES, LAW, GOODS } from '../shared/constants.js';
 
 process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
 const world = new World().load(carvingsForWorld(), () => {});
@@ -28,7 +28,8 @@ test('accepting freight loads cargo, delivering at the destination pays', () => 
   g.onAction(p, { action: 'undock' });
   const dest = harborById(job.to); p.ship.lat = dest.lat; p.ship.lon = dest.lon; p.ship.spd = 0;
   const m0 = p.money; g.onAction(p, { action: 'dock' });
-  assert.equal(p.docked, dest.id); assert.equal(p.jobs.length, 0); assert.equal(p.cargo.length, 0); assert.equal(p.money, m0 + job.pay);
+  assert.equal(p.docked, dest.id); assert.equal(p.jobs.length, 0); assert.equal(p.cargo.length, 0);
+  assert.ok(p.money > m0 + job.pay * 0.9 && p.money <= m0 + job.pay, 'paid minus port dues');
 });
 test('contract cargo cannot be sold; free cargo can', () => {
   const g = mkGame(); const { p } = join(g, 'Cid');
@@ -54,14 +55,17 @@ test('inspection with contraband fines or impounds; clean ships pass', () => {
   g.inspect(p, 'test authority');
   assert.equal(p.money, 500, 'forced reset'); assert.equal(p.wanted, 0);
 });
-test('sinking creates a persistent wreck with the cargo and respawns the player', () => {
+test('sinking creates a persistent wreck, launches a rescue, and the rescue lands the player at the nearest harbour', () => {
   const g = mkGame(); const { p, ws } = join(g, 'Eve');
   g.onAction(p, { action: 'undock' });
   p.cargo.push({ good: 'steel', qty: 100, contraband: false, jobId: null });
   p.cond = 0; p.flooding = 1; p.money = 10000;
   g.tick(0.1);
   assert.equal(g.wrecks.length, 1); assert.equal(g.wrecks[0].cargo[0].qty, 100);
-  assert.ok(p.docked); assert.equal(p.flooding, 0); assert.equal(p.money, 8000);
+  assert.ok(p.rescue, 'rescue started'); assert.equal(g.rescues.length, 1); assert.equal(g.rescues[0].kind, 'lifeboat');
+  assert.ok(!p.docked, 'adrift until rescued');
+  g.rescues[0].eta = Date.now() - 1; g.updateRescues(0.1);
+  assert.ok(p.docked); assert.equal(p.flooding, 0); assert.equal(p.money, 8000); assert.equal(p.rescue, null);
   // salvage by another player
   const { p: q } = join(g, 'Fay'); g.onAction(q, { action: 'undock' });
   q.ship.lat = g.wrecks[0].lat; q.ship.lon = g.wrecks[0].lon; q.ship.spd = 0;
@@ -70,7 +74,7 @@ test('sinking creates a persistent wreck with the cargo and respawns the player'
 });
 test('fuel burns under way and the engine stops when empty', () => {
   const g = mkGame(); const { p } = join(g, 'Gus');
-  g.onAction(p, { action: 'undock' }); p.ship.throttle = 1; p.ship.spd = 14; p.fuel = 0.001;
+  g.onAction(p, { action: 'undock' }); p.ship.throttle = 1; p.ship.spd = 14; p.fuel = 0.00001;
   g.tick(1);
   assert.equal(p.fuel, 0); assert.equal(g.privateState(p).fuelEmpty, true);
 });
@@ -80,9 +84,16 @@ test('implausible position jumps are rejected', () => {
   const lat = p.ship.lat;
   g.onState(p, { lat: lat + 2, lon: p.ship.lon, hdg: 0, spd: 5, throttle: 0.5, rudder: 0 });
   assert.equal(p.ship.lat, lat);
-  g.onState(p, { lat: lat + 0.0005, lon: p.ship.lon, hdg: 10, spd: 5, throttle: 0.5, rudder: 0 });
-  assert.equal(p.ship.lat, lat + 0.0005);
+  assert.ok(last(ws, 'you').correction, 'server sends a correction flag');
+  g.onState(p, { lat: lat + 0.0002, lon: p.ship.lon, hdg: 10, spd: 5, throttle: 0.5, rudder: 0 });
+  assert.equal(p.ship.lat, lat + 0.0002);
   g.onState(p, { lat: 'x', lon: null }); assert.ok(Number.isFinite(p.ship.lat));
+  g.onState(p, { lat: p.ship.lat, lon: p.ship.lon, hdg: NaN, spd: 'abc', throttle: Infinity, rudder: {} });
+  assert.ok(Number.isFinite(p.ship.hdg) && Number.isFinite(p.ship.spd) && Number.isFinite(p.ship.throttle) && Number.isFinite(p.ship.rudder));
+  // spamming cannot bank distance: 50 instant messages of 20 m each are not all accepted
+  const before = p.ship.lat; let accepted = 0;
+  for (let i = 0; i < 50; i++) { const want = p.ship.lat + 0.00018; g.onState(p, { lat: want, lon: p.ship.lon, hdg: 0, spd: 14, throttle: 1, rudder: 0 }); if (p.ship.lat === want) accepted++; }
+  assert.ok(accepted < 50, `accepted ${accepted} of 50 spam moves`);
 });
 test('trade between docked players transfers goods and credits', () => {
   const g = mkGame(); const a = join(g, 'Ian'), b = join(g, 'Jo');
@@ -116,4 +127,89 @@ test('state round-trips through JSON persistence', () => {
   const g = mkGame(); const { p } = join(g, 'Ned');
   const s = JSON.parse(JSON.stringify({ players: [...g.players.values()], wrecks: g.wrecks, harbors: g.harbors, simTime: g.simTime }));
   assert.equal(s.players[0].name, 'Ned'); assert.ok(s.harbors.rotterdam.jobs.length);
+});
+
+test('abandoning a contract removes the contract cargo instead of freeing it for sale', () => {
+  const g = mkGame(); const { p } = join(g, 'Oz');
+  const job = g.harbors.rotterdam.jobs.find((j) => j.type === 'freight' && j.qty <= 1200);
+  g.onAction(p, { action: 'accept_job', jobId: job.id });
+  const m = p.money; g.onAction(p, { action: 'abandon_job', jobId: job.id });
+  assert.equal(p.cargo.length, 0); assert.equal(p.jobs.length, 0); assert.ok(p.money <= m);
+});
+test('prototype keys and unknown goods are rejected everywhere', () => {
+  const g = mkGame(); const { p } = join(g, 'Pat');
+  const m = p.money;
+  for (const bad of ['__proto__', 'constructor', 'toString', 'narcotics', 42, null]) {
+    g.onAction(p, { action: 'buy_goods', good: bad, qty: 10 });
+    g.onAction(p, { action: 'sell_goods', good: bad, qty: 10 });
+    g.onAction(p, { action: 'dump_cargo', good: bad });
+  }
+  assert.equal(p.money, m); assert.ok(Number.isFinite(p.money)); assert.equal(p.cargo.length, 0);
+});
+test('fuel dock reads the tonnes field and fishing contracts need caught fish', () => {
+  const g = mkGame(); const { p } = join(g, 'Quin');
+  p.fuel = 10; g.onAction(p, { action: 'buy_fuel', tonnes: 20 });
+  assert.ok(Math.abs(p.fuel - 30) < 0.01);
+  const job = g.harbors.rotterdam.jobs.find((j) => j.type === 'fishing');
+  if (job) {
+    g.onAction(p, { action: 'accept_job', jobId: job.id });
+    g.onAction(p, { action: 'buy_goods', good: 'fish', qty: Math.min(1000, job.qty) }); p.money = 1e6;
+    g.onAction(p, { action: 'undock' }); p.ship.lat = harborById('rotterdam').lat; p.ship.lon = harborById('rotterdam').lon; p.ship.spd = 0; g.onAction(p, { action: 'dock' });
+    assert.equal(p.jobs.length, 1, 'bought fish does not complete a fishing contract');
+    p.cargo.push({ good: 'fish', qty: job.qty, contraband: false, jobId: null, caught: true });
+    g.onAction(p, { action: 'undock' }); p.ship.lat = harborById('rotterdam').lat; p.ship.lon = harborById('rotterdam').lon; p.ship.spd = 0; g.onAction(p, { action: 'dock' });
+    assert.equal(p.jobs.length, 0, 'caught fish completes it');
+  }
+});
+test('convoys need an invitation; hail cannot be escaped by docking or disconnecting without a wanted level', () => {
+  const g = mkGame(); const a = join(g, 'Ray'), b = join(g, 'Sue');
+  g.onAction(b.p, { action: 'convoy_accept', convoyId: 'cnope' });
+  assert.equal(b.p.convoyId, null);
+  g.onAction(a.p, { action: 'convoy_invite', targetId: b.p.id });
+  g.onAction(b.p, { action: 'convoy_accept', convoyId: a.p.convoyId });
+  assert.equal(b.p.convoyId, a.p.convoyId);
+  g.onAction(a.p, { action: 'undock' }); const c = g.cutters[0]; g.hail(c, a.p);
+  a.p.ship.lat = harborById('rotterdam').lat; a.p.ship.lon = harborById('rotterdam').lon; a.p.ship.spd = 0; g.onAction(a.p, { action: 'dock' });
+  assert.ok(!a.p.docked, 'docking refused while hailed');
+  g.disconnect(a.p); assert.equal(a.p.wanted, 1); assert.equal(a.p.hail, null); assert.equal(c.state, 'patrol');
+});
+test('towing, supply and charter contracts', () => {
+  const g = mkGame(); g.rnd = () => 0.5; const { p } = join(g, 'Tom');
+  const st = g.harbors.rotterdam;
+  const tow = { id: 'jtow', type: 'tow', from: 'rotterdam', to: 'ijmuiden', at: { lat: 52.3, lon: 3.6 }, victimCls: 'trawler', pay: 10000, deadline: g.simTime + 36000, title: 'tow' };
+  const sup = { id: 'jsup', type: 'supply', from: 'rotterdam', to: 'rotterdam', at: { lat: 53.6, lon: 4.9 }, platformName: 'L9', good: 'supplies', qty: 100, pay: 8000, deadline: g.simTime + 36000, title: 'supply' };
+  const cha = { id: 'jcha', type: 'charter', from: 'rotterdam', to: 'ijmuiden', pax: 4, pay: 5000, needsCat: ['motor yacht', 'sailing yacht', 'passenger'], deadline: g.simTime + 36000, title: 'charter' };
+  st.jobs.push(tow, sup, cha);
+  g.onAction(p, { action: 'accept_job', jobId: 'jcha' }); assert.equal(p.jobs.length, 0, 'coaster cannot take a charter');
+  g.onAction(p, { action: 'accept_job', jobId: 'jtow' }); g.onAction(p, { action: 'accept_job', jobId: 'jsup' });
+  assert.equal(p.jobs.length, 2); assert.equal(p.cargo[0].good, 'supplies');
+  g.onAction(p, { action: 'undock' });
+  g.onAction(p, { action: 'tow_pickup', jobId: 'jtow' }); assert.equal(p.towing, undefined === p.towing ? undefined : null, 'out of range');
+  p.ship.lat = 52.3; p.ship.lon = 3.6; p.ship.spd = 1; g.onAction(p, { action: 'tow_pickup', jobId: 'jtow' }); assert.equal(p.towing, 'jtow');
+  const m = p.money; p.ship.lat = 53.6; p.ship.lon = 4.9; g.onAction(p, { action: 'deliver_offshore', jobId: 'jsup' });
+  assert.equal(p.money, m + 8000); assert.equal(p.cargo.length, 0);
+  const ij = g.worldInfo().harbors.find((h) => h.id === 'ijmuiden'); p.ship.lat = ij.lat; p.ship.lon = ij.lon; p.ship.spd = 0; g.onAction(p, { action: 'dock' });
+  assert.equal(p.towing, null); assert.equal(p.jobs.length, 0); assert.ok(p.money > m + 8000);
+});
+test('express passage costs credits and fuel and moves the ship; used ships can be bought with trade-in', () => {
+  const g = mkGame(); const { p, ws } = join(g, 'Uma');
+  g.onAction(p, { action: 'undock' }); p.money = 1e6;
+  const f = p.fuel, m = p.money;
+  g.onAction(p, { action: 'express', lat: 52.46, lon: 4.5 });
+  assert.ok(p.money < m && p.fuel < f); assert.ok(Math.abs(p.ship.lat - 52.46) < 0.05); assert.ok(last(ws, 'you').correction);
+  p.ship.lat = harborById('rotterdam').lat; p.ship.lon = harborById('rotterdam').lon; p.ship.spd = 0; g.onAction(p, { action: 'dock' });
+  const used = g.harbors.rotterdam.used; assert.ok(used.length >= 1);
+  const l = used[0]; p.money = l.price + 1; g.onAction(p, { action: 'buy_used', listingId: l.id });
+  assert.equal(p.ship.cls, l.cls); assert.equal(p.cond, l.cond);
+});
+test('storms raise local wind and sea state; offline voyages keep sailing', () => {
+  const g = mkGame();
+  g.storms.push({ id: 's1', name: 'Test', lat: 55, lon: 3, radiusKm: 100, peak: 1, intensity: 1, driftDir: 90, driftMs: 5, born: g.simTime, dies: g.simTime + 3600 });
+  const inside = g.weatherAt(55.1, 3.1), outside = g.weatherAt(50, -5);
+  assert.ok(inside.wind.spd > outside.wind.spd + 6); assert.ok(inside.sea > 0.5); assert.ok(inside.storm > 0.5);
+  const { p } = join(g, 'Vic'); g.onAction(p, { action: 'undock' });
+  g.onAction(p, { action: 'set_voyage', lat: 52.3, lon: 3.5, throttle: 1 });
+  g.disconnect(p); const lat0 = p.ship.lat;
+  for (let i = 0; i < 600; i++) g.tick(0.1);
+  assert.ok(p.ship.lat !== lat0 && p.ship.spd > 1, 'ship moved while offline');
 });

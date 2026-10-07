@@ -1,7 +1,7 @@
 // Harbour scenery: quay platform, pier, warehouses (OpenStreetMap footprints when cached, procedural otherwise),
 // container cranes, lighthouse, channel buoys, name label. Built lazily within view range.
 import * as THREE from 'three';
-import { makeLabel } from './ship.js';
+import { makeLabel, disposeGroup } from './ship.js';
 
 const concrete = new THREE.MeshStandardMaterial({ color: 0x8e8b84, roughness: 0.95 });
 const asphalt = new THREE.MeshStandardMaterial({ color: 0x4c4f52, roughness: 0.95 });
@@ -9,6 +9,8 @@ const steel = new THREE.MeshStandardMaterial({ color: 0x3b4a5a, roughness: 0.6, 
 const craneRed = new THREE.MeshStandardMaterial({ color: 0xc8382b, roughness: 0.6, metalness: 0.3 });
 const craneBlue = new THREE.MeshStandardMaterial({ color: 0x2457a8, roughness: 0.6, metalness: 0.3 });
 const white = new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.7 });
+// module-level palette shared by every harbour: userData.dispose() must leave these alone
+for (const m of [concrete, asphalt, steel, craneRed, craneBlue, white]) m.userData.shared = true;
 const WH_COLORS = [0x9aa5ad, 0xb8c0c5, 0x7d8a93, 0xc9a86a, 0x6f8fa3, 0xa3b1a0];
 
 function box(w, h, d, mat, x, y, z) { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); return m; }
@@ -76,9 +78,14 @@ export function buildHarbor(harbor, osm) {
   }
   // Lighthouse at the SE corner
   const lh = new THREE.Mesh(new THREE.CylinderGeometry(3, 4.5, 28, 12), white); lh.position.set(PW / 2 - 30, 4.5 + 14, south - 30); g.add(lh);
-  const lamp = new THREE.Mesh(new THREE.SphereGeometry(2.2, 10, 10), new THREE.MeshStandardMaterial({ color: 0xfff1a8, emissive: 0xffd080, emissiveIntensity: 3 }));
+  // Emissive lamp only: a PointLight per harbour would change NUM_POINT_LIGHTS as harbours load/unload and force every
+  // lit shader to recompile. main.js drives the glow via userData.setNight(night 0..1); lampPos is exposed in case a
+  // fixed pool of scene lights wants to sit on the nearest lighthouses.
+  const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff1a8, emissive: 0xffd080, emissiveIntensity: 3 });
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(2.2, 10, 10), lampMat);
   lamp.position.set(PW / 2 - 30, 4.5 + 29, south - 30); g.add(lamp);
-  const light = new THREE.PointLight(0xffe0a0, 0, 900, 1.2); light.position.copy(lamp.position); g.add(light); g.userData.light = light;
+  g.userData.lampPos = lamp.position.clone();
+  g.userData.setNight = (n) => { lampMat.emissiveIntensity = 0.8 + 4.2 * THREE.MathUtils.clamp(n, 0, 1); };
   // Channel buoys around the dock point
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
@@ -87,6 +94,7 @@ export function buildHarbor(harbor, osm) {
   }
   const label = makeLabel(`${harbor.name} (${harbor.country})`, '#ffd877', 34); label.position.set(0, 110, PZ); label.scale.set(140, 26, 1); g.add(label);
   g.userData.harbor = harbor;
+  g.userData.dispose = () => disposeGroup(g);
   return g;
 }
 
@@ -98,5 +106,6 @@ export function buildFishingMarker(ground) {
     b.position.set(Math.cos(a) * 120, 1, Math.sin(a) * 120); g.add(b);
   }
   const l = makeLabel(`Fishing ground: ${ground.name}`, '#9ad7ff', 30); l.position.set(0, 40, 0); l.scale.set(120, 22, 1); g.add(l);
+  g.userData.dispose = () => disposeGroup(g);
   return g;
 }

@@ -28,7 +28,9 @@ app.use('/docs', express.static(path.join(__dirname, 'docs')));
 app.get('/api/health', (req, res) => res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime() }));
 app.get('/api/world', (req, res) => res.json(game.worldInfo()));
 app.get('/api/tile/:level/:tx/:ty', (req, res) => {
-  const t = world.tile(+req.params.level, +req.params.tx, +req.params.ty);
+  const [level, tx, ty] = [req.params.level, req.params.tx, req.params.ty].map((v) => (/^\d{1,5}$/.test(v) ? +v : NaN));
+  if (![level, tx, ty].every(Number.isInteger)) return res.status(400).end();
+  const t = world.tile(level, tx, ty);
   if (!t) return res.status(404).end();
   res.setHeader('Content-Type', 'application/octet-stream');
   res.end(Buffer.from(t.buffer, t.byteOffset, t.byteLength));
@@ -41,6 +43,7 @@ app.get('/api/osm', (req, res) => {
   if (!fs.existsSync(f)) return res.json({ harbors: {} });
   res.setHeader('Content-Type', 'application/json'); fs.createReadStream(f).pipe(res);
 });
+app.get('/api/jobs', (req, res) => res.json(game.publicJobs()));
 app.get('/api/players', (req, res) => res.json([...game.byId.values()].filter((p) => p.online).map((p) => game.publicState(p))));
 
 const server = http.createServer(app);

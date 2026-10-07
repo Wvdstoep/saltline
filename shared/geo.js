@@ -59,8 +59,9 @@ export function unitsBetween(lat1, lon1, lat2, lon2) {
 export function fmtDMS(v, isLat) {
   const hemi = isLat ? (v >= 0 ? 'N' : 'S') : (v >= 0 ? 'E' : 'W');
   const a = Math.abs(v);
-  const d = Math.floor(a);
-  const m = (a - d) * 60;
+  let d = Math.floor(a);
+  let m = Math.round((a - d) * 60 * 100) / 100;
+  if (m >= 60) { m -= 60; d += 1; }
   return `${String(d).padStart(isLat ? 2 : 3, '0')}°${m.toFixed(2).padStart(5, '0')}'${hemi}`;
 }
 

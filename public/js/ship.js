@@ -3,10 +3,13 @@
 import * as THREE from 'three';
 import { SHIP_CLASSES } from '/shared/constants.js';
 
-const WEAR_VERT_PARS = /* glsl */`varying vec3 vWPos; varying float vLocalY;`;
-const WEAR_VERT = /* glsl */`vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz; vLocalY = position.y;`;
+// shipPos: per-vertex position in the SHIP group's frame, baked at build time (fixed to the plating, y = up, so the
+// wear noise does not crawl with heave/motion). uWaterY: the ship group's world y (main.js: userData.setWaterY), so
+// vLocalY is the height above the waterline whatever the part's own geometry axes are (the hull is an extrusion).
+const WEAR_VERT_PARS = /* glsl */`attribute vec3 shipPos; uniform float uWaterY; varying vec3 vShipPos; varying float vLocalY;`;
+const WEAR_VERT = /* glsl */`vShipPos = shipPos; vLocalY = (modelMatrix * vec4(transformed, 1.0)).y - uWaterY;`;
 const WEAR_FRAG_PARS = /* glsl */`
-uniform float uWear; uniform float uFlood; varying vec3 vWPos; varying float vLocalY;
+uniform float uWear; uniform float uFlood; varying vec3 vShipPos; varying float vLocalY;
 float wh(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
 float wnoise(vec3 p) { vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f);
   float a = mix(mix(wh(i), wh(i+vec3(1,0,0)), f.x), mix(wh(i+vec3(0,1,0)), wh(i+vec3(1,1,0)), f.x), f.y);
@@ -14,7 +17,7 @@ float wnoise(vec3 p) { vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f)
   return mix(a, b, f.z); }`;
 const WEAR_FRAG = /* glsl */`
 {
-  vec3 lp = vWPos;
+  vec3 lp = vShipPos;
   float n1 = wnoise(lp * 0.9) * 0.55 + wnoise(lp * 3.1) * 0.45;
   float streak = wnoise(vec3(lp.x * 4.0, lp.y * 0.35, lp.z * 4.0));
   float w = clamp(uWear, 0.0, 1.0);
@@ -37,9 +40,9 @@ const WEAR_FRAG = /* glsl */`
 
 export function makeWearMaterial(color, opts = {}) {
   const m = new THREE.MeshStandardMaterial({ color, roughness: opts.roughness ?? 0.55, metalness: opts.metalness ?? 0.25, ...opts.extra });
-  m.userData.uniforms = { uWear: { value: 0 }, uFlood: { value: 0 } };
+  m.userData.uniforms = { uWear: { value: 0 }, uFlood: { value: 0 }, uWaterY: { value: 0 } };
   m.onBeforeCompile = (shader) => {
-    shader.uniforms.uWear = m.userData.uniforms.uWear; shader.uniforms.uFlood = m.userData.uniforms.uFlood;
+    shader.uniforms.uWear = m.userData.uniforms.uWear; shader.uniforms.uFlood = m.userData.uniforms.uFlood; shader.uniforms.uWaterY = m.userData.uniforms.uWaterY;
     shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + WEAR_VERT_PARS)
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + WEAR_VERT);
     shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\n' + WEAR_FRAG_PARS)
@@ -154,24 +157,54 @@ export function buildShip(cls, name, seed = 1) {
   // Navigation lights
   const mk = (c, x, y, z) => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.45, 8, 8), new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 2.5 })); m.position.set(x, y, z); return m; };
   g.add(mk(0xff2020, -B / 2 - 0.2, deckY + 3, -L * 0.1)); g.add(mk(0x20ff40, B / 2 + 0.2, deckY + 3, -L * 0.1)); g.add(mk(0xffffff, 0, deckY + 14, -L / 2 + L * 0.2));
-  // Wake
-  const wakeMat = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0, depthWrite: false });
+  // Wake: drawn without depth test (and after other transparents) so wave crests of the opaque ocean cannot tear it;
+  // it starts just aft of the stern (L/2) so it does not overdraw the hull.
+  const wakeMat = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0, depthWrite: false, depthTest: false });
   const wakeGeo = new THREE.BufferGeometry();
-  wakeGeo.setAttribute('position', new THREE.Float32BufferAttribute([-B * 0.6, 0.3, L * 0.45, B * 0.6, 0.3, L * 0.45, -B * 1.8, 0.3, L * 0.45 + L * 2.2, B * 1.8, 0.3, L * 0.45 + L * 2.2], 3));
+  wakeGeo.setAttribute('position', new THREE.Float32BufferAttribute([-B * 0.6, 0.3, L * 0.52, B * 0.6, 0.3, L * 0.52, -B * 1.8, 0.3, L * 0.52 + L * 2.2, B * 1.8, 0.3, L * 0.52 + L * 2.2], 3));
   wakeGeo.setIndex([0, 2, 1, 1, 2, 3]);
-  const wake = new THREE.Mesh(wakeGeo, wakeMat); g.add(wake);
+  const wake = new THREE.Mesh(wakeGeo, wakeMat); wake.renderOrder = 2; g.add(wake);
 
-  g.userData = {
+  // Bake each wear-shaded part's vertex positions in the ship frame (all parts are direct children of g, so the
+  // part's local matrix is the part→ship transform) for the `shipPos` attribute the wear shader samples.
+  const sp = new THREE.Vector3();
+  for (const o of g.children) {
+    if (!o.isMesh) continue;
+    const ms = Array.isArray(o.material) ? o.material : [o.material];
+    if (!ms.some((m) => m.userData.uniforms)) continue;
+    o.updateMatrix();
+    const p = o.geometry.attributes.position, a = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) sp.fromBufferAttribute(p, i).applyMatrix4(o.matrix).toArray(a, i * 3);
+    o.geometry.setAttribute('shipPos', new THREE.BufferAttribute(a, 3));
+  }
+
+  // merge (not replace): the cutter branch already stored userData.beacon
+  Object.assign(g.userData, {
     cls, length: L, beam: B, draft, freeboard, mats, wake,
     setWear(w) { for (const m of mats) m.userData.uniforms.uWear.value = w; },
     setFlood(f) { for (const m of mats) m.userData.uniforms.uFlood.value = f; },
+    /** world y of this group (its position.y as set by shipVisual); the waterline band is painted relative to it */
+    setWaterY(y) { for (const m of mats) m.userData.uniforms.uWaterY.value = y; },
     setWake(t) { wakeMat.opacity = THREE.MathUtils.clamp(t, 0, 1) * 0.35; },
-  };
+    dispose() { disposeGroup(g); },
+  });
   if (name) { const l = makeLabel(name); l.position.set(0, deckY + 24, 0); g.add(l); g.userData.label = l; }
   return g;
 }
 
 export const CUTTER_CLASS = { cutter: { id: 'cutter', length: 28, beam: 6.5, draft: 2.2, freeboard: 2.4, hullColor: 0xf26b1d, maxKn: 30 } };
+
+/** Free the GPU resources of a group built here or in harbor.js (per-mesh geometries, materials, label canvas textures).
+ *  Call after scene.remove(). Geometries/materials flagged userData.shared (module-level palettes) are kept, as is the
+ *  geometry of Sprites (one BufferGeometry shared by every THREE.Sprite). Disposing a material twice is harmless. */
+export function disposeGroup(g) {
+  g.traverse((o) => {
+    if (o.isSprite) { o.material.map?.dispose(); o.material.dispose(); return; }
+    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+    const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of ms) { if (m.userData.shared) continue; m.map?.dispose(); m.dispose(); }
+  });
+}
 
 export function makeLabel(text, color = '#ffffff', size = 36) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 96;
@@ -195,5 +228,6 @@ export function buildWreck(cls) {
   const buoy = new THREE.Mesh(new THREE.SphereGeometry(1.6, 10, 10), new THREE.MeshStandardMaterial({ color: 0xffd400, emissive: 0x806000, emissiveIntensity: 0.6 }));
   buoy.position.set(C.beam, 1.2, 0); g.add(buoy);
   const l = makeLabel('WRECK', '#ffd400', 30); l.position.set(0, 16, 0); g.add(l);
+  g.userData.dispose = () => disposeGroup(g);
   return g;
 }
