@@ -26,8 +26,8 @@ export class TouchHelm {
     this.visible = true;
     this.build();
     this.lastT = performance.now();
-    this._loop = () => this.loop();
-    this._raf = requestAnimationFrame(this._loop);
+    // A fixed 30 Hz timer, not rAF: the rudder must follow the finger at the same rate whatever the 3D frame rate is.
+    this._timer = setInterval(() => this.loop(), 33);
   }
 
   // ------------------------------------------------------------------ DOM
@@ -136,8 +136,7 @@ export class TouchHelm {
   /** Hide the helm controls but keep the root (used while walking the interior). */
   setHelmVisible(on) { for (const el of [this.thr, this.rud, this.btns]) el?.classList.toggle('hidden', !on); }
   loop() {
-    this._raf = requestAnimationFrame(this._loop);
-    const now = performance.now(), dt = Math.min(0.1, (now - this.lastT) / 1000); this.lastT = now;
+    const now = performance.now(), dt = Math.min(0.25, (now - this.lastT) / 1000); this.lastT = now;
     if (!this.visible) return;
     const prev = this.rudder;
     if (this.rudderActive) {
@@ -150,5 +149,5 @@ export class TouchHelm {
     }
     if (this.rudder !== prev || this.rudderActive) { this.renderRudder(); this.h.onRudder?.(this.rudder, this.rudderActive); }
   }
-  dispose() { cancelAnimationFrame(this._raf); if (this.root) this.root.innerHTML = ''; }
+  dispose() { clearInterval(this._timer); if (this.root) this.root.innerHTML = ''; }
 }

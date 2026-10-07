@@ -154,7 +154,7 @@ export class Interior {
     const app = this.app, you = app.you, C = SHIP_CLASSES[you?.ship.cls] || SHIP_CLASSES.coaster;
     switch (h.kind) {
       case 'helm': {
-        this.atHelm = true; this.pos.set(h.x, h.y, h.z); this.yaw = 0; this.pitch = -0.05;
+        this.atHelm = true; this.keys.clear(); this.pos.set(h.x, h.y, h.z); this.yaw = 0; this.pitch = -0.05;
         app.hud.event?.({ kind: 'info', text: you?.docked ? 'At the helm — cast off (T) before you can get under way.' : 'You take the helm. W/S throttle, A/D rudder, space all stop; E or Esc to step away.' });
         break;
       }
@@ -409,7 +409,7 @@ export class Interior {
     g.add(box(w, 1.0, d, M.console, x, y + 0.5, z));
     const top = box(w, 0.08, d + 0.1, M.dark, x, y + 1.04, z); top.rotation.x = facing * 0.18; g.add(top);
     // wheel
-    const wheel = new THREE.Group(); wheel.position.set(x, y + 1.25, z + facing * -0.05 + 0.45 * facing * -1);
+    const wheel = new THREE.Group(); wheel.position.set(x, y + 1.25, z - facing * 0.5);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.025, 8, 24), M.wood); wheel.add(ring);
     for (let i = 0; i < 4; i++) { const sp = box(0.03, 0.56, 0.03, M.wood); sp.rotation.z = (i * Math.PI) / 4; wheel.add(sp); }
     wheel.rotation.x = facing * -0.35; g.add(wheel); this.wheel = wheel;
@@ -421,8 +421,8 @@ export class Interior {
     if (radarCv) {
       this.radarTex = new THREE.CanvasTexture(radarCv); this.radarTex.colorSpace = THREE.SRGBColorSpace;
       const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: this.radarTex, side: THREE.DoubleSide }));
-      scr.position.set(x - Math.min(0.9, w * 0.25), y + 1.36, z + 0.05 * facing); scr.rotation.x = facing * -0.35; if (facing > 0) scr.rotation.y = Math.PI; g.add(scr);
-      g.add(box(0.6, 0.6, 0.06, M.dark, scr.position.x, scr.position.y, scr.position.z + facing * 0.03));
+      scr.position.set(x - Math.min(0.9, w * 0.25), y + 1.36, z - facing * 0.06); scr.rotation.x = facing * -0.35; if (facing > 0) scr.rotation.y = Math.PI; g.add(scr);
+      const back = box(0.6, 0.6, 0.06, M.dark, scr.position.x, scr.position.y, z); back.rotation.x = facing * -0.35; g.add(back);
     }
     // compass + instrument panel
     g.add(cyl(0.12, 0.06, M.white, x, y + 1.1, z + facing * 0.25, 16));
@@ -445,7 +445,7 @@ export class Interior {
     const paper = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.2, d - 0.2), new THREE.MeshStandardMaterial({ color: 0xf2eedc, roughness: 0.9 }));
     paper.rotation.x = -Math.PI / 2; paper.position.set(x, y + 0.935, z); g.add(paper);
     try { new THREE.TextureLoader().load('/api/chart/region.png', (t) => { t.colorSpace = THREE.SRGBColorSpace; paper.material.map = t; paper.material.color.set(0xffffff); paper.material.needsUpdate = true; }); } catch {}
-    g.add(cyl(0.012, 0.18, M.yellow, x + w * 0.3, y + 0.95, z + d * 0.2, 6)).rotation.z = 1.2;
+    const pencil = cyl(0.012, 0.18, M.yellow, x + w * 0.3, y + 0.95, z + d * 0.2, 6); pencil.rotation.z = 1.2; g.add(pencil);
     this.hotspot('chart', 'Open the chart', x, y, z, 1.6);
   }
   bunk(ctx, x, y, z, along = 'z', len = 2.0, tiers = 2, flip = false) {
@@ -480,7 +480,7 @@ export class Interior {
     const cylN = Math.max(3, Math.min(8, Math.round(el / 0.6)));
     for (let i = 0; i < cylN; i++) g.add(cyl(ew * 0.18, 0.35, M.steel, x, y + eh + 0.35, z - el / 2 + ((i + 0.5) * el) / cylN, 10));
     const ex = cyl(ew * 0.16, 1.4, M.steel, x + ew * 0.45, y + eh + 0.7, z + el * 0.4, 10); g.add(ex);
-    g.add(cyl(ew * 0.12, el * 0.9, M.rail, x - ew * 0.5, y + eh * 0.6, z, 8)).rotation.x = Math.PI / 2;
+    const shaft = cyl(ew * 0.12, el * 0.9, M.rail, x - ew * 0.5, y + eh * 0.6, z, 8); shaft.rotation.x = Math.PI / 2; g.add(shaft);
     g.add(box(0.35, 0.5, 0.6, M.yellow, x + ew * 0.7 + 0.3, y + 0.45, z - el * 0.3));
     g.add(box(0.4, 1.9, 0.5, M.wallDark, x - ew - 0.6, y + 0.95, z + el * 0.3)); g.add(box(0.8, 0.5, 0.5, M.steel, x - ew - 0.6, y + 0.25, z - el * 0.1));
   }
