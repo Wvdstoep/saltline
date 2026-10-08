@@ -30,6 +30,9 @@
 - **Hotfix** (15e8415): real Port of Rotterdam waterways carved and dredged to 16 m.
 
 ## Built, not deployed yet
+- **V7 step 0 big ports** (`server/bigports.js`, `server/bigports/*.json`): real OSM waterways and docks carved into the
+  world raster for Antwerp/Westerschelde, Hamburg/Elbe, Amsterdam/IJmuiden, Bremerhaven, Le Havre, Zeebrugge, Gothenburg,
+  Felixstowe and the Rotterdam city docks (Maasvlakte keeps its CHANNELS fix), several harbour patches per port, Antwerp point moved into Deurganckdok.
 - `server/ais/*` + `public/js/ais.js` — live AIS (AISStream worldwide, key on the production server only, never in
   git; Digitraffic Baltic). Wiring still to do: `LiveAis` in server.js, `AisLayer` in main.js / chart / radar.
 - `server/harbor-positions.js` — accurate harbour positions (audit to redo).

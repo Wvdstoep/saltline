@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { GEO } from '../shared/constants.js';
-import { DATA_DIR } from './world.js';
+import { DATA_DIR } from './paths.js';
 
 export const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',

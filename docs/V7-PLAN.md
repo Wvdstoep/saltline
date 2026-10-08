@@ -27,19 +27,27 @@ market).
    - big ports are inaccurate in 3D (Antwerp: moored AIS ships float in open water, quays/docks missing or offset, the
      river shape is coarse): carve the real OSM waterways and docks into the world raster like the Rotterdam fix, and
      cover the whole port area (Antwerp is ~20 km long) with harbour maps instead of one 4.5 km patch;
+   - **every port worldwide carved from OSM** (player, 2026-10-08): after the big-port fix, run the same OSM waterway/dock
+     carving + multi-patch harbour maps automatically for every harbour in the world list (Overpass per port bbox, cached
+     compactly in the repo, rebuilt in the background so start-up stays fast), not only the ~10 big European ports;
+   - **market exploit** (player, 2026-10-08): buying a harbour out at the old price and selling straight back at the
+     risen price printed money — FIXED: every trade is priced over the stock it moves (impact) with a 2 % spread;
    - **world coverage**: harbours (hundreds worldwide), fishing grounds, offshore platforms, sea lanes, live weather and a
      finer coastline beyond the North Sea.
 1. **v6 quick items** — DEPLOYED 2026-10-08 15:05 UTC: harbour warp 5×, ship's clock + feasible contracts, chart-aware autopilot, world
    market (docs/V6-QUICK-CONTRACTS.md).
-2. **v0.5 wave 2 + v7 batch 1** (parallel lanes, disjoint files): company, home harbour, bank and loans, crew, ship stats,
+2. **v6 office, boat storage and fleet — moved up by the player (2026-10-08 16:40 UTC)**: boat storage and swap in the
+   home-harbour office, buying without a forced trade-in, several ships working on the water under hired captains,
+   switching ships, HQ screen (docs/V6-FLEET-CONTRACTS.md). Builds a minimal company/home-harbour core that wave 2
+   extends. Then the OSM carve for every port worldwide.
+3. **v0.5 wave 2 + v7 batch 1** (parallel lanes, disjoint files): company, home harbour, bank and loans, crew, ship stats,
    spare parts (docs/V5-WAVE2-DESIGN.md) **with** v7 #2 (docking score, anchoring, pilot jobs on AIS ships) and the
    harbour passport.
-3. **v6 office, fleet and HQ** (office with boat storage, several ships at sea, switching ships, HQ screen) **with**
-   v7 #1 career and reputation (licences, reputation, achievements).
-4. **v0.5 wave 3 + v7 batch 2**: accounts and onboarding, bridge instruments and engine-room controls, per-class ship
+4. **v7 #1 career and reputation** (licences, reputation, achievements).
+5. **v0.5 wave 3 + v7 batch 2**: accounts and onboarding, bridge instruments and engine-room controls, per-class ship
    models **with** v7 #3 emergencies/SAR and #7 upgrades and liveries.
-5. **v7 batch 3**: #4 sailing together (needs accounts), #5 real cargo work, #6 rules of the sea.
-6. **v0.5 wave 4 + v7 batch 4**: inland waterways, bridges and locks, all seamarks in 3D, accurate harbour positions,
+6. **v7 batch 3**: #4 sailing together (needs accounts), #5 real cargo work, #6 rules of the sea.
+7. **v0.5 wave 4 + v7 batch 4**: inland waterways, bridges and locks, all seamarks in 3D, accurate harbour positions,
    realism pass **with** #8 living world/events and the remaining smaller items.
 
 Each step: build contract → parallel build lanes → adversarial review + fix → end-to-end check → deploy.

@@ -381,13 +381,14 @@ export class Chart {
     }
   }
   drawPlatforms() {
-    const ctx = this.ctx; if (this.zoom < 5) return;
+    const ctx = this.ctx; if (this.zoom < 2) return;
     ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const k = this.zoom < 5 ? 0.6 : 1; // smaller derricks on the world view
     for (const pl of this.app.world?.platforms || []) {
       const p = this.project(pl.lat, pl.lon); if (!this.onScreen(p)) continue;
       ctx.strokeStyle = '#ffb35c'; ctx.fillStyle = '#ffb35c'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(p.x - 4, p.y + 4); ctx.lineTo(p.x, p.y - 6); ctx.lineTo(p.x + 4, p.y + 4); ctx.closePath(); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(p.x - 5, p.y + 4); ctx.lineTo(p.x + 5, p.y + 4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.x - 4 * k, p.y + 4 * k); ctx.lineTo(p.x, p.y - 6 * k); ctx.lineTo(p.x + 4 * k, p.y + 4 * k); ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.x - 5 * k, p.y + 4 * k); ctx.lineTo(p.x + 5 * k, p.y + 4 * k); ctx.stroke();
       if (this.zoom >= 7) { ctx.fillStyle = 'rgba(255,210,160,0.9)'; ctx.fillText(pl.name, p.x + 8, p.y); }
     }
   }
@@ -608,7 +609,11 @@ export class Chart {
     const ctx = this.ctx, z = this.zoom, jobs = cachedJobs();
     ctx.textBaseline = 'middle';
     for (const h of this.app.world?.harbors || []) {
-      if (!this.harborVisible(h)) continue;
+      if (!this.harborVisible(h)) { // zoomed out: the smaller ports as dots, so the world view shows every harbour
+        const p = this.project(h.lat, h.lon); if (!this.onScreen(p)) continue;
+        ctx.fillStyle = '#58d68d'; ctx.strokeStyle = '#0d2418'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        continue;
+      }
       const p = this.project(h.lat, h.lon); if (!this.onScreen(p, 60)) continue;
       const r = this.harborRadius(h);
       ctx.fillStyle = '#58d68d'; ctx.strokeStyle = '#1a3a28'; ctx.lineWidth = 1;

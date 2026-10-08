@@ -39,7 +39,14 @@ function setStock(g, id, good, stock, target = null) {
 }
 
 // ------------------------------------------------------------------------------------------------ 1 snapshot
-test('snapshot: every harbour × good, buy = sell = market, stock/target/trend/fuel match, no mutation', () => {
+/** Runs fn under the v6 one-price rule (no spread, no impact); the live rule has both (see the exploit test). */
+function onePrice(fn) {
+  const saved = { ...TRADE };
+  Object.assign(TRADE, { SPREAD: 0, IMPACT: false });
+  try { fn(); } finally { Object.assign(TRADE, saved); }
+}
+
+test('snapshot: every harbour × good, buy = sell = market, stock/target/trend/fuel match, no mutation', () => onePrice(() => {
   const g = mkGame();
   const before = JSON.stringify(g.harbors);
   const s = marketSnapshot(g);
@@ -56,7 +63,7 @@ test('snapshot: every harbour × good, buy = sell = market, stock/target/trend/f
       assert.equal(x.stock, Math.round(st.stock[k])); assert.equal(x.target, Math.round(st.target[k])); assert.equal(x.trend, tr[k] ?? 0);
     }
   }
-});
+}));
 
 // ------------------------------------------------------------------------------------------------ 2 expected price
 test('expected stock = driftEconomy without noise (rnd 0.5) for 1, 6, 24 h; expected price = priceOf of it', () => {
@@ -130,7 +137,7 @@ test('history answer: good, harbour, errors', () => {
 });
 
 // ------------------------------------------------------------------------------------------------ 4 trade maths
-test('trade maths: qty limited by hold, stock and cash; costs equal the economy functions', () => {
+test('trade maths: qty limited by hold, stock and cash; costs equal the economy functions', () => onePrice(() => {
   const g = mkGame(); flatten(g);
   const A = harborById('rotterdam');
   // a steel glut at Rotterdam, a steel shortage at Hull
@@ -174,7 +181,7 @@ test('trade maths: qty limited by hold, stock and cash; costs equal the economy 
   const fr = findTrades(g, fixedTable(300), q0({ cls: 'feeder', hold: 1200 })).trades.find((t) => harborById(t.to).size === 'mega');
   if (fr) assert.equal(fr.costs.pilotage, pilotageFee('feeder', harborById(fr.to)));
   assert.ok(pilotageFee('feeder', harborById('antwerp')) > 0 && pilotageFee('coaster', harborById('antwerp')) === 0);
-});
+}));
 
 test('trade rows: net ≤ 0 omitted, sorts, limit, from=all one row per origin, never A = B', () => {
   const g = mkGame();
@@ -261,7 +268,10 @@ test('routes query parsing', () => {
 });
 
 // ------------------------------------------------------------------------------------------------ 8 tradeQuote
-test('tradeQuote: defaults reproduce the one-price rule; impact and spread behave; balance numbers', () => {
+test('tradeQuote: the old one-price rule; impact and spread behave; balance numbers', () => {
+  const live = { ...TRADE };
+  Object.assign(TRADE, { SPREAD: 0, IMPACT: false }); // the v6 one-price rule (the money exploit), checked as a baseline
+  try {
   const g = mkGame();
   for (const h of HARBORS) {
     const st = g.harbors[h.id];
@@ -301,6 +311,23 @@ test('tradeQuote: defaults reproduce the one-price rule; impact and spread behav
     assert.ok(tradeQuote(A, stA, 'steel', q, 'buy').total <= 300000);
     assert.ok(tradeQuote(A, stA, 'steel', q + 1, 'buy').total > 300000);
   } finally { Object.assign(TRADE, saved); }
+  } finally { Object.assign(TRADE, live); }
+});
+
+test('market: buying a harbour out and selling straight back never makes money (player report)', () => {
+  assert.ok(TRADE.IMPACT && TRADE.SPREAD > 0, 'live pricing has impact and a spread');
+  const g = mkGame();
+  const A = harborById('rotterdam');
+  for (const good of MARKET_GOODS) {
+    const st = g.harbors.rotterdam;
+    const stock = Math.floor(st.stock[good]), qty = Math.min(5000, stock);
+    if (qty < 1) continue;
+    const st2 = { ...st, stock: { ...st.stock } };
+    const buy = tradeQuote(A, st2, good, qty, 'buy');
+    st2.stock[good] -= qty;
+    const sell = tradeQuote(A, st2, good, qty, 'sell');
+    assert.ok(sell.total < buy.total, `${good}: bought ${qty} t for ${buy.total}, sold back for ${sell.total}`);
+  }
 });
 
 // ------------------------------------------------------------------------------------------------ 9 range flag
@@ -337,4 +364,21 @@ test('routes handler: 429 after 30 a minute per IP; identical queries within 30 
   r = res(); h(req('/api/market/routes?from=rotterdam&cls=coaster', '5.6.7.8'), r); assert.equal(r.code, 200);
   t += 61000;
   r = res(); h(req('/api/market/routes?from=rotterdam&cls=coaster'), r); assert.equal(r.code, 200);
+});
+
+test('tradeGoods: a buy-out followed by a sell-back at the same harbour loses money; buys never overdraw', () => {
+  const g = mkGame(); flatten(g);
+  g.sendYou = () => {}; g.sendHarbor = () => {}; g.event = () => {};
+  for (const good of ['steel', 'fish', 'grain'].filter((k) => MARKET_GOODS.includes(k))) {
+    const p = { docked: 'rotterdam', ship: { cls: 'coaster' }, cargo: [], money: 1e7, stats: { earned: 0 } };
+    g.tradeGoods(p, good, 1200, true);
+    const bought = p.cargo.reduce((s, c) => s + c.qty, 0);
+    assert.ok(bought > 0, `${good}: bought something`);
+    g.tradeGoods(p, good, bought, false);
+    assert.equal(p.cargo.length, 0);
+    assert.ok(p.money < 1e7, `${good}: round trip ended with ${p.money}`);
+    const poor = { docked: 'rotterdam', ship: { cls: 'coaster' }, cargo: [], money: 50000, stats: { earned: 0 } };
+    g.tradeGoods(poor, good, 1200, true);
+    assert.ok(poor.money >= 0, `${good}: money ${poor.money}`);
+  }
 });

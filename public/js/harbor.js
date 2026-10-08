@@ -632,8 +632,9 @@ export function buildHarbor(harbor, geom) {
   if (streets) g.add(streets.group);
   // harbour name: the FIRST sprite child (main.js toggles it by camera distance). A real sign is ~6 m tall; far away the
   // board keeps 30–44 px so it stays readable without towering over the port.
-  const label = makeLabel(`${harbor?.name || 'Harbour'}${harbor?.country ? ` (${harbor.country})` : ''}`, '#ffd877', 34, { height: 6, minPx: 30, maxPx: 44 });
-  label.position.set(S.anchor ? S.anchor.x * 0.3 : 0, 34, S.anchor ? S.anchor.z * 0.3 : 0); g.add(label);
+  // (an extra patch of a big port — harbor.sub, server/bigports.js — has no name board: its harbour's patch has it)
+  const label = harbor?.sub ? null : makeLabel(`${harbor?.name || 'Harbour'}${harbor?.country ? ` (${harbor.country})` : ''}`, '#ffd877', 34, { height: 6, minPx: 30, maxPx: 44 });
+  if (label) { label.position.set(S.anchor ? S.anchor.x * 0.3 : 0, 34, S.anchor ? S.anchor.z * 0.3 : 0); g.add(label); }
   const lights = counters.lights;
   const harborId = geom?.id ?? harbor?.id;
   let ashore = false;

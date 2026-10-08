@@ -6,10 +6,11 @@
 // nearestBerth, harborAnchor, sdfAt) are allocation-free and never throw.
 import fs from 'node:fs';
 import path from 'node:path';
-import { PATCH, GEO, encodePatchHeight, decodePatchHeight } from '../shared/constants.js';
+import { PATCH, GEO, encodePatchHeight, decodePatchHeight, decodeHeight } from '../shared/constants.js';
 import { HARBORS, harborById } from './harbors.js';
 import { DATA_DIR } from './world.js';
 import * as osm from './osm.js';
+import * as bigports from './bigports.js';
 
 export const GEOM_VERSION = 5;          // v4/v5: street layer (features.roads / areas / rails / pois / places)
 export const PATCH_N = PATCH.N;
@@ -61,22 +62,27 @@ export function configure(opts = {}) {
 }
 export function resetCache() { entries.clear(); entryList = []; building.clear(); osmFailedAt.clear(); }
 const geomDir = () => path.join(cfg.dataDir, 'geom');
+/** A harbour, or one of the extra patches of a big port (server/bigports.js: {id, lat, lon, sub: true, parent}). */
+export function geomHarbor(id) { return harborById(id) || bigports.subPatchById(id, HARBORS); }
+/** Every patch id that can be built: the harbours and the big ports' extra patches. */
+export function patchList() { return HARBORS.concat(HARBORS.flatMap((h) => bigports.subPatchesFor(h))); }
 
 /** Called once from server.js. Keeps the world for coast sampling and lazily loads the disk cache; never blocks. */
 export function init(w) {
   world = w;
   if (cfg.preload) {
     let k = 0;
+    const list = patchList();
     const step = () => {
       try {
-        while (k < HARBORS.length) {
-          const h = HARBORS[k++];
+        while (k < list.length) {
+          const h = list[k++];
           if (entries.has(h.id)) continue;
           const e = loadGeomCache(h.id);
           if (e) { setEntry(e); break; }
         }
       } catch (err) { cfg.log('[geom] preload error', err?.message || err); }
-      if (k < HARBORS.length) setImmediate(step);
+      if (k < list.length) setImmediate(step);
     };
     setImmediate(step);
   }
@@ -704,6 +710,7 @@ function landSide(ctx, ptsXZ, probe) {
 /** True when the OSM payload has anything the rasteriser can use for this harbour. */
 export function osmUsable(osmData, harbor) {
   if (!osmData || !Array.isArray(osmData.coastline) || !Array.isArray(osmData.features)) return false;
+  if (Array.isArray(osmData.portWater) && osmData.portWater.length) return true;   // big-port water (bigports.augmentOSM)
   const bbox = osm.bboxAround(harbor.lat, harbor.lon, (PATCH_N * PATCH_RES) / 2);
   const inBox = (p) => p[0] >= bbox.latMin && p[0] <= bbox.latMax && p[1] >= bbox.lonMin && p[1] <= bbox.lonMax;
   if (osmData.coastline.some((way) => way.some(inBox))) return true;
@@ -716,13 +723,20 @@ export function buildFromOSM(harbor, osmData, w = world) {
   const rnd = mulberry32(hashString(harbor.id) ^ 0x9e3779b9);
   const { n, mask } = ctx;
   const bbox = osm.bboxAround(harbor.lat, harbor.lon, ctx.half);
-  const defaultLand = w ? !w.isWater(harbor.lat, harbor.lon) : false;
+  const defaultLand = typeof osmData?.defaultLand === 'boolean' ? osmData.defaultLand : w ? !w.isWater(harbor.lat, harbor.lon) : false;
   const landPolys = osm.landPolygonsFromCoastline(osmData?.coastline || [], bbox, { defaultLand });
   fillRings(ctx, landPolys.map((r) => ringLLToCells(ctx, r)), mask, LAND);
   const cls = osm.classifyFeatures(osmData?.features || [], { lat: harbor.lat, lon: harbor.lon });
   ctx.street = { roads: cls.roads, areas: cls.areas, rails: cls.rails, pois: cls.pois, places: cls.places, hasStreets: osm.osmHasStreets(osmData) };
   for (const f of cls.landuse) fillRings(ctx, [ringLLToCells(ctx, f.pts)], mask, LAND, { allow: ALLOW_WATER });
   for (const f of cls.water || []) fillRings(ctx, [ringLLToCells(ctx, f.pts)], mask, WATER, { allow: ALLOW_LAND });
+  // big ports: OSM water / dock / river multipolygons (with their islands) the runtime query does not fetch
+  for (const pw of osmData?.portWater || []) {
+    const rings = pw.rings.map((r) => ringLLToCells(ctx, r));
+    fillRings(ctx, rings, mask, WATER, { allow: ALLOW_LAND });
+    const depth = pw.k === 'dock' || pw.k === 'harbour' || pw.k === 'lock' ? 15 : pw.k === 'river' ? 14 : pw.k === 'canal' ? 13 : 0;
+    if (depth) fillRings(ctx, rings, ctx.dredge, depth, { max: true });
+  }
   for (const f of cls.marinas) fillRings(ctx, [ringLLToCells(ctx, f.pts)], mask, WATER, { allow: ALLOW_LAND });
   for (const f of cls.docks) { const r = [ringLLToCells(ctx, f.pts)]; fillRings(ctx, r, mask, FAIRWAY, { allow: ALLOW_WATER_OR_LAND }); fillRings(ctx, r, ctx.dredge, 10, { max: true }); }
   removeSpecks(mask, n, LAND, WATER, 4);
@@ -761,6 +775,26 @@ export function buildFromOSM(harbor, osmData, w = world) {
   structure(cls.piers, QUAY, 'quay', 'piers', 6);
   structure(cls.breakwaters, BREAKWATER, null, 'breakwaters', 14);
   structure(cls.pontoons, PONTOON, 'pontoon', 'pontoons', 4);
+  // big ports: dock / basin outlines become quay walls (berth faces) along the stretches that part land from water
+  // (an outline running through open water — a basin mapped against the river — is no wall)
+  for (const ring of osmData?.portEdges || []) {
+    const xz = toXZ(ring), runs = [];
+    let run = [];
+    const flush = () => { if (run.length >= 2) runs.push(run); run = []; };
+    for (let i = 0; i + 1 < xz.length; i++) {
+      const [ax, az] = xz[i], [bx, bz] = xz[i + 1], L = Math.hypot(bx - ax, bz - az);
+      const k = Math.max(1, Math.ceil(L / 25));
+      for (let j = 0; j < k; j++) {
+        const x0 = ax + ((bx - ax) * j) / k, z0 = az + ((bz - az) * j) / k, x1 = ax + ((bx - ax) * (j + 1)) / k, z1 = az + ((bz - az) * (j + 1)) / k;
+        const nx = (z1 - z0) / (L / k || 1), nz = -(x1 - x0) / (L / k || 1), mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+        const ml = maskAtXZ(ctx, mx + nx * 15, mz + nz * 15), mr = maskAtXZ(ctx, mx - nx * 15, mz - nz * 15);
+        const wall = ml >= 0 && mr >= 0 && (ml === LAND) !== (mr === LAND) && (IS_WATER[ml] || IS_WATER[mr]);
+        if (wall) { if (!run.length) run.push(ctx.frame.toLL(x0, z0)); run.push(ctx.frame.toLL(x1, z1)); } else flush();
+      }
+    }
+    flush();
+    structure(runs.filter((r) => osm.polylineLengthM(r) >= 40).map((pts) => ({ pts: osm.simplifyRing(pts, 3, false), closed: false, width: 10 })), QUAY, 'quay', 'quays', 10);
+  }
   // vector-only features
   for (const b of cls.buildings) ctx.features.buildings.push({ pts: osm.simplifyRing(b.pts, 3), height: b.height, kind: b.kind });
   for (const t of cls.tanks) ctx.features.tanks.push({ lat: t.lat, lon: t.lon, radius: t.radius, height: t.height });
@@ -839,14 +873,21 @@ function fairwayPath(ctx, start, w) {
       if (nc < dist[q2]) { dist[q2] = nc; prev[q2] = q; push(nc, q2); }
     }
   }
-  // best border node (reachable); prefer deep world water
+  // best border node (reachable); prefer deep world water — and the world beyond the border must lead to the open sea
+  // (big ports: a basin that runs into the patch edge with the port's land or a closed lagoon behind it is no way out)
   let best = -1, bc = Infinity;
+  const seaMemo = new Map();
   for (let q = 0; q < m * m; q++) {
     const I = q % m, J = (q - I) / m;
     if (I !== 0 && J !== 0 && I !== m - 1 && J !== m - 1) continue;
     if (!Number.isFinite(dist[q])) continue;
     let c = dist[q];
-    if (w) { const ll = ctx.frame.toLL((I * S + S / 2 - n / 2) * res, (J * S + S / 2 - n / 2) * res); const d = -w.heightAt(ll[0], ll[1]); if (d < 10) c *= 1.6; if (d < 0) c *= 3; }
+    if (w) {
+      const x = (I * S + S / 2 - n / 2) * res, z = (J * S + S / 2 - n / 2) * res;
+      const ll = ctx.frame.toLL(x, z); const d = -w.heightAt(ll[0], ll[1]); if (d < 10) c *= 1.6; if (d < 0) c *= 3;
+      const ox = I === 0 ? -600 : I === m - 1 ? 600 : 0, oz = J === 0 ? -600 : J === m - 1 ? 600 : 0;
+      const lo = ctx.frame.toLL(x + ox, z + oz); if (!seaReachable(w, lo[0], lo[1], seaMemo)) c *= 20;
+    }
     if (c < bc) { bc = c; best = q; }
   }
   if (best < 0) {   // enclosed: head for the farthest reachable node
@@ -858,6 +899,30 @@ function fairwayPath(ctx, start, w) {
   path.reverse();
   path[0] = [start[0], start[1]];
   return rdp(path, 25);
+}
+/**
+ * Does the world raster connect lat/lon (or a water cell next to it) to open sea (≥ 25 m deep) within ~40 cells? BFS
+ * over the finest layer; `memo` caches by start cell. Used to rank fairway exits; true when there is no world.
+ */
+function seaReachable(w, lat, lon, memo) {
+  const L = w?.layerFor?.(lat, lon); if (!L || !L.hgt) return true;
+  const { cx, cy } = L.cellXY(lat, lon); const x0 = Math.floor(cx), y0 = Math.floor(cy);
+  const key = y0 * L.w + x0; if (memo && memo.has(key)) return memo.get(key);
+  const R = 40, seen = new Set(), q = [];
+  const wet = (x, y) => x >= 0 && y >= 0 && x < L.w && y < L.h && decodeHeight(L.hgt[y * L.w + x]) < 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (wet(x0 + dx, y0 + dy)) { const k = (y0 + dy) * L.w + x0 + dx; seen.add(k); q.push(k); }
+  let ok = false;
+  for (let h = 0; h < q.length && !ok; h++) {
+    const k = q[h], x = k % L.w, y = (k - x) / L.w;
+    if (decodeHeight(L.hgt[k]) <= -25) { ok = true; break; }
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const X = x + dx, Y = y + dy;
+      if (Math.abs(X - x0) > R || Math.abs(Y - y0) > R || !wet(X, Y)) continue;
+      const kk = Y * L.w + X; if (seen.has(kk)) continue; seen.add(kk); q.push(kk);
+    }
+  }
+  if (memo) memo.set(key, ok);
+  return ok;
 }
 function rdp(pts, tol) {
   if (pts.length < 3) return pts;
@@ -1645,8 +1710,9 @@ function finishBuild(ctx, w) {
   // anchor (guaranteed water ≥ 40 m from any obstacle)
   let anchor = findAnchor(ctx, ctx.anchorPref || [0, 0]);
   // fairway: forced head (synthetic entrance) + the widest-water path to the patch edge
+  const sub = !!harbor.sub;   // an extra patch of a big port (server/bigports.js): real data only
   let fairway = [anchor].concat(ctx.fairwayHead || []);
-  const tail = fairwayPath(ctx, fairway[fairway.length - 1], w);
+  const tail = sub ? null : fairwayPath(ctx, fairway[fairway.length - 1], w);
   if (tail && tail.length >= 2) fairway = fairway.concat(tail.slice(1));
   if (ctx.entrance && w) {   // synthetic: stop once the world is deeper than 15 m (≥ 750 m beyond the entrance) or 3 km out
     const E = ctx.entrance.E;
@@ -1668,7 +1734,7 @@ function finishBuild(ctx, w) {
     fairway = out;
   }
   if (fairway.length < 2) { const d = ctx.entrance ? ctx.entrance.E : [anchor[0], anchor[1] - 300]; fairway.push(d); }
-  for (let i = 0; i + 1 < fairway.length; i++) {
+  for (let i = 0; !sub && i + 1 < fairway.length; i++) {
     strokeXZ(ctx, [fairway[i], fairway[i + 1]], ctx.fairwayHalf, mask, FAIRWAY, { allow: new Uint8Array([1, 0, 0, 0, 0, 0, 1]) });
     strokeXZ(ctx, [fairway[i], fairway[i + 1]], ctx.fairwayHalf, ctx.dredge, ctx.fairwayDepth, { max: true, allow: ALLOW_WATER });
   }
@@ -1676,13 +1742,13 @@ function finishBuild(ctx, w) {
   // berths + guarantee
   let berths = generateBerths(ctx);
   const big = () => berths.filter((b) => b.kind === 'quay' && b.length >= 120 && b.depth >= 8);
-  if (big().length < 2) {
+  if (!sub && big().length < 2) {
     // 1. dredge the longest quay faces
     const longQuays = berths.filter((b) => b.kind === 'quay' && b.length >= 120 && b.depth < 8).slice(0, 4);
     for (const b of longQuays) dredgeBerth(ctx, b, Math.max(9, b.depth));
     if (longQuays.length) { rasterHeights(ctx); berths = generateBerths(ctx); }
   }
-  if (big().length < 2) {
+  if (!sub && big().length < 2) {
     // 2. cut synthetic quays into the nearest coast (or a finger pier when there is no coast at all)
     const lay = analyseCoast(ctx, anchor[0], anchor[1], 1800);
     if (lay) placeQuayRow(ctx, lay, SIZES[harbor.size] || SIZES.regional, rnd, { nQuays: 2, docks: 0, berthDepth: Math.max(9, (SIZES[harbor.size] || SIZES.regional).berthDepth) });
@@ -1692,7 +1758,7 @@ function finishBuild(ctx, w) {
     anchor = findAnchor(ctx, anchor);
     berths = generateBerths(ctx);
   }
-  if (big().length < 2) { emergencyPier(ctx, anchor); computeDistances(ctx); rasterHeights(ctx); anchor = findAnchor(ctx, anchor); berths = generateBerths(ctx); }
+  if (!sub && big().length < 2) { emergencyPier(ctx, anchor); computeDistances(ctx); rasterHeights(ctx); anchor = findAnchor(ctx, anchor); berths = generateBerths(ctx); }
   // cranes: OSM cranes (heading from the nearest berth) or 1–5 synthetic ones along the longest quay
   const S = SIZES[harbor.size] || SIZES.regional;
   if (ctx.osmCranes && ctx.osmCranes.length) {
@@ -1720,7 +1786,7 @@ function finishBuild(ctx, w) {
     const dx = E[0] - next[0], dz = E[1] - next[1], L = Math.hypot(dx, dz) || 1;
     entranceLights(ctx, ctx.entrance.heads, E, [dx / L, dz / L]);
   }
-  if (ctx.synthBuoys) {
+  if (ctx.synthBuoys && !sub) {
     const startIdx = ctx.entrance ? 1 : 0;
     const regionB = osm.ialaRegion(ctx.oLat, ctx.oLon) === 'B';
     const wBuoy = ctx.fairwayHalf + 10;
@@ -1754,6 +1820,7 @@ function finishBuild(ctx, w) {
     cfg.log('[geom] street layer failed for', harbor.id, err?.stack || err);
     street = { roads: [], areas: [], rails: [], places: [], pois: minimalPois(ctx, berths, harbor).map((p) => { const at = xzToLL(ctx, p.x, p.z); return { id: `${harbor.id}-${p.kind}`, kind: p.kind, name: p.name, lat: at[0], lon: at[1], door: { lat: at[0], lon: at[1] }, building: -1 }; }) };
   }
+  if (sub) street.pois = [];   // the harbour's own patch has the town (harbourmaster, bar, …)
   // ---- JSON
   const anchorLL = xzToLL(ctx, anchor[0], anchor[1]);
   const berthsJSON = berths.map((b, k) => {
@@ -1761,7 +1828,7 @@ function finishBuild(ctx, w) {
     return { id: `${harbor.id}-b${k + 1}`, name: `Berth ${k + 1}`, lat: ll[0], lon: ll[1], hdg: b.hdg, length: b.length, depth: b.depth, kind: b.kind, maxLength: Math.max(10, b.length - (b.kind === 'pontoon' ? 0 : 10)) };
   });
   const geom = {
-    id: harbor.id, name: harbor.name, source: ctx.source, version: GEOM_VERSION,
+    id: harbor.id, name: harbor.name, source: ctx.source, version: GEOM_VERSION, ...(sub ? { sub: true, parent: harbor.parent } : {}),
     origin: { lat: harbor.lat, lon: harbor.lon }, anchor: { lat: anchorLL[0], lon: anchorLL[1] },
     n, res, radiusM: Math.round((n * res) / 2 * Math.SQRT2),
     berths: berthsJSON,
@@ -1841,8 +1908,12 @@ function loadGeomCache(id) {
     if (!fs.existsSync(j) || !fs.existsSync(b)) return null;
     const meta = JSON.parse(fs.readFileSync(j, 'utf8'));
     if (!meta || meta.version !== GEOM_VERSION || !meta.geom || !Array.isArray(meta.geom.berths)) return null;
-    if (!Array.isArray(meta.geom.features?.pois) || !meta.geom.features.pois.length || !Array.isArray(meta.geom.features.roads)) return null;   // v4 needs the street layer
-    const harbor = harborById(id); if (!harbor) return null;
+    if (!Array.isArray(meta.geom.features?.pois) || (!meta.geom.features.pois.length && !meta.geom.sub) || !Array.isArray(meta.geom.features.roads)) return null;   // v4 needs the street layer
+    const harbor = geomHarbor(id); if (!harbor) return null;
+    const port = bigports.portForHarbor(harbor);
+    // built without (this) big-port data: rebuilt when a rebuild can use OSM (network, or an OSM cache on disk), so an
+    // offline box without OSM keeps its real geometry rather than falling back to the port data alone
+    if (port && meta.geom.bigport !== bigports.geomStamp(port) && (networkAllowed() || osm.loadCachedOSM(id) || harbor.sub)) return null;
     const buf = fs.readFileSync(b);
     const dec = decodePatch(buf);
     if (!dec || dec.n !== PATCH_N || Math.abs(dec.originLat - harbor.lat) > 1e-9 || Math.abs(dec.originLon - harbor.lon) > 1e-9) return null;
@@ -1901,6 +1972,24 @@ export function sdfAt(id, lat, lon) {
   if (!e || !Number.isFinite(lat) || !Number.isFinite(lon) || !covers(e, lat, lon)) return null;
   return sampleEntrySdf(e, lat, lon);
 }
+/** Express-safe (V7 step 0): real-metre height of the built patch(es) covering lat/lon, bilinear over the 10 m cell
+ *  centres like the client's terrain.heightAt; the SHALLOWEST reading when patches overlap; null when none covers it. */
+export function patchHeightAt(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  let best = null;
+  for (let k = 0; k < entryList.length; k++) {
+    const e = entryList[k];
+    if (!covers(e, lat, lon) || !e.heights) continue;
+    const n = e.n;
+    const u = ((lon - e.originLon) * e.kLon) / e.res + n / 2 - 0.5, v = (-(lat - e.originLat) * GEO.M_PER_DEG_LAT) / e.res + n / 2 - 0.5;
+    const i0 = Math.max(0, Math.min(n - 2, Math.floor(u))), j0 = Math.max(0, Math.min(n - 2, Math.floor(v)));
+    const fx = Math.max(0, Math.min(1, u - i0)), fy = Math.max(0, Math.min(1, v - j0));
+    const H = e.heights, o = j0 * n + i0, g = (x) => decodePatchHeight(H[x]);
+    const h = (g(o) * (1 - fx) + g(o + 1) * fx) * (1 - fy) + (g(o + n) * (1 - fx) + g(o + n + 1) * fx) * fy;
+    if (best == null || h > best) best = h;
+  }
+  return best;
+}
 export function nearestBerth(harborId, lat, lon) {
   const e = entries.get(harborId);
   if (!e || !e.berthsXZ.length || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
@@ -1926,10 +2015,15 @@ async function fetchOSMFor(h, opts = {}) {
 function buildEntry(h, osmData) {
   const t0 = Date.now();
   let build = null, source = 'synthetic';
+  // big ports (server/bigports.js): the port's OSM water joins the payload — or makes one when Overpass is unreachable
+  const port = bigports.portForHarbor(h);
+  if (port) osmData = bigports.augmentOSM(osmData, h, port);
   if (osmData && osmUsable(osmData, h)) {
     try { build = buildFromOSM(h, osmData, world); source = 'osm'; } catch (err) { cfg.log('[geom] OSM build failed for', h.id, err?.message || err); build = null; }
   }
+  if (!build && h.sub) return null;   // an extra big-port patch is never invented
   if (!build) { build = buildSynthetic(h, world); source = 'synthetic'; }
+  if (port) build.geom.bigport = bigports.geomStamp(port);   // a cache built before this port data is rebuilt
   const e = makeEntry(h, build, source);
   e.buildMs = Date.now() - t0;
   return e;
@@ -1952,6 +2046,7 @@ async function buildHarbor(h, opts) {
   if (disk && !(osmData && osmUsable(osmData, h))) return disk.geom;
   await new Promise((r) => setImmediate(r));
   const e = buildEntry(h, osmData);
+  if (!e) return null;
   setEntry(e);
   saveGeomCache(e);
   cfg.log(`[geom] ${h.id}: built ${describe(e)}`);
@@ -1963,7 +2058,7 @@ async function tryUpgrade(h, opts = {}) {
     if (!r.data || !osmUsable(r.data, h)) { osmFailedAt.set(h.id, Date.now()); return false; }
     await new Promise((res) => setImmediate(res));
     const e = buildEntry(h, r.data);
-    if (e.source !== 'osm') { osmFailedAt.set(h.id, Date.now()); return false; }
+    if (!e || e.source !== 'osm') { osmFailedAt.set(h.id, Date.now()); return false; }
     setEntry(e); saveGeomCache(e);
     cfg.log(`[geom] ${h.id}: replaced synthetic with OSM build (${describe(e)})`);
     return true;
@@ -1976,7 +2071,7 @@ async function tryUpgrade(h, opts = {}) {
  */
 export async function ensureHarbor(id, opts = {}) {
   try {
-    const h = harborById(id);
+    const h = geomHarbor(id);
     if (!h) return null;
     const cur = entries.get(id);
     if (cur) {
@@ -2001,7 +2096,7 @@ export async function prefetchAll(opts = {}) {
   const log = typeof opts.log === 'function' ? opts.log : cfg.log;
   const delayMs = Number.isFinite(opts.delayMs) ? opts.delayMs : 1500;
   const only = opts.only ? new Set(opts.only) : null;
-  const list = HARBORS.filter((h) => !only || only.has(h.id));
+  const list = patchList().filter((h) => !only || only.has(h.id));
   const stats = { built: 0, failed: 0, skipped: 0, osm: 0, synthetic: 0, total: list.length };
   let lastNetworkAt = 0;
   for (let k = 0; k < list.length; k++) {
@@ -2024,6 +2119,7 @@ export async function prefetchAll(opts = {}) {
       } else if (cur && !opts.force) { stats.skipped++; log(`${tag}: cached (${cur.source})`); continue; }
       await new Promise((r) => setImmediate(r));
       const e = buildEntry(h, osmData);
+      if (!e) { stats.failed++; log(`${tag}: no data`); continue; }
       setEntry(e); saveGeomCache(e);
       stats.built++; if (e.source === 'osm') stats.osm++; else stats.synthetic++;
       log(`${tag}: ${describe(e)}`);

@@ -42,6 +42,7 @@ setInterval(() => { try { priceHistory.maybeSample(game); } catch (e) { log('[ma
 const liveAis = new LiveAis({ log, harbors: HARBORS });
 liveAis.start();
 game.aiFilter = (a) => !liveAis.covers(a.lat, a.lon);
+game.liveAis = liveAis;                     // V7 step 0: the express passage keeps clear of live AIS vessels
 const AIS_NEAR_M = 40000, AIS_NEAR_LIMIT = 200, AIS_PUSH_MS = 2000;
 if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 1500 }).catch((e) => log('[geom] prefetch failed', e.message));
 

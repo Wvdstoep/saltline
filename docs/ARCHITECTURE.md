@@ -232,3 +232,22 @@ reach their station alongside, and finish an assist that overruns 15 min at its 
 Real bathymetry (EMODnet/GEBCO) under the synthetic depth model; GLTF ship models; fully server-authoritative
 movement (the server validates distance budgets and land penetration, the client still integrates); COLREGS
 behaviour for AI traffic; AI captains that trade on the markets.
+
+# v7 step 0 addendum: big ports (server/bigports.js)
+
+* **Data**: `server/bigports/<id>.json` (Antwerp + Westerschelde, Rotterdam, Hamburg + Elbe, IJmuiden/Noordzeekanaal/
+  Amsterdam, Bremerhaven, Le Havre, Zeebrugge, Gothenburg, Felixstowe): OSM coastline, water / dock / harbour / river /
+  canal / lock areas with holes, river / canal / fairway centrelines, polyline-encoded (≈ 200 KB in all). Refetch with
+  `node scripts/fetch-port-water.mjs` where Overpass is reachable.
+* **Raster**: inside each port bbox a ≈ 20 m land/water model (coastline closed against the bbox, water areas filled)
+  replaces the 0.005° region cells: water when ≥ 40 % of the cell is water, or a fairway / navigable river centreline /
+  lane chain (`CHANNELS`) runs through it; docks dredged 15 m, rivers 14, ship canals 13, fairways / chains 16, the
+  cells round a harbour point 12. Rotterdam's Maasvlakte / Europoort keep the 2026-10-07 `CHANNELS` raster; its city
+  docks east of 4.25° E are carved (`rasterBox`). Carving costs
+  ≈ 0.3 s of the ≈ 2 s world build; the cache key hashes the port files (`portCarvings`).
+* **Patches**: every big port gets extra 4.48 km patches tiled edge to edge round the harbour patch over the port core
+  (`subPatchesFor`, ids `<harbour>_tRRCC`, listed in `worldInfo().patches`; the client loads those within 5.2 km).
+  They are built like harbour patches but from real data only (OSM, else the port water; never synthetic), without a
+  town or fairway. Any patch inside a port gets the port water added to its OSM payload (`augmentOSM`: water
+  multipolygons, dock / basin / canal outlines as quay walls where they part land from water); caches carry
+  `geom.bigport` and are rebuilt when it changes.

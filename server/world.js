@@ -3,13 +3,13 @@
 // without touching the tile API.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { LAYERS, TILE, encodeHeight, decodeHeight } from '../shared/constants.js';
 import { encodePNG } from './png.js';
+import { bigPortById, overridePortCells } from './bigports.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = process.env.SALTLINE_DATA || path.join(__dirname, '..', 'data');
-const CACHE_VERSION = 5;
+import { DATA_DIR } from './paths.js';
+export { DATA_DIR };
+const CACHE_VERSION = 6;   // v6: big ports carved from OSM (server/bigports.js)
 
 const SOURCES = {
   global: ['ne_50m_land.geojson'],
@@ -215,6 +215,23 @@ function buildLayer(layer, carvings, log) {
   if (!land) land = new Uint8Array(layer.w * layer.h);
   log(`[world] ${layer.def.name}: ${nRings} rings, grid ${layer.w}x${layer.h}`);
   const channelCells = carve(land, layer, carvings);
+  // Big ports (server/bigports.js): inside each port bbox the fine OSM land/water model replaces the mask, after the
+  // channel / basin carvings (they are coarse guesses there); docks, rivers and fairways are dredged below.
+  const portDredge = new Map();
+  if (layer.res <= 0.01) {
+    for (const c of carvings) {
+      if (c.type !== 'port') continue;
+      const port = bigPortById(c.id);
+      if (!port || !layer.contains(port.bbox.latMin, port.bbox.lonMin) || !layer.contains(port.bbox.latMax - 1e-9, port.bbox.lonMax - 1e-9)) continue;
+      const tp = Date.now();
+      const keep = carvings.filter((k) => k.type === 'basin');   // harbour points stay navigable water
+      const chains = carvings.filter((k) => k.type === 'channel').map((k) => k.pts);   // lane-graph centrelines stay connected
+      const { dredge, landed } = overridePortCells(land, layer, port, keep, chains);
+      for (const i of landed) channelCells.delete(i);
+      for (const [i, d] of dredge) { channelCells.delete(i); portDredge.set(i, Math.max(d, portDredge.get(i) || 0)); }
+      log(`[world] ${layer.def.name}: port ${port.id} carved (${dredge.size} dredged, ${landed.size} land cells) in ${Date.now() - tp} ms`);
+    }
+  }
   const dLand = chamfer(land, layer.w, layer.h, 0);   // for land cells: distance to water
   const dWater = chamfer(land, layer.w, layer.h, 1);  // for water cells: distance to land
   const hgt = new Uint8Array(layer.w * layer.h);
@@ -224,6 +241,7 @@ function buildLayer(layer, carvings, log) {
     hgt[i] = encodeHeight(heightFromDistance(isLand, d));
   }
   for (const i of channelCells) hgt[i] = Math.min(hgt[i], encodeHeight(-CHANNEL_DEPTH_M));
+  for (const [i, d] of portDredge) hgt[i] = Math.min(hgt[i], encodeHeight(-d));
   layer.hgt = hgt;
   log(`[world] ${layer.def.name} built in ${Date.now() - t0} ms`);
 }

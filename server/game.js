@@ -10,17 +10,21 @@ import { THROTTLE_MIN } from '../shared/telegraph.js';
 import { tideAt } from '../shared/tide.js';
 import { HARBORS, FISHING_GROUNDS, PATROLS, PLATFORMS, harborById } from './harbors.js';
 import {
-  generateJob, generateSmugglingJob, jobCountFor, cargoMass, cargoValue, publicJob,
+  generateJob, generateSmugglingJob, jobCountFor, JOB_GEN, cargoMass, cargoValue, publicJob,
   shipCapacity, setJobSeq, nextJobId, generateUsedShips, shipValue, repairCostFor, ECON,
   initEconomy, refreshPrices, driftEconomy, marketTrend, demandBonus, shipSpecs, serviceCostFor, serviceWearMul,
-  portDues, berthFeePerDay, pilotageFee, tugCostFor,
+  portDues, berthFeePerDay, pilotageFee, tugCostFor, tradeQuote,
 } from './economy.js';
+import { affordableQty } from './market.js';
 import { DATA_DIR } from './world.js';
 import { pickGuideBerth, fittingBerthWithin, GUIDE } from './berthguide.js';
 import { planTugAssist, beginTugAssist, stepTugAssist, tickTugs, tugsPublic, assistExtra, tugBerthCandidates } from './tugassist.js'; // V5 item 4: water-only tug paths + visible tugs
 import { tugOp } from './tugassist.js';                       // V6 item 5: the tug op's time compression runs the ship's clock
 import { catchRate } from '../shared/rates.js';                // V6 item 5: one catch-rate formula for the tick and the contract estimates
 import { estimateJob, fmtShipH } from '../shared/jobtime.js';            // V6 item 5: contract hours on the ship's clock
+import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; // V7 step 0: express arrives on safe open water
+import { lowWaterAt } from '../shared/tide.js';
+import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
 const START_HARBOR = 'rotterdam';
@@ -148,8 +152,10 @@ export class Game {
       if (!st.stock || !st.target) Object.assign(st, initEconomy(h, this.rnd));
       refreshPrices(h, st);
       // V6 item 5: board offers from before ship-hour budgets (no `hours`) are withdrawn; the regen refills the board.
-      st.jobs = (st.jobs || []).filter((j) => j && Number.isFinite(j.hours));
-      if (st.contact && Array.isArray(st.contact.jobs)) st.contact.jobs = st.contact.jobs.filter((j) => j && Number.isFinite(j.hours));
+      // v7 world coverage: offers from the old generator (before JOB_GEN 7, North-Sea-weighted destinations) too.
+      const current = (j) => j && Number.isFinite(j.hours) && (j.gen || 0) >= JOB_GEN;
+      st.jobs = (st.jobs || []).filter(current);
+      if (st.contact && Array.isArray(st.contact.jobs)) st.contact.jobs = st.contact.jobs.filter(current);
       this.regenHarbor(h, st, true);
     }
     this.lastEcon = Date.now();
@@ -349,6 +355,7 @@ export class Game {
   worldInfo() {
     return {
       harbors: HARBORS.map((h) => ({ id: h.id, name: h.name, country: h.country, lat: h.lat, lon: h.lon, size: h.size })),
+      patches: allSubPatches(HARBORS),   // V7 big ports: extra harbour patches over the port areas (server/bigports.js)
       fishing: FISHING_GROUNDS, platforms: PLATFORMS, classes: SHIP_CLASSES, goods: GOODS, layers: LAYERS, interact: INTERACT, law: LAW, fees: FEES, warp: WARP,
       scale: GEO.SCALE, motionScale: SIM.MOTION_SCALE, clockScale: SIM.CLOCK_SCALE,
     };
@@ -951,34 +958,38 @@ export class Game {
     if (!isGood(good) || GOODS[good].contraband || !(qty > 0)) return;
     qty = Math.min(5000, Math.round(qty));
     if (!st.stock || !st.target) refreshPrices(h, st);
-    const price = st.market[good] = Math.max(1, st.market[good] || refreshPrices(h, st)[good]);
+    refreshPrices(h, st);
     if (buying) {
       const C = SHIP_CLASSES[p.ship.cls];
       const free = C.capacity - cargoMass(p.cargo);
       const avail = Math.floor(st.stock[good] ?? 0);
       if (avail <= 0) return this.event(p, 'warn', `${GOODS[good].name}: sold out here for now.`);
-      qty = Math.min(qty, free, Math.floor(p.money / price), avail);
+      // every tonne is priced on the stock it leaves behind (TRADE.IMPACT), so buying a harbour out and selling it
+      // straight back always loses the spread instead of printing money
+      qty = affordableQty(h, st, good, Math.min(qty, free, avail), p.money);
       if (qty <= 0) return this.event(p, 'warn', 'No space or no money.');
-      p.money -= qty * price;
+      const q = tradeQuote(h, st, good, qty, 'buy');
+      p.money -= q.total;
       const stack = p.cargo.find((c) => c.good === good && !c.jobId);
       if (stack) stack.qty += qty; else p.cargo.push({ good, qty, contraband: false, jobId: null });
       st.stock[good] = Math.max(0, st.stock[good] - qty);
       refreshPrices(h, st);
-      const d = st.market[good] - price;
-      this.event(p, 'info', `Bought ${qty} t of ${GOODS[good].name} at ${fmt(price)} cr/t${d > 0 ? ` (price now ${fmt(st.market[good])})` : ''}.`);
+      const d = st.market[good] - q.unit;
+      this.event(p, 'info', `Bought ${qty} t of ${GOODS[good].name} at ${fmt(q.unit)} cr/t average${d > 0 ? ` (price now ${fmt(st.market[good])})` : ''}.`);
     } else {
       const stacks = p.cargo.filter((c) => c.good === good && !c.jobId);
       const have = stacks.reduce((s, c) => s + c.qty, 0);
       qty = Math.min(qty, have);
       if (qty <= 0) return this.event(p, 'warn', 'Nothing to sell (contract cargo cannot be sold).');
+      const q = tradeQuote(h, st, good, qty, 'sell');
       let left = qty;
       for (const c of stacks) { const k = Math.min(c.qty, left); c.qty -= k; left -= k; }
       p.cargo = p.cargo.filter((c) => c.qty > 0);
-      p.money += qty * price; p.stats.earned += qty * price;
+      p.money += q.total; p.stats.earned += q.total;
       st.stock[good] = (st.stock[good] || 0) + qty;
       refreshPrices(h, st);
-      const d = price - st.market[good];
-      this.event(p, 'info', `Sold ${qty} t of ${GOODS[good].name} at ${fmt(price)} cr/t${d > 0 ? ` (price now ${fmt(st.market[good])})` : ''}.`);
+      const d = q.unit - st.market[good];
+      this.event(p, 'info', `Sold ${qty} t of ${GOODS[good].name} at ${fmt(q.unit)} cr/t average${d > 0 ? ` (price now ${fmt(st.market[good])})` : ''}.`);
     }
     this.sendYou(p); this.sendHarbor(p);
   }
@@ -1256,17 +1267,26 @@ export class Game {
     for (const [id, o] of this.offers) if (Date.now() > o.expires) { this.offers.delete(id); const a = this.byId.get(o.from); if (a) this.event(a, 'info', 'Your trade offer expired.'); }
     if (Date.now() - this.lastSave > 30000) this.saveState();
   }
-  // Keep the weather cache warm for every online player's cell (every 30 s) and every harbour (every 10 min).
-  // WeatherService.request() dedups, rate-limits and backs off by itself; the calls here are cheap.
+  // Keep the weather cache warm for every ship at sea or online (every 30 s, urgent) and, every 5 min, for the harbours
+  // within 400 km of an online player (v7 world coverage: wherever people sail, not a fixed North Sea grid).
+  // WeatherService dedups, rate-limits and backs off by itself; the calls here are cheap.
   requestWeather() {
     if (!this.weather) return;
     const now = Date.now();
     if (now - this.lastWxRequest < 30000) return;
-    const harbourSweep = now - (this.lastWxHarbors || 0) > 600000;
+    const harbourSweep = now - (this.lastWxHarbors || 0) > 300000;
     this.lastWxRequest = now;
     try {
-      for (const p of this.byId.values()) if (p.online || (p.voyage && !p.docked)) this.weather.request(p.ship.lat, p.ship.lon);
-      if (harbourSweep) { this.lastWxHarbors = now; for (const h of HARBORS) { const a = this.harborAnchor(h); this.weather.request(a.lat, a.lon); } }
+      const ships = [], online = [];
+      for (const p of this.byId.values()) {
+        if (p.online || (p.voyage && !p.docked)) ships.push(p.ship);
+        if (p.online) online.push(p.ship);
+      }
+      if (harbourSweep && typeof this.weather.requestAround === 'function') {
+        this.lastWxHarbors = now;
+        for (const s of ships) this.weather.request(s.lat, s.lon, true);
+        this.weather.requestAround(online, HARBORS.map((h) => this.harborAnchor(h)));
+      } else for (const s of ships) this.weather.request(s.lat, s.lon, true);
     } catch (e) { this.log(`[game] weather.request failed: ${e.message}`); }
   }
   updateWind(dt) {
@@ -1653,11 +1673,12 @@ export class Game {
     this.event(p, 'info', `${j.platformName} took the supplies. +${fmt(pay)} cr.`);
     this.sendYou(p);
   }
-  expressPassage(p, lat, lon) {
+  expressPassage(p, lat, lon, opts = {}) {
     if (p.docked) return this.event(p, 'warn', 'Cast off first.');
     if (p.assist) return this.event(p, 'info', 'The tugs have you. Hold on.'); // the tug assist owns the position (was charged, then undone)
     if (p.hail) return this.event(p, 'law', 'Not with the coast guard on the radio.');
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85) return;
+    if (p.expressBusy && !opts.built) return this.event(p, 'info', 'The navigator is still plotting the last passage.');
     const distM = haversine(p.ship.lat, p.ship.lon, lat, lon);
     if (distM < 2000) return this.event(p, 'warn', 'Too close to bother.');
     const nm = distM / 1852;
@@ -1667,16 +1688,102 @@ export class Game {
     const hours = distM / (Math.max(6, C.maxKn * 0.8) * GEO.KN_TO_MS) / 3600;
     const fuelNeeded = fuelBurnPerSimHour(p.ship.cls, 0.8, cargoMass(p.cargo) / C.capacity, 0, p.cond) * hours;
     if (p.fuel < fuelNeeded && !C.sail) return this.event(p, 'warn', `Not enough fuel for the passage: needs ${fuelNeeded.toFixed(1)} t, tanks hold ${p.fuel.toFixed(1)} t.`);
-    const end = destination(lat, lon, bearing(lat, lon, p.ship.lat, p.ship.lon), 800);
-    const spot = this.world.nearestWater(end.lat, end.lon, 30);
-    if (!this.world.isWater(spot.lat, spot.lon)) return this.event(p, 'warn', 'That destination is on land.');
+    // V7 step 0: the harbour maps the arrival may sit on are built first (production builds them on demand), so the
+    // safe-spot check sees the same quays and depths the client will load; then nothing is charged before a spot is found.
+    if (!opts.built) {
+      const need = this.expressPatchesToBuild(lat, lon);
+      if (need.length) {
+        p.expressBusy = true;
+        const tmo = (pr) => Promise.race([Promise.resolve(pr).catch(() => null), new Promise((r) => setTimeout(r, 8000).unref?.())]);
+        return Promise.all(need.map((id) => tmo(this.geom.ensureHarbor(id)))).then(() => {
+          p.expressBusy = false;
+          return this.expressPassage(p, lat, lon, { built: true });
+        }, () => { p.expressBusy = false; });
+      }
+    }
+    const arr = this.expressArrival(p, lat, lon);
+    if (!arr.ok) return this.event(p, 'warn', arr.why);
     p.money -= cost; p.fuel = Math.max(0, p.fuel - fuelNeeded);
     p.cond = Math.max(0, p.cond - wearPerSimHour(0.8, this.wind.spd, C.wearMul) * hours);
-    p.ship.lat = spot.lat; p.ship.lon = spot.lon; p.ship.spd = 0; p.ship.throttle = 0; p.lastValid = { ...spot }; p.moveBudget = 0;
+    const s = p.ship;
+    s.lat = arr.lat; s.lon = arr.lon; s.hdg = normDeg(arr.hdg); s.spd = 0; s.throttle = 0; s.rudder = 0;
+    // grounding watch starts afresh at the new position (no stale shallow timer, no teleport back to the old water)
+    p.lastValid = { lat: arr.lat, lon: arr.lon }; p.shallowSince = 0; p.moveBudget = 0; p.lastState = Date.now(); p.rejects = 0;
     p.stats.distanceKm += distM / 1000;
     p.shipTime = (Number.isFinite(p.shipTime) ? p.shipTime : this.simTime) + hours * 3600; // V6 item 5: the passage hours pass on the ship's clock
-    this.event(p, 'info', `Express passage: ${Math.round(nm)} nm in the blink of an eye for ${fmt(cost)} cr (${hours.toFixed(1)} h of fuel and wear charged; ship's clock +${hours.toFixed(1)} h).`);
+    const where = arr.harbor ? ` You lie ${(arr.offM / 1000).toFixed(1)} km off ${arr.harbor.name}, heading for the entrance.` : '';
+    this.event(p, 'info', `Express passage: ${Math.round(nm)} nm in the blink of an eye for ${fmt(cost)} cr (${hours.toFixed(1)} h of fuel and wear charged; ship's clock +${hours.toFixed(1)} h).${where}`);
     this.sendYou(p, { correction: true });
+  }
+  // Harbours whose built map could cover the express arrival near (lat, lon) but are not built yet (at most 3).
+  // Big ports (server/bigports.js) count too: their extra patches carry the real quays where the raster only has 550 m cells.
+  // A map that could not be built (an extra patch with no data, Overpass down) is not waited for again for 10 min.
+  expressPatchesToBuild(lat, lon) {
+    if (!this.geom || typeof this.geom.ensureHarbor !== 'function' || typeof this.geom.getHarborGeom !== 'function') return [];
+    const tried = this.expressGeomTried || (this.expressGeomTried = new Map()), now = Date.now();
+    const out = [];
+    for (const h of HARBORS.concat(allSubPatches(HARBORS))) {
+      if (Math.abs(h.lat - lat) > 0.12 || haversine(lat, lon, h.lat, h.lon) > EXPRESS_SAFE.HARBOUR_NEAR_M + 3000) continue;
+      if (now - (tried.get(h.id) || 0) < 600e3) continue;
+      try { if (!this.geom.getHarborGeom(h.id)) out.push({ id: h.id, d: haversine(lat, lon, h.lat, h.lon) }); } catch { /* skip */ }
+    }
+    const ids = out.sort((a, b) => a.d - b.d).slice(0, 4).map((x) => x.id);
+    for (const id of ids) tried.set(id, now);
+    return ids;
+  }
+  // Water depth (m) at LOW water: the built harbour map where one covers the point (quays/land = -1), else the world raster.
+  depthAtLowWater(lat, lon) {
+    const lw = lowWaterAt(lat, lon);
+    const pen = this.landPenetration(lat, lon);
+    if (pen != null) {
+      if (pen > 0) return -1;
+      let h = null;
+      try { h = typeof this.geom.patchHeightAt === 'function' ? this.geom.patchHeightAt(lat, lon) : null; } catch { h = null; }
+      if (Number.isFinite(h)) return -h + lw;
+    }
+    return this.world.depthAt(lat, lon) + lw;
+  }
+  // Every other hull near (lat, lon) the arrival must keep clear of: skippers (and their tugs), AI traffic, cutters, AIS, wrecks.
+  expressOthers(p, lat, lon, rangeM = 25000) {
+    const out = [], near = (o) => o && Number.isFinite(o.lat) && Number.isFinite(o.lon) && Math.abs(o.lat - lat) < rangeM / 100000 && haversine(lat, lon, o.lat, o.lon) <= rangeM;
+    const push = (o, len) => { if (near(o)) out.push({ lat: o.lat, lon: o.lon, len }); };
+    for (const q of this.players.values()) {
+      if (q === p || !q.ship) continue;
+      push(q.ship, SHIP_CLASSES[q.ship.cls]?.length || 100);
+      let tugs = null; try { tugs = tugsPublic(this, q); } catch { tugs = null; }
+      for (const t of tugs || []) push(t, 32);
+    }
+    if (this.traffic) { try { for (const a of this.traffic.near(lat, lon, rangeM) || []) push(a, SHIP_CLASSES[a.cls]?.length || 150); } catch { /* no traffic */ } }
+    for (const c of this.cutters || []) push(c, 60);
+    if (this.liveAis && typeof this.liveAis.near === 'function') { try { for (const v of this.liveAis.near(lat, lon, rangeM, { limit: 500 }) || []) push(v, Number(v.length) || 120); } catch { /* AIS down */ } }
+    for (const w of this.wrecks || []) push(w, 60);
+    return out;
+  }
+  /**
+   * Where an express passage to (lat, lon) arrives: {ok, lat, lon, hdg, offM, harbor?} or {ok: false, why}. Within
+   * HARBOUR_NEAR_M of a harbour the ship lies 1.5–2 km out on its approach heading for the entrance; elsewhere at the
+   * nearest safe spot to the point. Safe = server/safespot.js (depth at low water, a clear circle, other ships).
+   */
+  expressArrival(p, lat, lon) {
+    const C = SHIP_CLASSES[p.ship.cls];
+    const o = { draft: C.draft, length: C.length, depthLW: (a, b) => this.depthAtLowWater(a, b), others: this.expressOthers(p, lat, lon) };
+    const { harbor, units } = this.nearestHarbor(lat, lon);
+    if (harbor && units <= EXPRESS_SAFE.HARBOUR_NEAR_M) {
+      const anchor = this.harborAnchor(harbor), geom = this.harborGeom(harbor.id);
+      const fromAnchor = (a, b) => haversine(anchor.lat, anchor.lon, a, b);
+      const score = (a, b) => -Math.abs(fromAnchor(a, b) - EXPRESS_SAFE.APPROACH_M);
+      // the approach 1.5–2 km out (fairway, else the most open bearing); a deep hull on a shoal coast further out
+      const tries = [[harbourAim({ anchor, fairway: geom?.fairway, depthLW: o.depthLW }), 2500], [harbourAim({ anchor, depthLW: o.depthLW }), 6000], [harbourAim({ anchor, depthLW: o.depthLW, distM: 6000 }), 9000]];
+      for (const [aim, maxRadiusM] of tries) {
+        const spot = findSafeSpot(aim, { ...o, score, maxRadiusM });
+        if (spot) return { ok: true, lat: spot.lat, lon: spot.lon, hdg: bearing(spot.lat, spot.lon, anchor.lat, anchor.lon), offM: fromAnchor(spot.lat, spot.lon), harbor };
+      }
+      return { ok: false, why: `No safe water to arrive in off ${harbor.name} for a ${C.name.toLowerCase()} (${C.draft} m draught) — try a point further out.` };
+    }
+    const onLand = !(o.depthLW(lat, lon) > 0);
+    const spot = findSafeSpot({ lat, lon }, { ...o, maxRadiusM: onLand ? 2000 : 5000 });
+    if (!spot) return { ok: false, why: onLand ? 'That destination is on land.' : `No safe water there for a ${C.name.toLowerCase()} (${C.draft} m draught, room to swing, clear of other ships) — pick deeper open water.` };
+    return { ok: true, lat: spot.lat, lon: spot.lon, hdg: bearing(p.ship.lat, p.ship.lon, lat, lon), offM: spot.offM };
   }
   setVoyage(p, m) {
     if (m.clear) { p.voyage = null; this.sendYou(p); return; }

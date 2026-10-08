@@ -1,0 +1,23 @@
+{
+  "about": "Where ships moor in the big ports. 'quay': midpoints of long OpenStreetMap man_made=quay ways (Overpass, 2026-10-08), one per terminal; 'ais': a real AIS position report of a stopped ship (test/fixtures/ais/aisstream-live.json). A ship moored there must lie on the water's edge of the carved port model.",
+  "points": [
+    { "port": "hamburg", "kind": "ais", "name": "BRUECKENKIEKER (MMSI 211307810), SOG 0 at the St. Pauli Landungsbrücken pontoons", "lat": 53.54608, "lon": 9.98378 },
+    { "port": "hamburg", "kind": "quay", "name": "Burchardkai", "lat": 53.53548, "lon": 9.90921 },
+    { "port": "hamburg", "kind": "quay", "name": "Ballinkai", "lat": 53.51133, "lon": 9.93679 },
+    { "port": "hamburg", "kind": "quay", "name": "Auguste-Victoria-Kai", "lat": 53.52995, "lon": 9.96488 },
+    { "port": "hamburg", "kind": "quay", "name": "Brandenburger Ufer", "lat": 53.52452, "lon": 9.98531 },
+    { "port": "hamburg", "kind": "quay", "name": "Kaiserkai", "lat": 53.54165, "lon": 9.98536 },
+    { "port": "hamburg", "kind": "quay", "name": "Amsterdamer Kai", "lat": 53.52026, "lon": 9.90085 },
+    { "port": "hamburg", "kind": "quay", "name": "Europakai (Cuxhaven)", "lat": 53.86314, "lon": 8.7227 },
+    { "port": "bremerhaven", "kind": "quay", "name": "Columbuskaje", "lat": 53.5648, "lon": 8.54957 },
+    { "port": "bremerhaven", "kind": "quay", "name": "Westkaje", "lat": 53.57908, "lon": 8.55054 },
+    { "port": "le_havre", "kind": "quay", "name": "Quai du Havre", "lat": 49.46145, "lon": 0.13835 },
+    { "port": "le_havre", "kind": "quay", "name": "Quai de l'Asie", "lat": 49.4709, "lon": 0.16884 },
+    { "port": "le_havre", "kind": "quay", "name": "Quai de l'Europe", "lat": 49.48473, "lon": 0.18256 },
+    { "port": "amsterdam", "kind": "quay", "name": "Noordzeekanaal quay", "lat": 52.43025, "lon": 4.75881 },
+    { "port": "amsterdam", "kind": "quay", "name": "Amsterdam quay", "lat": 52.38051, "lon": 4.95922 },
+    { "port": "antwerp", "kind": "quay", "name": "Antwerp city docks quay", "lat": 51.24347, "lon": 4.4155 },
+    { "port": "antwerp", "kind": "quay", "name": "Vlissingen-Oost quay", "lat": 51.44515, "lon": 3.70772 },
+    { "port": "antwerp", "kind": "quay", "name": "Kanaal Gent-Terneuzen quay", "lat": 51.26849, "lon": 3.87272 }
+  ]
+}

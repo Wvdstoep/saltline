@@ -18,6 +18,7 @@ export const MARKET = {
   SNAPSHOT_MS: 5000,     // /api/market is cached this long
   ROUTES_LIMIT: 20, ROUTES_LIMIT_MAX: 50,
   BERTH_DAYS: 1,         // berth fee days counted at the destination
+  ALL_NEAREST: 80,       // from=all: each origin is compared with its 80 nearest harbours (v7: ~340 harbours worldwide)
 };
 
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -119,7 +120,9 @@ export function affordableQty(harbor, st, good, cap, cash) {
 const sortKey = { tkm: (r) => r.perTkm, hour: (r) => r.perHour, net: (r) => r.net };
 const cmpRows = (sort) => (x, y) => (sortKey[sort](y) - sortKey[sort](x)) || (y.net - x.net);
 
-function rowsFrom(game, routeTable, A, q) {
+// bestOnly (the from=all search keeps one row per harbour): only rows that beat the best so far are built.
+function rowsFrom(game, routeTable, A, q, bestOnly = false) {
+  let bestK = -Infinity, bestNet = -Infinity;
   const stA = game.harbors?.[A.id]; if (!stA || !stA.stock) return [];
   const C = SHIP_CLASSES[q.cls], cap = C.capacity;
   const goods = q.good ? [q.good] : MARKET_GOODS;
@@ -127,6 +130,19 @@ function rowsFrom(game, routeTable, A, q) {
   const pointCr = repairCostFor(q.cls, 99);
   const wearH = serviceWearPerH(q.cls);
   const rows = [];
+  // destinations and their sea distance once per origin (not per good)
+  const dests = [];
+  for (const B of HARBORS) {
+    if (B.id === A.id) continue;
+    const stB = game.harbors?.[B.id]; if (!stB || !stB.stock) continue;
+    let dist = null; try { dist = routeTable ? routeTable.estimateKm(A.id, B.id) : null; } catch { dist = null; }
+    if (!routeTable) dist = { km: haversine(A.lat, A.lon, B.lat, B.lon) / 1000 * RATES.DETOUR, est: true };
+    if (!dist || !(dist.km > 0)) continue;
+    dests.push({ B, stB, dist });
+  }
+  // the all-harbour scan (one best row per origin) compares each origin with its ALL_NEAREST nearest harbours by sea:
+  // with ~340 harbours worldwide a full cross product stalls the game loop for ~0.5 s (v7 world coverage)
+  if (bestOnly && dests.length > MARKET.ALL_NEAREST) { dests.sort((x, y) => x.dist.km - y.dist.km); dests.length = MARKET.ALL_NEAREST; }
   for (const g of goods) {
     const stock = stA.stock[g] ?? 0;
     if (!(stock >= 1)) continue;
@@ -138,24 +154,30 @@ function rowsFrom(game, routeTable, A, q) {
     const buy = tradeQuote(A, stA, g, qty, 'buy');
     const load = qty / cap;
     const kn = serviceKn(q.cls, load), burn = serviceBurnTph(q.cls, load);
-    for (const B of HARBORS) {
-      if (B.id === A.id) continue;
-      const stB = game.harbors?.[B.id]; if (!stB || !stB.stock) continue;
-      let dist = null; try { dist = routeTable ? routeTable.estimateKm(A.id, B.id) : null; } catch { dist = null; }
-      if (!routeTable) dist = { km: haversine(A.lat, A.lon, B.lat, B.lon) / 1000 * RATES.DETOUR, est: true };
-      if (!dist || !(dist.km > 0)) continue;
+    for (const { B, stB, dist } of dests) {
+      // the expected price lies between today's price and the price at the target stock (stock drifts toward target)
+      if (Math.max(stB.market?.[g] ?? Infinity, priceOf(B, g, stB.target?.[g] ?? 1, stB.target?.[g] ?? 1)) <= buy.unit) continue;
       const hours = kmHours(dist.km, kn);
+      // a sale can never beat the buy price when the expected mid price at B is not above it (spread and impact only
+      // lower a sale) — skipping those keeps the all-harbour search fast with ~340 harbours (v7 world coverage)
+      const stockB = expectedStockAfter(stB, g, hours);
+      if (priceOf(B, g, stockB, stB.target?.[g] ?? 1) <= buy.unit) continue;
       const fuelT = burn * hours, fuelCr = fuelT * fuelPrice;
       const wagesCr = (C.crewCost || 0) * hours;
       const wearCr = wearH * hours * pointCr;
       const duesCr = portDues(q.cls, B), pilotCr = pilotageFee(q.cls, B), berthCr = berthFeePerDay(q.cls) * MARKET.BERTH_DAYS;
-      const stB2 = { ...stB, stock: { ...stB.stock, [g]: expectedStockAfter(stB, g, hours) } };
+      const stB2 = { stock: { [g]: stockB }, target: stB.target }; // tradeQuote reads stock[g] and target[g] only
       const sellQ = tradeQuote(B, stB2, g, qty, 'sell');
       const revenue = sellQ.total;
-      const costs = { goods: buy.total, fuel: Math.round(fuelCr), wages: Math.round(wagesCr), wear: Math.round(wearCr), dues: duesCr, pilotage: pilotCr, berth: berthCr };
       const cost = buy.total + fuelCr + wagesCr + wearCr + duesCr + pilotCr + berthCr;
       const net = revenue - cost;
       if (!(net > 0)) continue;
+      if (bestOnly) {
+        const k = q.sort === 'hour' ? Math.round(net / (hours + 1)) : q.sort === 'net' ? net : r3(net / (qty * dist.km));
+        if (k < bestK || (k === bestK && net <= bestNet)) continue;
+        bestK = k; bestNet = net;
+      }
+      const costs = { goods: buy.total, fuel: Math.round(fuelCr), wages: Math.round(wagesCr), wear: Math.round(wearCr), dues: duesCr, pilotage: pilotCr, berth: berthCr };
       const fuelCap = C.fuelCap || 0;
       const bunker = fuelCap > 0 && fuelT > 0.9 * fuelCap ? Math.ceil(fuelT / (0.9 * fuelCap)) - 1 : 0;
       rows.push({
@@ -178,7 +200,7 @@ export function findTrades(game, routeTable, q) {
   let trades = [];
   if (q.from === 'all') {
     for (const A of HARBORS) {
-      const rows = rowsFrom(game, routeTable, A, q);
+      const rows = rowsFrom(game, routeTable, A, q, true);
       if (!rows.length) continue;
       rows.sort(cmp);
       const best = rows[0];

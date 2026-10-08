@@ -425,7 +425,7 @@ describe('Digitraffic', () => {
     assert.deepEqual(a.off, [64, -5]);
     const pakri = store.get(276123456, NOW);
     assert.equal(pakri.raw.sog, null); assert.equal(pakri.raw.cog, null); assert.equal(pakri.raw.heading, null); // 102.3 / 360 / 511
-    assert.equal(pakri.dest, 'EEMUG'); assert.equal(pakri.cls, 'coaster');
+    assert.equal(pakri.dest, 'tallinn'); assert.equal(pakri.cls, 'coaster'); // EEMUG (Muuga) is the game's Tallinn harbour since v7
     assert.equal(store.get(230123450, NOW).state, 'moored');
     assert.equal(store.get(230987650, NOW).cls, 'tug');
     assert.equal(store.get(265123456, NOW), null);

@@ -3,6 +3,11 @@
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
 const MARINE = 'https://marine-api.open-meteo.com/v1/marine';
 const UA = 'Saltline/0.3 (weather; https://github.com/Wvdstoep/saltline)';
+const distKm = (a, b) => {
+  const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 12742 * Math.asin(Math.min(1, Math.sqrt(x)));
+};
 
 export class WeatherService {
   constructor({ fetchImpl, log, cellDeg = 0.5, ttlMs = 20 * 60e3, maxConcurrent = 2, now } = {}) {
@@ -17,9 +22,6 @@ export class WeatherService {
     this.failures = 0; this.consecutive = 0; this.disabledUntil = 0; this.backoffUntil = 0;
     this.window = []; // request timestamps in the last minute
     this.forceOff = process.env.SALTLINE_OFFLINE === '1' || !this.fetch;
-    this.gridIdx = 0; this.lastGrid = 0;
-    this.grid = [];
-    for (let lat = 50; lat <= 61; lat += 2) for (let lon = -6; lon <= 12; lon += 3) this.grid.push([lat, lon]);
   }
   get enabled() { return !this.forceOff && this.now() >= this.disabledUntil; }
   key(lat, lon) { const d = this.cellDeg; return `${Math.round(lat / d) * d}|${Math.round(lon / d) * d}`; }
@@ -33,17 +35,43 @@ export class WeatherService {
       return best;
     } catch { return null; }
   }
-  request(lat, lon) {
+  /** Queue a cell. `urgent` (a ship's own position) goes ahead of the background harbour cells. */
+  request(lat, lon, urgent = false) {
     if (!this.enabled || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const k = this.key(lat, lon), s = this.cells.get(k);
     if (s && this.now() - s.fetchedAt < this.ttlMs) return;
-    if (this.queued.has(k) || this.queue.length > 400) return;
-    this.queued.add(k); this.queue.push(k);
+    if (this.queued.has(k)) {
+      if (urgent) { const i = this.queue.indexOf(k); if (i > 0) { this.queue.splice(i, 1); this.queue.unshift(k); } }
+      return;
+    }
+    if (this.queue.length > 400) return;
+    this.queued.add(k);
+    if (urgent) this.queue.unshift(k); else this.queue.push(k);
+  }
+  /**
+   * World coverage (v7 step 0): keep the weather warm where people sail — every ship position (urgent) and every
+   * harbour within `nearKm` of one of them (background), nearest harbours first. Replaces the old fixed North Sea grid.
+   * `ships` and `harbors` are [{lat, lon}]. Returns the number of harbour cells asked for.
+   */
+  requestAround(ships, harbors, { nearKm = 400, maxHarbors = 40 } = {}) {
+    if (!this.enabled) return 0;
+    const pts = (ships || []).filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon));
+    for (const p of pts) this.request(p.lat, p.lon, true);
+    const near = [];
+    for (const h of harbors || []) {
+      if (!h || !Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
+      let best = Infinity;
+      for (const p of pts) { const d = distKm(p, h); if (d < best) best = d; }
+      if (best <= nearKm) near.push({ h, d: best });
+    }
+    near.sort((a, b) => a.d - b.d);
+    let n = 0;
+    for (const { h } of near.slice(0, maxHarbors)) { this.request(h.lat, h.lon); n++; }
+    return n;
   }
   tick() {
     const now = this.now();
     if (!this.enabled) return;
-    if (now - this.lastGrid > 2000 && this.gridIdx < this.grid.length) { this.lastGrid = now; const [a, b] = this.grid[this.gridIdx++]; this.request(a, b); }
     if (now < this.backoffUntil) return;
     this.window = this.window.filter((t) => now - t < 60e3);
     while (this.inflight < this.maxConcurrent && this.queue.length && this.window.length < 60) {

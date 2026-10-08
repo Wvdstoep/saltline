@@ -24,21 +24,54 @@ const SIZE_MULT = { mega: 1.0, major: 1.0, regional: 1.05, minor: 1.15 };
 
 export function distKm(a, b) { return haversine(a.lat, a.lon, b.lat, b.lon) / 1000; }
 
-function pickDestination(from, rnd, maxKm = 1e9) {
-  const cands = [];
+// Fishing grounds within 500 km (or 400 km of their edge) and platforms within 450 km get contracts from a harbour; a remote ground
+// or field (Flemish Cap, Sea of Okhotsk, Sakhalin, Browse) is still served by its nearest harbour up to REMOTE_KM.
+export const REMOTE_KM = 800;
+const nearestHarbor = new Map();
+export function nearestHarborId(p) {
+  if (!nearestHarbor.has(p)) {
+    let best = null, bd = Infinity;
+    for (const h of HARBORS) { const d = distKm(p, h); if (d < bd) { bd = d; best = h.id; } }
+    nearestHarbor.set(p, best);
+  }
+  return nearestHarbor.get(p);
+}
+
+// Destination mix by distance band (v7 world coverage): with ~340 harbours worldwide a plain per-harbour weight would
+// send most contracts across an ocean, so a band is drawn first (short hop, coastal/regional, sea, ocean; empty bands
+// are skipped) and then a harbour inside it, weighted by size.
+// Board generation: offers posted by an older generator (before the world-wide destination bands) are withdrawn on start.
+export const JOB_GEN = 7;
+export const DEST_BANDS = [{ maxKm: 60, p: 0.06 }, { maxKm: 700, p: 0.6 }, { maxKm: 2500, p: 0.24 }, { maxKm: Infinity, p: 0.1 }];
+/** Fishing grounds a harbour offers contracts on, nearest first ({g, d} with d in km); the board picks among the first 3. */
+export function groundsFor(from) {
+  return FISHING_GROUNDS.map((g) => ({ g, d: distKm(from, g) }))
+    .filter((x) => x.d < 500 || x.d - x.g.radiusKm < 400 || (x.d < REMOTE_KM && nearestHarborId(x.g) === from.id)).sort((a, b) => a.d - b.d);
+}
+/** Offshore installations a harbour offers supply runs to, nearest first ({p, d}); the board picks among the first 3. */
+export function platformsFor(from) {
+  return PLATFORMS.map((p) => ({ p, d: distKm(from, p) }))
+    .filter((x) => x.d < 450 || (x.d < REMOTE_KM && nearestHarborId(x.p) === from.id)).sort((a, b) => a.d - b.d);
+}
+
+export function pickDestination(from, rnd, maxKm = 1e9) {
+  const bands = DEST_BANDS.map((b) => ({ ...b, cands: [], total: 0 }));
   for (const h of HARBORS) {
     if (h.id === from.id) continue;
     const d = distKm(from, h);
     if (d > maxKm) continue;
-    let w = d < 60 ? 0.3 : d < 700 ? 1.0 : d < 2500 ? 0.25 : 0.06;
-    if (h.size === 'mega') w *= 1.5; else if (h.size === 'minor') w *= 0.7;
-    cands.push({ h, w, d });
+    const w = h.size === 'mega' ? 1.5 : h.size === 'minor' ? 0.7 : 1;
+    const b = bands.find((x) => d < x.maxKm);
+    b.cands.push({ h, w, d }); b.total += w;
   }
-  if (!cands.length) return null;
-  const total = cands.reduce((s, c) => s + c.w, 0);
-  let r = rnd() * total;
-  for (const c of cands) { r -= c.w; if (r <= 0) return c; }
-  return cands[cands.length - 1];
+  const live = bands.filter((b) => b.cands.length);
+  if (!live.length) return null;
+  const pTotal = live.reduce((s, b) => s + b.p, 0);
+  let r = rnd() * pTotal, band = live[live.length - 1];
+  for (const b of live) { r -= b.p; if (r <= 0) { band = b; break; } }
+  r = rnd() * band.total;
+  for (const c of band.cands) { r -= c.w; if (r <= 0) return c; }
+  return band.cands[band.cands.length - 1];
 }
 
 // V6 item 5 (docs/V6-QUICK-CONTRACTS.md §5.3–§5.4): a contract carries a budget of SHIP hours rated for a reference ship
@@ -51,6 +84,7 @@ function rateJob(job, simTime, rnd) {
   job.hours = budgetFor(job, cls, margin);
   job.ref = { cls, margin: Math.round(margin * 100) / 100 };
   job.postedAt = simTime; job.expiresAt = simTime + JOBTIME.BOARD_TTL_H * 3600;
+  job.gen = JOB_GEN;
   return job;
 }
 
@@ -59,7 +93,7 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
   const roll = rnd();
   const type = forceType || (roll < 0.42 ? 'freight' : roll < 0.57 ? 'passengers' : roll < 0.7 ? 'fishing' : roll < 0.8 ? 'charter' : roll < 0.9 ? 'supply' : 'tow');
   if (type === 'fishing') {
-    const grounds = FISHING_GROUNDS.map((g) => ({ g, d: distKm(from, g) })).filter((x) => x.d < 500).sort((a, b) => a.d - b.d);
+    const grounds = groundsFor(from);
     if (!grounds.length) return generateJob(from, simTime, rnd, 'freight', env);
     const { g, d: gd } = grounds[Math.floor(rnd() * Math.min(3, grounds.length))];
     const qty = Math.round((20 + rnd() * 120) / 5) * 5;
@@ -71,7 +105,7 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
     }, simTime, rnd);
   }
   if (type === 'supply') {
-    const plats = PLATFORMS.map((p) => ({ p, d: distKm(from, p) })).filter((x) => x.d < 450).sort((a, b) => a.d - b.d);
+    const plats = platformsFor(from);
     if (!plats.length) return generateJob(from, simTime, rnd, 'freight', env);
     const { p, d } = plats[Math.floor(rnd() * Math.min(3, plats.length))];
     const qty = [40, 80, 120, 200, 350][Math.floor(rnd() * 5)];
@@ -353,7 +387,7 @@ export function shipCapacity(cls) { return (SHIP_CLASSES[cls] || SHIP_CLASSES.co
 // ------------------------------------------------------------------------------------------ trade quotes
 // docs/V6-QUICK-CONTRACTS.md §3.3: what a trade of `qty` t costs or pays. Defaults = the v0.4 rule (one price per good,
 // the whole action at the pre-trade price). Wave 2 sets SPREAD 0.01 and IMPACT true (docs/V5-WAVE2-DESIGN.md §3.10).
-export const TRADE = { SPREAD: 0, IMPACT: false, STEPS: 8 };
+export const TRADE = { SPREAD: 0.02, IMPACT: true, STEPS: 8 };
 /** side 'buy' | 'sell'. Returns { unit (integer cr/t), total (integer cr) }. With IMPACT the unit price is the mean of the
  *  price at STEPS points spread over the stock change the trade causes (buying lowers the stock, selling raises it). */
 export function tradeQuote(harbor, st, good, qty, side) {

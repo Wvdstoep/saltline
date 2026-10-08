@@ -1,4 +1,4 @@
-// AI merchant traffic (docs/V3-CONTRACTS.md §2): ~90 ships sailing the sea-lane graph between real harbours,
+// AI merchant traffic (docs/V3-CONTRACTS.md §2): ~150 ships (v7: about two thirds of them worldwide) sailing the sea-lane graph between real harbours,
 // mooring and anchoring in real time. Deterministic given `rnd`; cheap enough to tick at 10 Hz.
 import { GEO, SHIP_CLASSES } from '../shared/constants.js';
 import { haversine, bearing, destination, normDeg, angleDiff } from '../shared/geo.js';
@@ -11,7 +11,7 @@ const MIX = [['coaster', 14], ['feeder', 10], ['bulker', 7], ['tanker', 7], ['bo
 const MIX_TOTAL = MIX.reduce((s, m) => s + m[1], 0);
 
 export class Traffic {
-  constructor(world, harbors, { count = 90, rnd, log, weatherAt } = {}) {
+  constructor(world, harbors, { count = 150, rnd, log, weatherAt } = {}) {
     this.world = world; this.harbors = harbors || []; this.log = log || (() => {});
     this.weatherAt = typeof weatherAt === 'function' ? weatherAt : null;
     let seed = 1234567; this.rnd = rnd || (() => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; });
@@ -45,6 +45,7 @@ export class Traffic {
       if (!to || to.id === fromId) continue;
       const d = haversine(from.lat, from.lon, to.lat, to.lon);
       if (s.regional && d > 900e3 && this.rnd() < 0.8) continue;
+      if (!s.regional && d > 3500e3 && this.rnd() < 0.75) continue; // world traffic: mostly regional trades, some ocean crossings
       if (SHIP_CLASSES[s.cls].length < 30 && d > 400e3) continue; // yachts and tugs make short hops
       const r = this.route(fromId, to.id);
       if (r) return { to, path: r };
@@ -54,7 +55,7 @@ export class Traffic {
   spawn(i) {
     const busy = this.region.filter((h) => h.size === 'mega' || h.size === 'major');
     const seedPort = i < 2 * busy.length && i < 24; // a couple of ships lie in every big regional port from the start
-    const regional = seedPort || this.rnd() < 0.6;
+    const regional = seedPort || this.rnd() < 0.35; // v7: the rest spread over the ~290 harbours outside the North Sea
     const homePool = regional && this.region.length ? this.region : this.global.length ? this.global : this.harbors;
     const home = seedPort ? busy[i % busy.length] : this.pick(homePool);
     const cls = this.pickCls(regional);

@@ -1,0 +1,1215 @@
+{
+ "note": "v6 fleet sample (docs/V6-FLEET-CONTRACTS.md §10.3), written by test/fleet-model.test.mjs from server/fleet.js",
+ "simTime": 1791460800,
+ "you": {
+  "id": "3fa9c2d1",
+  "name": "Ann",
+  "money": 84310,
+  "docked": "rotterdam",
+  "ship": {
+   "cls": "coaster",
+   "lat": 51.98,
+   "lon": 4.03,
+   "hdg": 0,
+   "spd": 0,
+   "throttle": 0,
+   "rudder": 0
+  },
+  "cond": 100,
+  "fuel": 80,
+  "cargo": [],
+  "jobs": [],
+  "berth": {
+   "harbor": "rotterdam",
+   "id": "rotterdam-waalhaven-3",
+   "name": "Waalhaven 3",
+   "hdg": 45,
+   "lat": 51.98,
+   "lon": 4.03
+  },
+  "warp": 1,
+  "aboard": "v3fa9c2d1",
+  "vesselName": "Sea Bee",
+  "home": "rotterdam",
+  "homeName": "Rotterdam (Maasvlakte)",
+  "fleet": {
+   "n": 4,
+   "atSea": 2,
+   "laidUp": 1,
+   "owed": 0,
+   "unread": 2
+  }
+ },
+ "fleet": {
+  "home": "rotterdam",
+  "homeName": "Rotterdam (Maasvlakte)",
+  "slots": 4,
+  "slotsMax": 8,
+  "slotPrice": 40000,
+  "used": 1,
+  "max": 8,
+  "n": 4,
+  "cash": 84310,
+  "owed": 0,
+  "value": 622952,
+  "costPerH": 195,
+  "storagePerDay": 25,
+  "unread": 2,
+  "homeMove": {
+   "allowed": "Rotterdam is already your home.",
+   "cost": 0
+  },
+  "vessels": [
+   {
+    "id": "v3fa9c2d1",
+    "name": "Sea Bee",
+    "cls": "coaster",
+    "clsName": "Coastal freighter",
+    "status": "active",
+    "state": "docked",
+    "aboard": true,
+    "lat": 51.98,
+    "lon": 4.03,
+    "hdg": 0,
+    "spd": 0,
+    "harbor": "rotterdam",
+    "harborName": "Rotterdam (Maasvlakte)",
+    "berthName": "Waalhaven 3",
+    "fuel": 80,
+    "fuelCap": 80,
+    "cond": 100,
+    "flooding": 0,
+    "cargoT": 0,
+    "capacity": 1200,
+    "pax": 12,
+    "paxUsed": 0,
+    "cargo": [],
+    "jobs": [],
+    "shipTime": 1791460800,
+    "order": null,
+    "task": {
+     "phase": "aboard",
+     "text": "You are aboard · moored at Rotterdam",
+     "why": null,
+     "etaS": null,
+     "leftKm": null,
+     "target": null
+    },
+    "route": null,
+    "costNow": {
+     "kind": "none",
+     "crPerH": 0,
+     "crPerDay": 0
+    },
+    "value": 0,
+    "profit": {
+     "today": 6120,
+     "d7": 22380
+    },
+    "can": {
+     "helm": "You are aboard her.",
+     "helmFee": 0,
+     "orders": "You are aboard her.",
+     "contract": "You are aboard her.",
+     "layUp": "You are aboard Sea Bee — go aboard another ship first.",
+     "recommission": "Not laid up.",
+     "recommissionFee": 240,
+     "sell": "You are aboard her.",
+     "sellValue": 0,
+     "services": "Use the harbour services.",
+     "rename": true
+    }
+   },
+   {
+    "id": "v1a2b3c4d",
+    "name": "Kittiwake",
+    "cls": "trawler",
+    "clsName": "Stern trawler",
+    "status": "active",
+    "state": "at_sea",
+    "aboard": false,
+    "lat": 54.463285,
+    "lon": 2.651823,
+    "hdg": 110,
+    "spd": 3,
+    "harbor": null,
+    "harborName": null,
+    "berthName": null,
+    "fuel": 28.8,
+    "fuelCap": 40,
+    "cond": 94,
+    "flooding": 0,
+    "cargoT": 18.4,
+    "capacity": 300,
+    "pax": 4,
+    "paxUsed": 0,
+    "cargo": [
+     {
+      "good": "fish",
+      "qty": 18.4,
+      "jobId": null,
+      "caught": true
+     }
+    ],
+    "jobs": [
+     {
+      "id": "jf1",
+      "type": "fishing",
+      "title": "Catch 30 t of fish for Rotterdam",
+      "to": "rotterdam",
+      "toName": "Rotterdam (Maasvlakte)",
+      "pay": 21000,
+      "dueShip": 1791483120,
+      "leftH": 6.2
+     }
+    ],
+    "shipTime": 1791460800,
+    "order": {
+     "type": "contract",
+     "jobId": "jf1",
+     "then": "stay"
+    },
+    "task": {
+     "phase": "fishing",
+     "text": "Fishing on the Dogger Bank · 18.4 of 30 t",
+     "why": null,
+     "etaS": null,
+     "leftKm": 135.2,
+     "target": {
+      "lat": 54.7,
+      "lon": 2.8,
+      "kind": "ground"
+     }
+    },
+    "route": [
+     [
+      54.93653,
+      2.94992
+     ],
+     [
+      54.61319,
+      3.20861
+     ],
+     [
+      54.46329,
+      2.65182
+     ]
+    ],
+    "costNow": {
+     "kind": "wages",
+     "crPerH": 55,
+     "crPerDay": 0
+    },
+    "value": 94842,
+    "profit": {
+     "today": -440,
+     "d7": 32030
+    },
+    "can": {
+     "helm": true,
+     "helmFee": 832,
+     "orders": true,
+     "contract": "Contracts are signed at the quay.",
+     "layUp": "Lay up only at your home harbour, Rotterdam.",
+     "recommission": "Not laid up.",
+     "recommissionFee": 360,
+     "sell": "Moor her in a harbour first.",
+     "sellValue": 94842,
+     "services": "Moor her in a harbour first.",
+     "rename": true
+    }
+   },
+   {
+    "id": "v5e6f7a8b",
+    "name": "North Star",
+    "cls": "feeder",
+    "clsName": "Container feeder",
+    "status": "active",
+    "state": "at_sea",
+    "aboard": false,
+    "lat": 53.4,
+    "lon": 4.95,
+    "hdg": 62,
+    "spd": 15.6,
+    "harbor": null,
+    "harborName": null,
+    "berthName": null,
+    "fuel": 212.5,
+    "fuelCap": 300,
+    "cond": 88,
+    "flooding": 0,
+    "cargoT": 2400,
+    "capacity": 4000,
+    "pax": 8,
+    "paxUsed": 0,
+    "cargo": [
+     {
+      "good": "containers",
+      "qty": 2400,
+      "jobId": "jc7",
+      "caught": false
+     }
+    ],
+    "jobs": [
+     {
+      "id": "jc7",
+      "type": "freight",
+      "title": "Freight 2,400 t of Containers to Hamburg",
+      "to": "hamburg",
+      "toName": "Hamburg",
+      "pay": 61800,
+      "dueShip": 1791540000,
+      "leftH": 22
+     }
+    ],
+    "shipTime": 1791460800,
+    "order": {
+     "type": "contract",
+     "jobId": "jc7",
+     "then": "stay"
+    },
+    "task": {
+     "phase": "sailing",
+     "text": "Freight 2,400 t of Containers to Hamburg",
+     "why": null,
+     "etaS": 1791495360,
+     "leftKm": 353,
+     "target": {
+      "harbor": "hamburg",
+      "lat": 53.54,
+      "lon": 9.93,
+      "kind": "harbor"
+     }
+    },
+    "route": [
+     [
+      53.65,
+      5.6
+     ],
+     [
+      53.85,
+      6.8
+     ],
+     [
+      54,
+      7.7
+     ],
+     [
+      53.95,
+      8.45
+     ],
+     [
+      53.86,
+      8.9
+     ],
+     [
+      53.6,
+      9.5
+     ],
+     [
+      53.54,
+      9.93
+     ]
+    ],
+    "costNow": {
+     "kind": "wages",
+     "crPerH": 140,
+     "crPerDay": 0
+    },
+    "value": 478610,
+    "profit": {
+     "today": -2890,
+     "d7": 54878
+    },
+    "can": {
+     "helm": true,
+     "helmFee": 589,
+     "orders": true,
+     "contract": "Contracts are signed at the quay.",
+     "layUp": "Lay up only at your home harbour, Rotterdam.",
+     "recommission": "Not laid up.",
+     "recommissionFee": 1900,
+     "sell": "Moor her in a harbour first.",
+     "sellValue": 478610,
+     "services": "Moor her in a harbour first.",
+     "rename": true
+    }
+   },
+   {
+    "id": "v9c0d1e2f",
+    "name": "Puffin",
+    "cls": "pilot",
+    "clsName": "Pilot boat",
+    "status": "laidup",
+    "state": "laid_up",
+    "aboard": false,
+    "lat": 51.98,
+    "lon": 4.03,
+    "hdg": 0,
+    "spd": 0,
+    "harbor": "rotterdam",
+    "harborName": "Rotterdam (Maasvlakte)",
+    "berthName": "Pontoon 1",
+    "fuel": 6,
+    "fuelCap": 6,
+    "cond": 100,
+    "flooding": 0,
+    "cargoT": 0,
+    "capacity": 2,
+    "pax": 8,
+    "paxUsed": 0,
+    "cargo": [],
+    "jobs": [],
+    "shipTime": 1791460800,
+    "order": null,
+    "task": {
+     "phase": "laid_up",
+     "text": "Laid up at Rotterdam",
+     "why": null,
+     "etaS": null,
+     "leftKm": null,
+     "target": null
+    },
+    "route": null,
+    "costNow": {
+     "kind": "storage",
+     "crPerH": 0,
+     "crPerDay": 25
+    },
+    "value": 49500,
+    "profit": {
+     "today": 0,
+     "d7": -100
+    },
+    "can": {
+     "helm": "Puffin is laid up — recommission her first.",
+     "helmFee": 0,
+     "orders": "Laid up.",
+     "contract": "Laid up.",
+     "layUp": "Laid up.",
+     "recommission": true,
+     "recommissionFee": 240,
+     "sell": true,
+     "sellValue": 49500,
+     "services": true,
+     "rename": true
+    }
+   }
+  ],
+  "money": {
+   "today": {
+    "income": 6120,
+    "costs": 3330,
+    "net": 2790,
+    "ships": 0,
+    "byCat": {
+     "income": 6120,
+     "wages": -1650,
+     "port": -1680
+    }
+   },
+   "d7": {
+    "income": 165470,
+    "costs": 96282,
+    "net": 69188,
+    "ships": -896000,
+    "byCat": {
+     "ships": -896000,
+     "income": 165470,
+     "costs": -2390,
+     "fuel": -31800,
+     "port": -4032,
+     "wages": -9460,
+     "storage": -100,
+     "fees": -40000,
+     "tugs": -4900,
+     "repairs": -3600
+    }
+   },
+   "days": [
+    {
+     "day": "2026-10-02",
+     "income": 7400,
+     "costs": 930,
+     "net": 6470
+    },
+    {
+     "day": "2026-10-03",
+     "income": 48200,
+     "costs": 18952,
+     "net": 29248
+    },
+    {
+     "day": "2026-10-04",
+     "income": 19400,
+     "costs": 3035,
+     "net": 16365
+    },
+    {
+     "day": "2026-10-05",
+     "income": 11250,
+     "costs": 41485,
+     "net": -30235
+    },
+    {
+     "day": "2026-10-06",
+     "income": 52100,
+     "costs": 23605,
+     "net": 28495
+    },
+    {
+     "day": "2026-10-07",
+     "income": 21000,
+     "costs": 4945,
+     "net": 16055
+    },
+    {
+     "day": "2026-10-08",
+     "income": 6120,
+     "costs": 3330,
+     "net": 2790
+    }
+   ],
+   "perShip": {
+    "v3fa9c2d1": {
+     "today": {
+      "income": 6120,
+      "costs": 0,
+      "net": 6120,
+      "ships": 0,
+      "byCat": {
+       "income": 6120
+      }
+     },
+     "d7": {
+      "income": 24770,
+      "costs": 2390,
+      "net": 22380,
+      "ships": 0,
+      "byCat": {
+       "income": 24770,
+       "costs": -2390
+      }
+     }
+    },
+    "v1a2b3c4d": {
+     "today": {
+      "income": 0,
+      "costs": 440,
+      "net": -440,
+      "ships": 0,
+      "byCat": {
+       "wages": -440
+      }
+     },
+     "d7": {
+      "income": 40400,
+      "costs": 8370,
+      "net": 32030,
+      "ships": 0,
+      "byCat": {
+       "income": 40400,
+       "wages": -2970,
+       "fuel": -1800,
+       "repairs": -3600
+      }
+     }
+    },
+    "v5e6f7a8b": {
+     "today": {
+      "income": 0,
+      "costs": 2890,
+      "net": -2890,
+      "ships": 0,
+      "byCat": {
+       "wages": -1210,
+       "port": -1680
+      }
+     },
+     "d7": {
+      "income": 100300,
+      "costs": 45422,
+      "net": 54878,
+      "ships": -950000,
+      "byCat": {
+       "ships": -950000,
+       "income": 100300,
+       "fuel": -30000,
+       "port": -4032,
+       "wages": -6490,
+       "tugs": -4900
+      }
+     }
+    },
+    "v9c0d1e2f": {
+     "today": {
+      "income": 0,
+      "costs": 0,
+      "net": 0,
+      "ships": 0,
+      "byCat": {}
+     },
+     "d7": {
+      "income": 0,
+      "costs": 100,
+      "net": -100,
+      "ships": 0,
+      "byCat": {
+       "storage": -100
+      }
+     }
+    }
+   },
+   "lost": [
+    {
+     "id": "v0c1d2e3f",
+     "name": "Grey Gull",
+     "cls": "trawler",
+     "how": "sold",
+     "at": 1791371400
+    }
+   ]
+  },
+  "log": [
+   {
+    "t": 1791430800,
+    "kind": "info",
+    "text": "Took delivery of a Container feeder, North Star, moored at Rotterdam, Euromax 2. Your Coastal freighter stays yours.",
+    "vid": "v5e6f7a8b"
+   },
+   {
+    "t": 1791434800,
+    "kind": "info",
+    "text": "North Star: cast off from Rotterdam for Hamburg, 470 km. ETA Thu 21:36 UTC.",
+    "vid": "v5e6f7a8b"
+   },
+   {
+    "t": 1791451800,
+    "kind": "info",
+    "text": "Kittiwake: nets out on the Dogger Bank.",
+    "vid": "v1a2b3c4d"
+   },
+   {
+    "t": 1791455400,
+    "kind": "info",
+    "text": "Kittiwake: 7.5 of 30 t caught on the Dogger Bank.",
+    "vid": "v1a2b3c4d"
+   },
+   {
+    "t": 1791458100,
+    "kind": "warn",
+    "text": "North Star: waiting for the navigator.",
+    "vid": "v5e6f7a8b"
+   },
+   {
+    "t": 1791459900,
+    "kind": "info",
+    "text": "Kittiwake: 15 of 30 t caught on the Dogger Bank.",
+    "vid": "v1a2b3c4d"
+   }
+  ]
+ },
+ "harbor": {
+  "id": "rotterdam",
+  "name": "Rotterdam (Maasvlakte)",
+  "country": "NL",
+  "size": "mega",
+  "lat": 51.98,
+  "lon": 4.03,
+  "fuelPrice": 600,
+  "jobs": [
+   {
+    "id": "jb1",
+    "type": "freight",
+    "title": "Freight 900 t of Grain to Hamburg",
+    "from": "rotterdam",
+    "to": "hamburg",
+    "good": "grain",
+    "qty": 900,
+    "pay": 24300,
+    "hours": 40,
+    "distKm": 410
+   },
+   {
+    "id": "jb2",
+    "type": "passengers",
+    "title": "10 passengers to IJmuiden",
+    "from": "rotterdam",
+    "to": "ijmuiden",
+    "pax": 10,
+    "pay": 3100,
+    "hours": 8,
+    "distKm": 60
+   },
+   {
+    "id": "jb3",
+    "type": "tow",
+    "title": "Tow a disabled stern trawler to Rotterdam",
+    "from": "rotterdam",
+    "to": "rotterdam",
+    "victimCls": "trawler",
+    "pay": 16000,
+    "hours": 20,
+    "at": {
+     "lat": 53.2,
+     "lon": 3.4
+    }
+   },
+   {
+    "id": "jb4",
+    "type": "freight",
+    "title": "Freight 5,000 t of Steel coils to Antwerp",
+    "from": "rotterdam",
+    "to": "antwerp",
+    "good": "steel",
+    "qty": 5000,
+    "pay": 51000,
+    "hours": 20,
+    "distKm": 130
+   }
+  ],
+  "used": [],
+  "shipyard": [
+   {
+    "id": "feeder",
+    "name": "Container feeder",
+    "cat": "cargo",
+    "price": 950000,
+    "tradeIn": 0
+   },
+   {
+    "id": "bulker",
+    "name": "Handysize bulk carrier",
+    "cat": "cargo",
+    "price": 4500000,
+    "tradeIn": 0
+   },
+   {
+    "id": "tanker",
+    "name": "Product tanker",
+    "cat": "cargo",
+    "price": 4200000,
+    "tradeIn": 0
+   },
+   {
+    "id": "boxship",
+    "name": "Container ship",
+    "cat": "cargo",
+    "price": 25000000,
+    "tradeIn": 0
+   },
+   {
+    "id": "trawler",
+    "name": "Stern trawler",
+    "cat": "working",
+    "price": 180000,
+    "tradeIn": 0
+   },
+   {
+    "id": "tug",
+    "name": "Harbour tug",
+    "cat": "working",
+    "price": 320000,
+    "tradeIn": 0
+   },
+   {
+    "id": "psv",
+    "name": "Platform supply vessel",
+    "cat": "working",
+    "price": 1200000,
+    "tradeIn": 0
+   },
+   {
+    "id": "pilot",
+    "name": "Pilot boat",
+    "cat": "working",
+    "price": 90000,
+    "tradeIn": 0
+   },
+   {
+    "id": "ferry",
+    "name": "RoPax ferry",
+    "cat": "passenger",
+    "price": 700000,
+    "tradeIn": 0
+   },
+   {
+    "id": "cruiser",
+    "name": "Sports cruiser 12 m",
+    "cat": "motor yacht",
+    "price": 150000,
+    "tradeIn": 0
+   },
+   {
+    "id": "myacht",
+    "name": "Motor yacht 24 m",
+    "cat": "motor yacht",
+    "price": 900000,
+    "tradeIn": 0
+   },
+   {
+    "id": "superyacht",
+    "name": "Superyacht 70 m",
+    "cat": "motor yacht",
+    "price": 12000000,
+    "tradeIn": 0
+   },
+   {
+    "id": "sloop",
+    "name": "Sloop 11 m",
+    "cat": "sailing yacht",
+    "price": 60000,
+    "tradeIn": 0
+   },
+   {
+    "id": "ketch",
+    "name": "Ketch 16 m",
+    "cat": "sailing yacht",
+    "price": 220000,
+    "tradeIn": 0
+   },
+   {
+    "id": "catamaran",
+    "name": "Catamaran 14 m",
+    "cat": "sailing yacht",
+    "price": 300000,
+    "tradeIn": 0
+   },
+   {
+    "id": "schooner",
+    "name": "Classic schooner 35 m",
+    "cat": "sailing yacht",
+    "price": 1400000,
+    "tradeIn": 0
+   }
+  ],
+  "tradeIn": 0,
+  "office": {
+   "isHome": true,
+   "home": "rotterdam",
+   "homeName": "Rotterdam (Maasvlakte)",
+   "slots": 4,
+   "slotsMax": 8,
+   "slotPrice": 40000,
+   "used": 1,
+   "storagePerDay": 25,
+   "homeMove": {
+    "allowed": "Rotterdam is already your home.",
+    "cost": 0
+   }
+  },
+  "fleetHere": [
+   {
+    "id": "v3fa9c2d1",
+    "name": "Sea Bee",
+    "cls": "coaster",
+    "clsName": "Coastal freighter",
+    "status": "active",
+    "state": "docked",
+    "aboard": true,
+    "lat": 51.98,
+    "lon": 4.03,
+    "hdg": 0,
+    "spd": 0,
+    "harbor": "rotterdam",
+    "harborName": "Rotterdam (Maasvlakte)",
+    "berthName": "Waalhaven 3",
+    "fuel": 80,
+    "fuelCap": 80,
+    "cond": 100,
+    "flooding": 0,
+    "cargoT": 0,
+    "capacity": 1200,
+    "pax": 12,
+    "paxUsed": 0,
+    "cargo": [],
+    "jobs": [],
+    "shipTime": 1791460800,
+    "order": null,
+    "task": {
+     "phase": "aboard",
+     "text": "You are aboard · moored at Rotterdam",
+     "why": null,
+     "etaS": null,
+     "leftKm": null,
+     "target": null
+    },
+    "route": null,
+    "costNow": {
+     "kind": "none",
+     "crPerH": 0,
+     "crPerDay": 0
+    },
+    "value": 0,
+    "profit": {
+     "today": 6120,
+     "d7": 22380
+    },
+    "can": {
+     "helm": "You are aboard her.",
+     "helmFee": 0,
+     "orders": "You are aboard her.",
+     "contract": "You are aboard her.",
+     "layUp": "You are aboard Sea Bee — go aboard another ship first.",
+     "recommission": "Not laid up.",
+     "recommissionFee": 240,
+     "sell": "You are aboard her.",
+     "sellValue": 0,
+     "services": "Use the harbour services.",
+     "rename": true
+    }
+   },
+   {
+    "id": "v9c0d1e2f",
+    "name": "Puffin",
+    "cls": "pilot",
+    "clsName": "Pilot boat",
+    "status": "laidup",
+    "state": "laid_up",
+    "aboard": false,
+    "lat": 51.98,
+    "lon": 4.03,
+    "hdg": 0,
+    "spd": 0,
+    "harbor": "rotterdam",
+    "harborName": "Rotterdam (Maasvlakte)",
+    "berthName": "Pontoon 1",
+    "fuel": 6,
+    "fuelCap": 6,
+    "cond": 100,
+    "flooding": 0,
+    "cargoT": 0,
+    "capacity": 2,
+    "pax": 8,
+    "paxUsed": 0,
+    "cargo": [],
+    "jobs": [],
+    "shipTime": 1791460800,
+    "order": null,
+    "task": {
+     "phase": "laid_up",
+     "text": "Laid up at Rotterdam",
+     "why": null,
+     "etaS": null,
+     "leftKm": null,
+     "target": null
+    },
+    "route": null,
+    "costNow": {
+     "kind": "storage",
+     "crPerH": 0,
+     "crPerDay": 25
+    },
+    "value": 49500,
+    "profit": {
+     "today": 0,
+     "d7": -100
+    },
+    "can": {
+     "helm": "Puffin is laid up — recommission her first.",
+     "helmFee": 0,
+     "orders": "Laid up.",
+     "contract": "Laid up.",
+     "layUp": "Laid up.",
+     "recommission": true,
+     "recommissionFee": 240,
+     "sell": true,
+     "sellValue": 49500,
+     "services": true,
+     "rename": true
+    }
+   }
+  ],
+  "fleetFull": false,
+  "fleetN": 4
+ },
+ "snapFleet": [
+  {
+   "id": "v1a2b3c4d",
+   "name": "Kittiwake",
+   "owner": "Ann",
+   "ownerId": "3fa9c2d1",
+   "cls": "trawler",
+   "lat": 54.463285,
+   "lon": 2.651823,
+   "hdg": 110,
+   "spd": 3,
+   "state": "at_sea",
+   "cond": 94,
+   "fishing": true,
+   "towing": false,
+   "towCls": null
+  }
+ ],
+ "board": {
+  "t": "fleet_board",
+  "vesselId": "v3fa9c2d1",
+  "harbor": "rotterdam",
+  "harborName": "Rotterdam (Maasvlakte)",
+  "jobs": [
+   {
+    "id": "jb1",
+    "type": "freight",
+    "title": "Freight 900 t of Grain to Hamburg",
+    "from": "rotterdam",
+    "to": "hamburg",
+    "toName": "Hamburg",
+    "pay": 24300,
+    "payPerT": 27,
+    "distKm": 410,
+    "needsCat": null,
+    "hours": 40,
+    "postedAt": null,
+    "expiresAt": null,
+    "ref": null,
+    "seaKm": null,
+    "groundKm": null,
+    "richness": null,
+    "platformKm": null,
+    "towKm": null,
+    "good": "grain",
+    "qty": 900,
+    "pax": null,
+    "at": null,
+    "platformName": null,
+    "groundName": null,
+    "est": {
+     "ok": true,
+     "hard": null,
+     "why": null,
+     "workH": 0,
+     "sailH": 27.839825127873066,
+     "needH": 28.839825127873066,
+     "budgetH": 40,
+     "slackH": 11.160174872126934,
+     "warp": 1,
+     "label": "with your ship: ~29 h sailing (≈ 29 h 0 m at 1×)"
+    },
+    "why": null
+   },
+   {
+    "id": "jb2",
+    "type": "passengers",
+    "title": "10 passengers to IJmuiden",
+    "from": "rotterdam",
+    "to": "ijmuiden",
+    "toName": "IJmuiden / Amsterdam",
+    "pay": 3100,
+    "payPerT": 310,
+    "distKm": 60,
+    "needsCat": null,
+    "hours": 8,
+    "postedAt": null,
+    "expiresAt": null,
+    "ref": null,
+    "seaKm": null,
+    "groundKm": null,
+    "richness": null,
+    "platformKm": null,
+    "towKm": null,
+    "good": null,
+    "qty": null,
+    "pax": 10,
+    "at": null,
+    "platformName": null,
+    "groundName": null,
+    "est": {
+     "ok": true,
+     "hard": null,
+     "why": null,
+     "workH": 0,
+     "sailH": 3.615782165998148,
+     "needH": 4.615782165998148,
+     "budgetH": 8,
+     "slackH": 3.384217834001852,
+     "warp": 1,
+     "label": "with your ship: ~4.6 h sailing (≈ 4 h 36 m at 1×)"
+    },
+    "why": null
+   },
+   {
+    "id": "jb3",
+    "type": "tow",
+    "title": "Tow a disabled stern trawler to Rotterdam",
+    "from": "rotterdam",
+    "to": "rotterdam",
+    "toName": "Rotterdam (Maasvlakte)",
+    "pay": 16000,
+    "payPerT": null,
+    "distKm": null,
+    "needsCat": null,
+    "hours": 20,
+    "postedAt": null,
+    "expiresAt": null,
+    "ref": null,
+    "seaKm": null,
+    "groundKm": null,
+    "richness": null,
+    "platformKm": null,
+    "towKm": null,
+    "good": null,
+    "qty": null,
+    "pax": null,
+    "at": {
+     "lat": 53.2,
+     "lon": 3.4
+    },
+    "platformName": null,
+    "groundName": null,
+    "est": {
+     "ok": true,
+     "hard": null,
+     "why": null,
+     "workH": 0.5,
+     "sailH": 0,
+     "needH": 0.5,
+     "budgetH": 20,
+     "slackH": 19.5,
+     "warp": 1,
+     "label": "with your ship: ~30 min towing (≈ 30 m at 1×)"
+    },
+    "why": "Captains do not take tows — sail her yourself."
+   },
+   {
+    "id": "jb4",
+    "type": "freight",
+    "title": "Freight 5,000 t of Steel coils to Antwerp",
+    "from": "rotterdam",
+    "to": "antwerp",
+    "toName": "Antwerp (Deurganckdok)",
+    "pay": 51000,
+    "payPerT": 10,
+    "distKm": 130,
+    "needsCat": null,
+    "hours": 20,
+    "postedAt": null,
+    "expiresAt": null,
+    "ref": null,
+    "seaKm": null,
+    "groundKm": null,
+    "richness": null,
+    "platformKm": null,
+    "towKm": null,
+    "good": "steel",
+    "qty": 5000,
+    "pax": null,
+    "at": null,
+    "platformName": null,
+    "groundName": null,
+    "est": {
+     "ok": false,
+     "hard": "needs 5,000 t of hold (1,200 t free)",
+     "why": "needs 5,000 t of hold (1,200 t free)",
+     "workH": 0,
+     "sailH": 9.21669963881881,
+     "needH": 10.21669963881881,
+     "budgetH": 20,
+     "slackH": 9.78330036118119,
+     "warp": 1,
+     "label": "with your ship: ~10 h sailing (≈ 10 h 0 m at 1×)"
+    },
+    "why": "needs 5,000 t of hold (1,200 t free)"
+   }
+  ]
+ },
+ "harbors": [
+  {
+   "id": "rotterdam",
+   "name": "Rotterdam (Maasvlakte)",
+   "lat": 51.98,
+   "lon": 4.03,
+   "size": "mega"
+  },
+  {
+   "id": "ijmuiden",
+   "name": "IJmuiden / Amsterdam",
+   "lat": 52.465,
+   "lon": 4.555,
+   "size": "major"
+  },
+  {
+   "id": "hamburg",
+   "name": "Hamburg",
+   "lat": 53.54,
+   "lon": 9.93,
+   "size": "mega"
+  },
+  {
+   "id": "antwerp",
+   "name": "Antwerp (Deurganckdok)",
+   "lat": 51.296,
+   "lon": 4.265,
+   "size": "mega"
+  },
+  {
+   "id": "felixstowe",
+   "name": "Felixstowe / Harwich",
+   "lat": 51.94,
+   "lon": 1.33,
+   "size": "mega"
+  },
+  {
+   "id": "hull",
+   "name": "Hull",
+   "lat": 53.73,
+   "lon": -0.28,
+   "size": "major"
+  },
+  {
+   "id": "esbjerg",
+   "name": "Esbjerg",
+   "lat": 55.47,
+   "lon": 8.42,
+   "size": "regional"
+  },
+  {
+   "id": "bremerhaven",
+   "name": "Bremerhaven",
+   "lat": 53.58,
+   "lon": 8.52,
+   "size": "mega"
+  },
+  {
+   "id": "zeebrugge",
+   "name": "Zeebrugge",
+   "lat": 51.37,
+   "lon": 3.18,
+   "size": "major"
+  },
+  {
+   "id": "dunkirk",
+   "name": "Dunkirk",
+   "lat": 51.05,
+   "lon": 2.18,
+   "size": "major"
+  },
+  {
+   "id": "immingham",
+   "name": "Immingham / Grimsby",
+   "lat": 53.63,
+   "lon": -0.17,
+   "size": "major"
+  },
+  {
+   "id": "ostend",
+   "name": "Ostend",
+   "lat": 51.24,
+   "lon": 2.92,
+   "size": "minor"
+  },
+  {
+   "id": "vlissingen",
+   "name": "Vlissingen",
+   "lat": 51.44,
+   "lon": 3.58,
+   "size": "regional"
+  },
+  {
+   "id": "aberdeen",
+   "name": "Aberdeen",
+   "lat": 57.14,
+   "lon": -2.05,
+   "size": "regional"
+  }
+ ]
+}

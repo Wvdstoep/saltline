@@ -23,7 +23,7 @@ export const TUGPATH = {
   DEPTH_MARGIN_M: 0.5,  // water under the keel kept by the planner
   WALL_PENALTY: 1.5,    // A* cost multiplier for running close to the walls (centre of the channel preferred)
   ESCAPE_M: 500,        // a ship in water too tight / shallow for her is first led out through water up to this far
-  SAMPLE_M: 3,          // segment check spacing
+  SAMPLE_M: 1.5,        // segment check spacing (1.5 m: the clearance is bilinear over 10 m cells — 3 m let 0.1 m dips through)
 };
 
 // ------------------------------------------------------------------------------------------------ patch → grid

@@ -14,6 +14,7 @@
 // touch land in their first/last 3 km because harbour points sit in estuaries) and returns Dijkstra routing between
 // harbour ids.
 import { HARBORS, CHANNELS } from './harbors.js';
+import { WORLD_NODES, WORLD_EDGES, keepEdge, applyDeepMoves } from './lanes-world.js';
 import { haversine, wrapLon } from '../shared/geo.js';
 
 const N = (id, name, lat, lon, kind = 'waypoint') => ({ id, name, lat, lon, kind });
@@ -325,7 +326,7 @@ for (const ch of CHANNELS) {
   RIVER_ENDS.push(`${ch.id}_0`, `${ch.id}_${ch.pts.length - 1}`);
 }
 
-export const LANE_NODES = [...REGION_NODES, ...GLOBAL_NODES, ...RIVER_NODES];
+export const LANE_NODES = applyDeepMoves([...REGION_NODES, ...GLOBAL_NODES, ...WORLD_NODES, ...RIVER_NODES]);
 
 const E = (a, b, extra) => (extra ? [a, b, extra] : [a, b]);
 const CANAL = { canal: true };
@@ -431,9 +432,11 @@ export const LANE_EDGES = [
   E('bornholm', 'rozewie_n'), E('rozewie_n', 'gdansk_appr'), E('bornholm', 'baltic_c'), E('rozewie_n', 'baltic_c'), E('baltic_c', 'stockholm_appr'),
   E('baltic_c', 'hiiumaa_n'), E('stockholm_appr', 'hiiumaa_n'), E('hiiumaa_n', 'gulf_finland'), E('gulf_finland', 'helsinki_appr'),
   E('gulf_finland', 'gogland_s'), E('gogland_s', 'petersburg_appr'), E('helsinki_appr', 'gogland_s'),
+  // World coverage (server/lanes-world.js)
+  ...WORLD_EDGES,
   // River channels
   ...RIVER_EDGES,
-];
+].filter(keepEdge);
 
 const REGION_BOX = { latMin: 48, latMax: 62.5, lonMin: -8, lonMax: 14 };
 export function inDetailRegion(lat, lon) { return lat >= REGION_BOX.latMin && lat < REGION_BOX.latMax && lon >= REGION_BOX.lonMin && lon < REGION_BOX.lonMax; }

@@ -32,6 +32,7 @@ const { buildShip, buildWreck } = ShipMod;
 const { buildHarbor, buildFishingMarker } = HarborMod;
 const D2R = Math.PI / 180;
 const GEOM_LOAD_M = 12000, GEOM_UNLOAD_M = 16000, GEOM_RETRY_MS = 120000;
+const SUBPATCH_LOAD_M = 5200, SUBPATCH_UNLOAD_M = 7500;   // V7 big ports: extra patches (centre distance)
 const SCENERY_LOAD_M = 11000, SCENERY_UNLOAD_M = 13000;
 const PLATFORM_LOAD_M = 15000, PLATFORM_UNLOAD_M = 18000;
 const COLLISION_RATE_MS = 3000;
@@ -472,6 +473,26 @@ class App {
           }
         }
       } else if (d > SCENERY_UNLOAD_M && has) { this.drop(has); this.harborMeshes.delete(h.id); }
+    }
+    // V7 big ports (server/bigports.js): extra 4.48 km patches tiled over the port around the harbour's own patch —
+    // real quays, docks and buildings where the terminals are. Only the near ones load (a patch is a 448² mesh); the
+    // scenery appears once the geometry is in (no compact fallback, no name board).
+    for (const sp of this.world.patches || []) {
+      const d = unitsBetween(s.lat, s.lon, sp.lat, sp.lon);
+      const gs = this.geomState.get(sp.id);
+      if (d < SUBPATCH_LOAD_M && !this.geoms.has(sp.id) && !this.geoms.isLoading(sp.id) && (!gs || gs.state !== 'failed' || now - gs.t > GEOM_RETRY_MS)) this.loadGeom(sp);
+      else if (d > SUBPATCH_UNLOAD_M && (this.geoms.has(sp.id) || this.geoms.isLoading(sp.id))) this.unloadGeom(sp.id);
+      const entry = this.geoms.get(sp.id), has = this.harborMeshes.get(sp.id);
+      if (entry && !has) {
+        let m = null;
+        try { m = buildHarbor({ id: sp.id, name: '', sub: true, size: 'regional' }, entry.geom); } catch (e) { console.warn('[harbor] patch build failed', sp.id, e); }
+        if (m) {
+          const at = { lat: entry.geom.origin.lat, lon: entry.geom.origin.lon };
+          m.userData.geomId = entry.id; m.userData.placeAt = at;
+          this.place(m, at.lat, at.lon); this.scene.add(m); this.harborMeshes.set(sp.id, m);
+          m.userData.setNight?.(this.night, this.time);
+        }
+      } else if (!entry && has) { this.drop(has); this.harborMeshes.delete(sp.id); }
     }
     for (const g of this.world.fishing) {
       const d = unitsBetween(s.lat, s.lon, g.lat, g.lon);

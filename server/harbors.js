@@ -1,12 +1,14 @@
 // Real-world harbours (lat/lon at the harbour entrance / roadstead), navigable channel carvings and
 // fishing grounds. Coordinates are WGS84. Sizes drive job volume, prices and port-authority presence.
+import { WORLD_HARBORS, WORLD_FISHING_GROUNDS, WORLD_PLATFORMS } from './harbors-world.js';
+import { portCarvings } from './bigports.js';
 
 export const HARBORS = [
   // ---- Detail region: North Sea, Channel, Skagerrak/Kattegat ----
   { id: 'rotterdam', name: 'Rotterdam (Maasvlakte)', country: 'NL', lat: 51.98, lon: 4.03, size: 'mega', fuelMul: 0.92 },
   { id: 'ijmuiden', name: 'IJmuiden / Amsterdam', country: 'NL', lat: 52.465, lon: 4.555, size: 'major', fuelMul: 0.95 },
   { id: 'vlissingen', name: 'Vlissingen', country: 'NL', lat: 51.44, lon: 3.58, size: 'regional', fuelMul: 0.97 },
-  { id: 'antwerp', name: 'Antwerp (Deurganckdok)', country: 'BE', lat: 51.29, lon: 4.27, size: 'mega', fuelMul: 0.93, note: 'via Westerschelde channel' },
+  { id: 'antwerp', name: 'Antwerp (Deurganckdok)', country: 'BE', lat: 51.296, lon: 4.265, size: 'mega', fuelMul: 0.93, note: 'via Westerschelde channel' },
   { id: 'zeebrugge', name: 'Zeebrugge', country: 'BE', lat: 51.37, lon: 3.18, size: 'major', fuelMul: 0.96 },
   { id: 'ostend', name: 'Ostend', country: 'BE', lat: 51.24, lon: 2.92, size: 'minor', fuelMul: 1.0 },
   { id: 'dunkirk', name: 'Dunkirk', country: 'FR', lat: 51.05, lon: 2.18, size: 'major', fuelMul: 0.98 },
@@ -90,12 +92,17 @@ export const HARBORS = [
   { id: 'stockholm', name: 'Stockholm', country: 'SE', lat: 59.33, lon: 18.12, size: 'regional', fuelMul: 1.05 },
   { id: 'helsinki', name: 'Helsinki', country: 'FI', lat: 60.15, lon: 24.96, size: 'regional', fuelMul: 1.05 },
   { id: 'murmansk', name: 'Murmansk', country: 'RU', lat: 68.98, lon: 33.07, size: 'regional', fuelMul: 1.1 },
+  // ---- World coverage (v7 step 0): ~250 more ports on every continent, server/harbors-world.js ----
+  ...WORLD_HARBORS,
 ];
 
 // Navigable channels carved as water in the land mask (lat, lon polylines). widthM in real metres.
 export const CHANNELS = [
-  { id: 'westerschelde', widthM: 1800, pts: [[51.43, 3.50], [51.42, 3.70], [51.39, 3.90], [51.36, 4.05], [51.33, 4.18], [51.30, 4.27]] },
-  { id: 'elbe', widthM: 1800, pts: [[53.90, 8.60], [53.87, 8.85], [53.84, 9.05], [53.78, 9.30], [53.70, 9.45], [53.63, 9.55], [53.57, 9.70], [53.54, 9.92]] },
+  // V7 big ports: the Westerschelde / Scheldt is carved from OSM (server/bigports/antwerp.json); this chain only feeds the
+  // lane graph (server/lanes.js) and follows the real river (a water path on the carved raster, Vlissingen → Deurganckdok).
+  { id: 'westerschelde', widthM: 1800, pts: [[51.4275, 3.5025], [51.3725, 3.8975], [51.4225, 4.0075], [51.3725, 4.2225], [51.3225, 4.2725], [51.3025, 4.2725], [51.2975, 4.2675]] },
+  // V7 big ports: the Elbe is carved from OSM (server/bigports/hamburg.json); the chain follows the real river (lane graph)
+  { id: 'elbe', widthM: 1800, pts: [[53.8975, 8.6025], [53.8675, 9.2825], [53.6525, 9.5325], [53.6225, 9.5525], [53.6075, 9.5675], [53.5575, 9.7125], [53.5575, 9.7675], [53.5425, 9.8925], [53.5425, 9.9175], [53.5375, 9.9325]] },
   { id: 'thames', widthM: 1800, pts: [[51.49, 0.95], [51.47, 0.75], [51.45, 0.55], [51.45, 0.37]] },
   { id: 'humber', widthM: 2000, pts: [[53.57, 0.18], [53.62, 0.0], [53.66, -0.12], [53.72, -0.26], [53.74, -0.33]] },
   // Port of Rotterdam waterways (OpenStreetMap waterway centrelines, 2026-10-07): the Natural Earth coast predates
@@ -147,6 +154,7 @@ export const PLATFORMS = [
   { id: 'campos', name: 'Campos Basin FPSO', lat: -22.5, lon: -40.0 },
   { id: 'gulf', name: 'South Pars platform', lat: 26.5, lon: 52.5 },
   { id: 'bass', name: 'Bass Strait platform', lat: -38.5, lon: 148.0 },
+  ...WORLD_PLATFORMS,
 ];
 
 export const FISHING_GROUNDS = [
@@ -160,6 +168,7 @@ export const FISHING_GROUNDS = [
   { id: 'irish_sea', name: 'Irish Sea', lat: 53.5, lon: -5.0, radiusKm: 55, richness: 0.75 },
   { id: 'grand_banks', name: 'Grand Banks', lat: 45.0, lon: -51.0, radiusKm: 200, richness: 1.5 },
   { id: 'benguela', name: 'Benguela upwelling', lat: -27.0, lon: 14.5, radiusKm: 200, richness: 1.3 },
+  ...WORLD_FISHING_GROUNDS,
 ];
 
 // Coast-guard patrol routes (chokepoints). Each cutter loops its waypoints.
@@ -178,6 +187,7 @@ export function carvingsForWorld() {
   const c = [];
   for (const h of HARBORS) c.push({ type: 'basin', lat: h.lat, lon: h.lon, radiusM: h.size === 'mega' ? 2600 : h.size === 'major' ? 2200 : 1800 });
   for (const ch of CHANNELS) c.push({ type: 'channel', pts: ch.pts, widthM: ch.widthM });
+  for (const pc of portCarvings()) c.push(pc);   // V7 step 0 big ports: OSM water of whole port areas (server/bigports.js)
   return c;
 }
 
