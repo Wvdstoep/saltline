@@ -21,7 +21,15 @@ market).
 
 ## Roadmap (everything still to build, in order)
 
-1. **v6 quick items** — building now: harbour warp 5×, ship's clock + feasible contracts, chart-aware autopilot, world
+0. **Fixes first** (player reports, 2026-10-08):
+   - express passage: always arrive on open water with room around the hull (depth ≥ draught + 3 m at low tide incl.
+     harbour maps, a clear circle of one ship length, away from other ships; harbours: 1.5–2 km out on the approach);
+   - big ports are inaccurate in 3D (Antwerp: moored AIS ships float in open water, quays/docks missing or offset, the
+     river shape is coarse): carve the real OSM waterways and docks into the world raster like the Rotterdam fix, and
+     cover the whole port area (Antwerp is ~20 km long) with harbour maps instead of one 4.5 km patch;
+   - **world coverage**: harbours (hundreds worldwide), fishing grounds, offshore platforms, sea lanes, live weather and a
+     finer coastline beyond the North Sea.
+1. **v6 quick items** — DEPLOYED 2026-10-08 15:05 UTC: harbour warp 5×, ship's clock + feasible contracts, chart-aware autopilot, world
    market (docs/V6-QUICK-CONTRACTS.md).
 2. **v0.5 wave 2 + v7 batch 1** (parallel lanes, disjoint files): company, home harbour, bank and loans, crew, ship stats,
    spare parts (docs/V5-WAVE2-DESIGN.md) **with** v7 #2 (docking score, anchoring, pilot jobs on AIS ships) and the
