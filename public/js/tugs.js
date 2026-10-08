@@ -57,6 +57,7 @@ export class TugLayer {
     const now = performance.now();
     if (m.t === 'snap') this.snapSeq++;
     if (m.t === 'snap' || m.t === 'welcome') for (const p of m.players || []) if (Array.isArray(p.tugs)) for (const t of p.tugs) this.upsert(p.id, t, now);
+    if (m.t === 'snap') for (const f of m.fleet || []) if (Array.isArray(f.tugs)) for (const t of f.tugs) this.upsert(f.id, t, now); // v6: captains' tug assists
     if (m.t === 'you' && Array.isArray(m.you?.assist?.tugs)) for (const t of m.you.assist.tugs) if (!this.tugs.has(t.id)) this.upsert(m.you.id, t, now);
   }
   upsert(owner, t, now) {

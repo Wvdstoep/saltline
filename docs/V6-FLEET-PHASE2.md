@@ -308,3 +308,24 @@ The standalone page `<scratchpad>/pw/fleet-www/hq-test.html` (served by `pw/flee
 15. `test/fleet-helpers.mjs` (FakeGame) is a helper module shared by the fleet tests (not a `*.test.mjs` file).
 16. `fleet.advance(v, s)` moves `game.simTime` along (tests); the `fleet_debug advance` action passes `{ clock: false }`
     so the live world clock is not touched.
+
+---
+
+## 8. Phase 2 as applied (2026-10-08, evening)
+
+Steps 1–6 are in the tree (server hooks by `apply-phase2.py`, all anchors still matched; client by hand). `npm test`: 0 fail,
+no fleet skips (one unrelated skip: the moored-AIS fixture). Additions beyond the hook list, each found in the browser run:
+
+| Where | What | Why / test |
+|---|---|---|
+| `game.connect` | `this.fleet.sendFleet(p)` after `sendHarbor` | §10.2 "fleet on connect" had no hook: chip, Office and HQ were empty until the first change. `fleet-switch` "connect sends the FleetView" |
+| `captain.js` substeps | far ships (no online skipper within 40 km, no tugs) step in 1 s substeps (`FAR_SUBSTEP_S`), near ones 0.5 s | §7.2 decision. 1,000 far ships: ~1.5–2 ms mean `fleet.tick` (`fleet-perf` 1,000-ship test) |
+| `game.tideCached` | `simulateOffline` reads the tide per 0.1° cell and sim minute | `tideAt` (next high/low search) was the per-substep cost |
+| `captain.js pilotStep` | inside a built harbour patch a captained ship follows the planner's water-only polyline exactly at ≤ 5 kn (the harbour pilot); outside, the offline stepper | the stepper's turning circle and 300 m waypoint reach cut the basin corners: every captain leaving Rotterdam Maasvlakte stopped "shoal water ahead" a few metres off the quay. `fleet-captain` "leaves the Rotterdam basins" (fails without it) |
+| `captain.js castOff` | she is swung onto the first leg at cast-off (tugs / thrusters) | left on the berth heading her first metres ran into the quay |
+| `game.simulateOffline` | a patch mask penetration ≤ `LAND_PENETRATION_M` (0.5 m, the `onState` tolerance) is not shoal; inside a patch the waypoint reach is `max(40 m, L)` | hull centres grazing mask edges by 0.1–0.4 m stopped voyages the online rule accepts |
+| `hud.showHarbor` | while the HQ is open a `harbor` message (after lay up, recommission, sell, storage …) only updates the data | it popped the harbour sheet over the HQ and closed it |
+| `main.js onYou(switched)` | closes the HQ | the view moves to the new ship |
+| `hud.js` shipyard | without trade-in the "Owned" lock is off (a second ship of your own class is allowed); the net line reads "Price X cr · your ship stays yours" | §5 |
+| `index.html` / `chart.js` | chart toolbar button "Fleet" (layer toggle) | the chart lists layer buttons by hand |
+| `hq.js` map | ship labels in one harbour stack upwards | they covered the "Rotterdam · home" label |

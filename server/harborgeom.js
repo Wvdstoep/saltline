@@ -11,8 +11,11 @@ import { HARBORS, harborById } from './harbors.js';
 import { DATA_DIR } from './world.js';
 import * as osm from './osm.js';
 import * as bigports from './bigports.js';
+import { WT, cellOf as wtCellOf, tileFToLatLon, tileSizeM, tileHeightAt, tileMaskAt, tilesInRadius } from '../shared/wtformat.js';
 
-export const GEOM_VERSION = 5;          // v4/v5: street layer (features.roads / areas / rails / pois / places)
+export const GEOM_VERSION = 6;          // v4/v5: street layer (features.roads / areas / rails / pois / places); v6: built from world tiles
+/** Older patch files still served until the background rebuild replaces them (docs/WORLD-DETAIL-STREAMING.md §6.3). */
+const GEOM_STALE_OK = new Set([5]);
 export const PATCH_N = PATCH.N;
 export const PATCH_RES = PATCH.RES;
 export const MASK = PATCH.MASK;
@@ -47,6 +50,7 @@ const cfg = {
   timeoutMs: 15_000,
   preload: !process.env.NODE_TEST_CONTEXT,
   log: (...a) => console.log(new Date().toISOString(), ...a),
+  wt: null,             // WORLD TILES: server/worldtiles.js instance (server.js), patches are built from its D14 tiles
 };
 
 /** Test / CLI hook: `{dataDir, offline, fetchImpl, timeoutMs, radiusM, log, preload}`. Clears the in-memory cache when the data dir changes. */
@@ -58,6 +62,7 @@ export function configure(opts = {}) {
   if (Number.isFinite(opts.radiusM)) cfg.radiusM = opts.radiusM;
   if (typeof opts.log === 'function') cfg.log = opts.log;
   if (typeof opts.preload === 'boolean') cfg.preload = opts.preload;
+  if ('wt' in opts) cfg.wt = opts.wt || null;
   netFailures = 0; netDownUntil = 0; osmFailedAt.clear();
 }
 export function resetCache() { entries.clear(); entryList = []; building.clear(); osmFailedAt.clear(); }
@@ -806,6 +811,71 @@ export function buildFromOSM(harbor, osmData, w = world) {
   const S = SIZES[harbor.size] || SIZES.regional;
   ctx.fairwayHalf = S.fairHalf; ctx.fairwayDepth = S.fairDepth;
   ctx.rnd = rnd;
+  return finishBuild(ctx, w);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// WORLD TILES (docs/WORLD-STREAMING-WIRING.md §2.2): a patch from decoded D14 tiles
+// ---------------------------------------------------------------------------------------------------------------
+/** D14 mask code → patch mask code (patches have no DOCK / RIVER / LOCK / BUILDING: water stays water, buildings land). */
+const WT_TO_PATCH = [WATER, LAND, QUAY, BREAKWATER, PONTOON, FAIRWAY, SHALLOW, WATER, WATER, WATER, LAND];
+/** Radius (m) of the D14 tiles a patch needs: the patch square's half diagonal + 100 m. */
+export const PATCH_TILE_RADIUS_M = (PATCH_N * PATCH_RES) / 2 * Math.SQRT2 + 100;
+
+/**
+ * Raster + features from decoded D14 tiles (docs/WORLD-DETAIL-STREAMING.md §6.3): the 448² × 10 m mask is the D14 mask
+ * resampled at the cell centres, the dredge layer the D14 depth (so the patch is never shallower than the tile), mooring
+ * faces from the tile quays (OSM + derived), structures / buildings / tanks / cranes from the tile vectors. The street
+ * layer, lights and buoys still come from the cached Overpass answer (`osmData`, optional). The berth, fairway, anchor
+ * and dredge steps after it are finishBuild's, unchanged. `tiles`: Map('x/y' → decoded z14 tile) covering the patch.
+ * Returns {geom, heights, mask, sdf} or null when a tile under the patch is missing.
+ */
+export function buildFromTiles(harbor, tiles, osmData = null, w = world) {
+  const ctx = newCtx(harbor, 'tiles');
+  const { n, mask } = ctx;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const [lat, lon] = ctx.frame.toLL((i + 0.5 - n / 2) * ctx.res, (j + 0.5 - n / 2) * ctx.res);
+    const c = wtCellOf(WT.Z_DETAIL, lat, lon), t = tiles.get(`${c.x}/${c.y}`);
+    if (!t) return null;
+    const k = j * n + i, m = tileMaskAt(t, c.u, c.v);
+    mask[k] = WT_TO_PATCH[m] ?? LAND;
+    const h = tileHeightAt(t, c.u, c.v);
+    if (IS_WATER[mask[k]] && h < 0) ctx.dredge[k] = -h;
+  }
+  // vectors: tile-local decimetres → lat/lon → patch metres
+  const seen = new Set();
+  for (const [key, t] of tiles) {
+    const v = t.vectors;
+    if (!v) continue;
+    const [tx, ty] = key.split('/').map(Number), sizeM = tileSizeM(WT.Z_DETAIL, tileFToLatLon(WT.Z_DETAIL, tx + 0.5, ty + 0.5).lat);
+    const LL = (x, z) => { const p = tileFToLatLon(WT.Z_DETAIL, tx + x / 10 / sizeM, ty + z / 10 / sizeM); return [round6(p.lat), round6(p.lon)]; };
+    const pts = (flat) => { const o = []; for (let i = 0; i + 1 < (flat || []).length; i += 2) o.push(LL(flat[i], flat[i + 1])); return o; };
+    const inside = (ll) => { const [x, z] = ctx.frame.toXZ(ll[0], ll[1]); return Math.abs(x) < ctx.half && Math.abs(z) < ctx.half; };
+    for (const q of v.quays || []) {
+      const ll = pts(q.p); if (ll.length < 2 || !ll.some(inside)) continue;
+      const xz = ll.map((p) => ctx.frame.toXZ(p[0], p[1]));
+      for (let i = 0; i + 1 < xz.length; i++) ctx.faces.push({ ax: xz[i][0], az: xz[i][1], bx: xz[i + 1][0], bz: xz[i + 1][1], kind: 'quay', side: null });
+      ctx.features.quays.push({ pts: ll });
+    }
+    for (const p of v.piers || []) { const ll = pts(p.r); if (ll.length >= 3 && ll.some(inside)) ctx.features.piers.push({ pts: ll }); }
+    for (const b of v.breakwaters || []) { const ll = pts(b.r); if (ll.length >= 3 && ll.some(inside)) ctx.features.breakwaters.push({ pts: ll }); }
+    for (const p of v.pontoons || []) { const ll = pts(p.r); if (ll.length >= 3 && ll.some(inside)) ctx.features.pontoons.push({ pts: ll }); }
+    for (const b of v.buildings || []) {
+      const ll = pts(b.r); if (ll.length < 3 || !ll.some(inside)) continue;
+      const id = ll[0].join(','); if (seen.has(id)) continue; seen.add(id);
+      ctx.features.buildings.push({ pts: ll, height: b.h, kind: b.k === 'shed' ? 'industrial' : b.k });
+    }
+    for (const tk of v.tanks || []) { const ll = LL(tk.x, tk.z); if (inside(ll)) ctx.features.tanks.push({ lat: ll[0], lon: ll[1], radius: tk.r / 10, height: tk.h }); }
+    for (const c of v.cranes || []) { const ll = LL(c.x, c.z); if (inside(ll)) (ctx.osmCranes ||= []).push({ lat: ll[0], lon: ll[1], hdg: c.hdg }); }
+  }
+  const cls = osmData ? osm.classifyFeatures(osmData.features || [], { lat: harbor.lat, lon: harbor.lon }) : null;
+  ctx.street = cls ? { roads: cls.roads, areas: cls.areas, rails: cls.rails, pois: cls.pois, places: cls.places, hasStreets: osm.osmHasStreets(osmData) } : { roads: [], areas: [], rails: [], pois: [], places: [], hasStreets: false };
+  if (cls) { for (const l of cls.lights) ctx.features.lights.push(l); for (const b of cls.buoys) ctx.features.buoys.push({ lat: b.lat, lon: b.lon, kind: b.kind, color: b.color, color2: b.color2, shape: b.shape }); }
+  ctx.anchorPref = [0, 0];
+  ctx.synthBuoys = ctx.features.buoys.length < 2;
+  const S = SIZES[harbor.size] || SIZES.regional;
+  ctx.fairwayHalf = S.fairHalf; ctx.fairwayDepth = S.fairDepth;
+  ctx.rnd = mulberry32(hashString(harbor.id) ^ 0x9e3779b9);
   return finishBuild(ctx, w);
 }
 
@@ -1907,8 +1977,9 @@ function loadGeomCache(id) {
     const j = path.join(dir, `${id}.json`), b = path.join(dir, `${id}.bin`);
     if (!fs.existsSync(j) || !fs.existsSync(b)) return null;
     const meta = JSON.parse(fs.readFileSync(j, 'utf8'));
-    if (!meta || meta.version !== GEOM_VERSION || !meta.geom || !Array.isArray(meta.geom.berths)) return null;
-    if (!Array.isArray(meta.geom.features?.pois) || (!meta.geom.features.pois.length && !meta.geom.sub) || !Array.isArray(meta.geom.features.roads)) return null;   // v4 needs the street layer
+    if (!meta || !(meta.version === GEOM_VERSION || GEOM_STALE_OK.has(meta.version)) || !meta.geom || !Array.isArray(meta.geom.berths)) return null;
+    // the street layer is required (v4+), except for a tile-built patch without a cached Overpass answer
+    if (!Array.isArray(meta.geom.features?.pois) || (!meta.geom.features.pois.length && !meta.geom.sub && meta.source !== 'tiles') || !Array.isArray(meta.geom.features.roads)) return null;
     const harbor = geomHarbor(id); if (!harbor) return null;
     const port = bigports.portForHarbor(harbor);
     // built without (this) big-port data: rebuilt when a rebuild can use OSM (network, or an OSM cache on disk), so an
@@ -1918,7 +1989,9 @@ function loadGeomCache(id) {
     const dec = decodePatch(buf);
     if (!dec || dec.n !== PATCH_N || Math.abs(dec.originLat - harbor.lat) > 1e-9 || Math.abs(dec.originLon - harbor.lon) > 1e-9) return null;
     const sdf = sdfFromMask(dec.mask, dec.n, dec.res);
-    return makeEntry(harbor, { geom: meta.geom, heights: dec.heights, mask: dec.mask, sdf }, meta.source === 'osm' ? 'osm' : 'synthetic', meta.builtAt || Date.now());
+    const e = makeEntry(harbor, { geom: meta.geom, heights: dec.heights, mask: dec.mask, sdf }, ['osm', 'tiles'].includes(meta.source) ? meta.source : 'synthetic', meta.builtAt || Date.now());
+    if (meta.version !== GEOM_VERSION) e.stale = true;   // served until rebuildFromTiles replaces it
+    return e;
   } catch { return null; }
 }
 
@@ -2033,7 +2106,12 @@ function describe(e) { const g = e.geom, f = g.features; return `${e.source} ${e
 async function buildHarbor(h, opts) {
   const disk = entries.get(h.id) || loadGeomCache(h.id);
   if (disk && !entries.has(h.id)) setEntry(disk);
-  if (disk && disk.source === 'osm') return disk.geom;
+  if (disk && (disk.source === 'osm' || disk.source === 'tiles')) return disk.geom;   // a stale (v5) patch keeps serving until rebuilt
+  // WORLD TILES: the real coast from the D14 tiles (waits ≤ 8 s for them); the OSM / synthetic builders stay the fallbacks
+  if (tilesUsable()) {
+    const e = await entryFromTiles(h, { prio: 0, timeoutMs: 8000 });
+    if (e) { setEntry(e); saveGeomCache(e); cfg.log(`[geom] ${h.id}: built ${describe(e)}`); return e.geom; }
+  }
   // an OSM attempt (bounded by the fetch timeout) when the network is allowed; else the cached OSM file if any
   let osmData = null;
   if (osmWorthTrying(h.id) || opts.fetchImpl) {
@@ -2054,6 +2132,11 @@ async function buildHarbor(h, opts) {
 }
 async function tryUpgrade(h, opts = {}) {
   try {
+    if (tilesUsable()) {
+      const e = await entryFromTiles(h, { prio: 0, timeoutMs: 8000 });
+      if (e) { setEntry(e); saveGeomCache(e); cfg.log(`[geom] ${h.id}: replaced synthetic with a tile build (${describe(e)})`); return true; }
+      if (!osmWorthTrying(h.id) && !opts.fetchImpl) return false;
+    }
     const r = await fetchOSMFor(h, opts);
     if (!r.data || !osmUsable(r.data, h)) { osmFailedAt.set(h.id, Date.now()); return false; }
     await new Promise((res) => setImmediate(res));
@@ -2075,7 +2158,7 @@ export async function ensureHarbor(id, opts = {}) {
     if (!h) return null;
     const cur = entries.get(id);
     if (cur) {
-      if (cur.source === 'synthetic' && osmWorthTrying(id) && !building.has(id)) {
+      if (cur.source === 'synthetic' && (osmWorthTrying(id) || tilesUsable()) && !building.has(id)) {
         const p = tryUpgrade(h, opts).finally(() => building.delete(id));
         building.set(id, p.then(() => (entries.get(id) || cur).geom));
       }
@@ -2087,6 +2170,94 @@ export async function ensureHarbor(id, opts = {}) {
     return await p;
   } catch { return null; }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// WORLD TILES: patches built from the D14 tiles (phase 1b)
+// ---------------------------------------------------------------------------------------------------------------
+/** True when a tile service is configured, switched on and allowed to be used (never offline / under node --test). */
+function tilesUsable() { return !!cfg.wt && cfg.wt.enabled !== false && !cfg.offline; }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));   // not unref'd: a CLI / test run waits for the rebuild
+/**
+ * A patch entry built from the D14 tiles under the harbour (requested at `prio`, waited for ≤ timeoutMs), or null when
+ * a tile is missing (source down / not reachable) or the build does not give a usable harbour (no berth, anchor dry).
+ */
+async function entryFromTiles(h, { prio = 0, timeoutMs = 8000 } = {}) {
+  try {
+    const wt = cfg.wt;
+    const r = await wt.ensureAround(h.lat, h.lon, PATCH_TILE_RADIUS_M, prio, { timeoutMs });
+    if (!r || !r.total || r.ready < r.total) return null;
+    const tiles = new Map();
+    for (const t of tilesInRadius(WT.Z_DETAIL, h.lat, h.lon, PATCH_TILE_RADIUS_M)) { const d = wt.get(WT.Z_DETAIL, t.x, t.y); if (!d) return null; tiles.set(`${t.x}/${t.y}`, d); }
+    await new Promise((res) => setImmediate(res));
+    const t0 = Date.now();
+    const build = buildFromTiles(h, tiles, osm.loadCachedOSM(h.id), world);
+    if (!build) return null;
+    if (!h.sub && !build.geom.berths.length) { cfg.log(`[geom] ${h.id}: tile build has no berth — keeping the old patch`); return null; }
+    const port = bigports.portForHarbor(h);
+    if (port) build.geom.bigport = bigports.geomStamp(port);
+    const e = makeEntry(h, build, 'tiles');
+    e.buildMs = Date.now() - t0;
+    return e;
+  } catch (err) { cfg.log('[geom] tile build failed', h.id, err?.message || err); return null; }
+}
+
+let rebuildRun = null;
+/**
+ * Background rebuild (P4) of every patch not yet built from tiles (v5 files, OSM and synthetic patches), one harbour
+ * at a time, `delayMs` apart, only while the tile source is healthy and `idle()` says the server has room. A harbour
+ * where `busy(h)` (a ship under way nearby) is retried on a later pass, so no patch changes under a sailing ship.
+ * Until a harbour is rebuilt its old patch keeps serving. Never throws; resolves the stats. Call stopRebuild() to end it.
+ * opts: { delayMs 30 s, passDelayMs 10 min, maxPasses 12, busy(h), idle(), prio 4, timeoutMs 120 s, only, log }
+ */
+export function rebuildFromTiles(opts = {}) {
+  if (rebuildRun) return rebuildRun.promise;
+  const log = typeof opts.log === 'function' ? opts.log : cfg.log;
+  const delayMs = opts.delayMs ?? 30_000, passDelayMs = opts.passDelayMs ?? 10 * 60e3, maxPasses = opts.maxPasses ?? 12;
+  const busy = typeof opts.busy === 'function' ? opts.busy : () => false;
+  const idle = typeof opts.idle === 'function' ? opts.idle : () => true;
+  const only = opts.only ? new Set(opts.only) : null;
+  const run = { stopped: false, stats: { rebuilt: 0, failed: 0, busy: 0, done: 0, passes: 0 } };
+  const st = run.stats;
+  rebuildRun = run;   // before the loop starts: a run with nothing to wait for finishes synchronously
+  run.promise = (async () => {
+    try {
+      let pending = patchList().filter((h) => !only || only.has(h.id));
+      for (let pass = 0; pass < maxPasses && pending.length && !run.stopped; pass++) {
+        st.passes++;
+        const later = [];
+        for (const h of pending) {
+          if (run.stopped) break;
+          if (!tilesUsable()) { run.stopped = true; break; }
+          const cur = entries.get(h.id) || loadGeomCache(h.id);
+          if (cur && !entries.has(h.id)) setEntry(cur);
+          if (cur && cur.source === 'tiles' && !cur.stale) { st.done++; continue; }
+          if (building.has(h.id) || busy(h)) { st.busy++; later.push(h); continue; }
+          // wait for a healthy source and an idle server (bounded: the harbour moves to the next pass)
+          let waited = 0;
+          while (!run.stopped && (!cfg.wt.healthy() || !idle()) && waited < 10) { await sleep(Math.max(1000, delayMs)); waited++; }
+          if (run.stopped) break;
+          if (!cfg.wt.healthy() || !idle()) { later.push(h); continue; }
+          const p = entryFromTiles(h, { prio: opts.prio ?? 4, timeoutMs: opts.timeoutMs ?? 120_000 });
+          building.set(h.id, p.then((e) => (e ? e.geom : cur ? cur.geom : null)));
+          let e = null;
+          try { e = await p; } finally { building.delete(h.id); }
+          if (e && !busy(h)) { setEntry(e); saveGeomCache(e); st.rebuilt++; log(`[geom] ${h.id}: rebuilt from tiles (${describe(e)})`); }
+          else if (e) { st.busy++; later.push(h); }
+          else { st.failed++; if (pass === 0) later.push(h); }
+          await sleep(delayMs);
+        }
+        pending = later;
+        if (pending.length && !run.stopped && pass + 1 < maxPasses) await sleep(passDelayMs);
+      }
+      log(`[geom] tile rebuild ${run.stopped ? 'stopped' : 'done'}: ${st.rebuilt} rebuilt, ${st.done} already from tiles, ${st.failed} failed, ${pending.length} left`);
+    } catch (err) { log('[geom] tile rebuild error', err?.message || err); }
+    if (rebuildRun === run) rebuildRun = null;
+    return st;
+  })();
+  return run.promise;
+}
+/** End the background rebuild after the harbour in progress. */
+export function stopRebuild() { if (rebuildRun) rebuildRun.stopped = true; }
 
 /**
  * Build every harbour sequentially (CLI + optional startup prefetch). Never throws.
@@ -2105,7 +2276,7 @@ export async function prefetchAll(opts = {}) {
     try {
       const cur = entries.get(h.id) || loadGeomCache(h.id);
       if (cur && !entries.has(h.id)) setEntry(cur);
-      if (cur && cur.source === 'osm' && !opts.force) { stats.skipped++; log(`${tag}: cached (osm)`); continue; }
+      if (cur && (cur.source === 'osm' || cur.source === 'tiles') && !opts.force) { stats.skipped++; log(`${tag}: cached (${cur.source})`); continue; }
       let osmData = null;
       if (!opts.syntheticOnly) {
         if (cur && !opts.force && !osmWorthTrying(h.id) && !opts.fetchImpl) { stats.skipped++; log(`${tag}: cached (synthetic, OSM not available)`); continue; }
@@ -2133,5 +2304,5 @@ export async function prefetchAll(opts = {}) {
 }
 
 /** Introspection for tests / the CLI. */
-export function stats() { return { built: entries.size, building: building.size, offline: cfg.offline, netDownUntil, entries: [...entries.values()].map((e) => ({ id: e.id, source: e.source, builtAt: e.builtAt })) }; }
+export function stats() { return { built: entries.size, building: building.size, offline: cfg.offline, netDownUntil, tiles: [...entries.values()].filter((e) => e.source === 'tiles').length, stale: [...entries.values()].filter((e) => e.stale).length, rebuild: rebuildRun ? { ...rebuildRun.stats } : null, entries: [...entries.values()].map((e) => ({ id: e.id, source: e.source, builtAt: e.builtAt })) }; }
 export { decodePatchHeight };

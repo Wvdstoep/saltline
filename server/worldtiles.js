@@ -25,6 +25,8 @@ import { ialaRegion } from './osm.js';
 import { haversine } from '../shared/geo.js';
 
 export const PRIO = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
+/** Default disk cap (MB) for tiles + overlays + bathy; SALTLINE_WT_CACHE_MB overrides. */
+export const DEFAULT_CACHE_MB = 600;
 export const ATTRIBUTION = '© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap · Terrain: Mapzen/AWS (ETOPO1, GEBCO…)';
 const ZS = new Set([WT.Z_DETAIL, WT.Z_COAST]);
 const SWAP_GRACE_MS = 30_000;
@@ -116,7 +118,8 @@ export function workerConverter({ log = () => {}, timeoutMs = 20_000 } = {}) {
 // ------------------------------------------------------------------------------------------------ service
 /**
  * createWorldTiles(opts): { dataDir, offline, log, sources (wtsource instance), converter ({convert}), now,
- * memTiles 500, cacheMB (SALTLINE_WT_CACHE_MB 1536), fetchConc 4, waitMs 6000, flushMs 60 s, useWorker }.
+ * memTiles 500, cacheMB (SALTLINE_WT_CACHE_MB, 600), reserveMB (SALTLINE_WT_RESERVE_MB, 400: kept free on the volume),
+ * freeBytes(dir) (injectable), fetchConc 4, waitMs 6000, flushMs 60 s, useWorker }.
  */
 export function createWorldTiles(opts = {}) {
   const dataDir = opts.dataDir || DATA_DIR;
@@ -127,7 +130,13 @@ export function createWorldTiles(opts = {}) {
   const sources = opts.sources || createSources({ dataDir, offline, log });
   const converter = opts.converter || (opts.useWorker === false || process.env.NODE_TEST_CONTEXT ? inlineConverter() : workerConverter({ log }));
   let memCap = Math.max(4, opts.memTiles ?? 500);
-  const capBytes = Math.max(0.001, Number(opts.cacheMB ?? process.env.SALTLINE_WT_CACHE_MB ?? 1536) || 1536) * 1048576;
+  // Disk cap: SALTLINE_WT_CACHE_MB (default 600 MB — the production volume has ≈ 1.5 GB free, the design's 1 536 MB
+  // would not fit) and never more than what the volume can spare: the cap shrinks to (our bytes + free − reserve) so
+  // the tiles never fill the disk the game state is saved on (SALTLINE_WT_RESERVE_MB, default 400 MB, kept free).
+  const capCfg = Math.max(0.001, Number(opts.cacheMB ?? process.env.SALTLINE_WT_CACHE_MB ?? DEFAULT_CACHE_MB) || DEFAULT_CACHE_MB) * 1048576;
+  const reserveBytes = Math.max(0, Number(opts.reserveMB ?? process.env.SALTLINE_WT_RESERVE_MB ?? 400) || 0) * 1048576;
+  const freeBytes = opts.freeBytes || ((dir) => { try { const s = fs.statfsSync(dir); return s.bavail * s.bsize; } catch { return Infinity; } });
+  let capBytes = capCfg;
   const fetchConc = Math.max(1, opts.fetchConc ?? 4);
   const waitMs = opts.waitMs ?? 6000;
   const st = { requests: 0, memHits: 0, diskHits: 0, built: 0, buildFailed: 0, uniformSkips: 0, swaps: 0, evicted: 0, convertMs: 0, overlays: 0 };
@@ -196,7 +205,18 @@ export function createWorldTiles(opts = {}) {
     dirty.clear();
     try { fs.mkdirSync(root, { recursive: true }); fs.appendFileSync(indexFile, lines.join('\n') + '\n'); } catch { /* next flush */ }
   }
-  const flushTimer = setInterval(() => { try { flushIndex(); } catch { /* never */ } }, opts.flushMs ?? 60_000);
+  /** Re-derive the effective cap from the free space on the data volume (start + every index flush). */
+  function updateCap() {
+    let free = Infinity;
+    try { fs.mkdirSync(root, { recursive: true }); free = freeBytes(root); } catch { free = Infinity; }
+    const ours = diskBytes().b;
+    const room = Number.isFinite(free) ? Math.max(0, ours + free - reserveBytes) : Infinity;
+    const next = Math.max(Math.min(capCfg, 32 * 1048576), Math.min(capCfg, room));
+    if (Math.abs(next - capBytes) > 1048576 && next < capCfg) { try { log(`disk cap ${Math.round(next / 1048576)} MB (volume has ${Math.round(free / 1048576)} MB free, ${Math.round(reserveBytes / 1048576)} MB kept free)`); } catch { /* never */ } }
+    capBytes = next;
+    maybeEvict();
+  }
+  const flushTimer = setInterval(() => { try { flushIndex(); updateCap(); } catch { /* never */ } }, opts.flushMs ?? 60_000);
   flushTimer.unref?.();
   function touch(k) { const e = index.get(k); if (e) { e.last = now(); dirty.add(k); } }
   function diskBytes() { let b = 0, p = 0; for (const e of index.values()) { b += e.bytes; if (e.pin) p += e.bytes; } return { b, p }; }
@@ -493,19 +513,40 @@ export function createWorldTiles(opts = {}) {
   function stats() {
     const s = sources.sourceInfo(), { b } = diskBytes();
     if (process.memoryUsage().rss > 1.2 * 1024 ** 3) memCap = Math.min(memCap, 200);
-    return { ...st, fetched: s.ofmOk, failed: s.failed, queue: queue.length, active, diskMB: Math.round(b / 1048576), diskFiles: index.size, memTiles: mem.size, memCap, pin: s.pin, healthy: s.healthy, today: s.today, converter: converter.stats?.() };
+    return { ...st, fetched: s.ofmOk, failed: s.failed, queue: queue.length, active, diskMB: Math.round(b / 1048576), capMB: Math.round(capBytes / 1048576), diskFiles: index.size, memTiles: mem.size, memCap, pin: s.pin, healthy: s.healthy, offline: !!offline, today: s.today, converter: converter.stats?.() };
   }
   function close() { closed = true; clearInterval(flushTimer); try { flushIndex(); } catch { /* never */ } try { converter.close?.(); } catch { /* never */ } for (const j of queue) j.resolve(null); queue = []; }
 
   loadIndex();
+  updateCap();
   return {
     request, requestOverlay, enqueue, get: (z, x, y) => mem.get(tileKey(z, x, y))?.tile || null,
     buffer: (z, x, y) => mem.get(tileKey(z, x, y))?.gz || null, etag: (z, x, y) => mem.get(tileKey(z, x, y))?.etag || null,
     has: (z, x, y) => mem.has(tileKey(z, x, y)) || index.has(`t${tileKey(z, x, y)}`),
     heightAt, maskAt, sdfAt, landPenetration, swappedAt, ensureAround, serveTile, debugAt, meta, stats,
     onSwap(fn) { if (typeof fn === 'function') swapFns.push(fn); return () => { const i = swapFns.indexOf(fn); if (i >= 0) swapFns.splice(i, 1); }; },
-    queued: () => queue.length + active, healthy: () => sources.sourceInfo().healthy, sources, flushIndex, compactIndex, close, offline,
+    queued: () => queue.length + active, healthy: () => sources.sourceInfo().healthy, sources, flushIndex, compactIndex, close, offline, enabled: true,
+    capMB: () => capBytes / 1048576,
     _index: index, _mem: mem,
+  };
+}
+
+/**
+ * The tile service switched off (SALTLINE_WT=0): the same surface, nothing on disk or in memory is ever read or
+ * written, nothing is fetched. /api/wt answers 404 + X-WT: fallback, so clients keep the coarse world (today's game).
+ */
+export function disabledTiles() {
+  const none = () => null;
+  return {
+    enabled: false, offline: true,
+    request: async () => null, requestOverlay: async () => false, enqueue: async () => null, get: none, buffer: none, etag: none, has: () => false,
+    heightAt: none, maskAt: none, sdfAt: none, landPenetration: none, swappedAt: () => 0,
+    ensureAround: async () => ({ ready: 0, total: 0 }),
+    serveTile: async () => ({ status: 404, headers: { 'X-WT': 'fallback', 'Cache-Control': 'no-store' }, body: null }),
+    debugAt: () => ({ disabled: true }),
+    meta: () => ({ format: WT.FORMAT, n: WT.N, zDetail: WT.Z_DETAIL, zCoast: WT.Z_COAST, src: null, attribution: ATTRIBUTION, offline: true, disabled: true }),
+    stats: () => ({ disabled: true, fetched: 0, failed: 0, queue: 0, diskMB: 0, memTiles: 0, pin: null, built: 0, swaps: 0, converter: null }),
+    onSwap: () => () => {}, queued: () => 0, healthy: () => false, sources: null, flushIndex() {}, compactIndex() {}, close() {}, capMB: () => 0,
   };
 }
 

@@ -91,6 +91,14 @@ export class FleetUi {
     const hud = this.app.hud;
     if (hud?.harborOpen?.() && hud.harborTab === 'office') hud.renderTab?.('office');
     if (this.dlg && this.dlg.live) this.renderDialog();
+    else if (this.dlg && this.dlg.kind === 'helm') {   // phase 2: the switch cooldown ends / the fee changes while the dialog is open
+      const v = this.vessel(this.dlg.vid), key = v ? `${v.can.helm}|${v.can.helmFee}` : '';
+      if (key !== this.dlg.key) {
+        const pick = $('flDlg')?.querySelector('input[name="leave"]:checked')?.value;
+        this.dlg.key = key; this.renderDialog();
+        const r = pick && $('flDlg')?.querySelector(`input[name="leave"][value="${pick}"]`); if (r) r.checked = true;
+      }
+    }
   }
   onBoard(m) { this.board = m; if (this.dlg && this.dlg.kind === 'board' && this.dlg.vid === m.vesselId) this.renderDialog(); }
   vessel(id) { return this.last?.vessels?.find((v) => v.id === id) || this.app.hud?.harborData?.fleetHere?.find?.((v) => v.id === id) || null; }
@@ -324,7 +332,7 @@ export class FleetUi {
     document.body.appendChild(w);
     return w;
   }
-  openDialog(d) { this.dlg = d; this.ensureDialog().classList.remove('hidden'); this.renderDialog(); }
+  openDialog(d) { this.dlg = d; if (d.kind === 'helm') { const v = this.vessel(d.vid); d.key = v ? `${v.can.helm}|${v.can.helmFee}` : ''; } this.ensureDialog().classList.remove('hidden'); this.renderDialog(); }
   closeDialog() { this.dlg = null; this._confirmCb = null; $('flDlg')?.classList.add('hidden'); }
   isDialogOpen() { return !!this.dlg; }
   confirm(text, cb, o = {}) {

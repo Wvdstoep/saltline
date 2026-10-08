@@ -24,6 +24,7 @@ import { catchRate } from '../shared/rates.js';                // V6 item 5: one
 import { estimateJob, fmtShipH } from '../shared/jobtime.js';            // V6 item 5: contract hours on the ship's clock
 import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; // V7 step 0: express arrives on safe open water
 import { lowWaterAt } from '../shared/tide.js';
+import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
 import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -69,6 +70,8 @@ export class Game {
     this.lastSave = Date.now();
     this.lastYou = 0;
     this.eventSeq = 1;
+    this.routePlanner = opts.routePlanner || null;   // v6 fleet: captains plan their passages with the shared planner
+    this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
     this.loadState();
     this.initHarbors();
     this.initCutters();
@@ -86,12 +89,15 @@ export class Game {
       if (s.wind) this.wind = s.wind;
       let maxJob = 1;
       for (const p of s.players || []) {
-        p.online = false; p.hail = null; p.fishing = false;
+        p.online = false; p.hail = null;
+        this.fleet.adoptPlayer(p);                    // v6: ship fields move onto the vessel records
+        p.fishing = false;
         this.migratePlayer(p);
         this.players.set(p.token, p); this.byId.set(p.id, p);
       }
       for (const h of Object.values(this.harbors)) for (const j of [...(h.jobs || []), ...((h.contact && h.contact.jobs) || [])]) maxJob = Math.max(maxJob, parseInt(j.id.slice(1), 36) + 1);
       for (const p of this.players.values()) for (const j of p.jobs || []) maxJob = Math.max(maxJob, parseInt(j.id.slice(1), 36) + 1);
+      for (const v of this.fleet.vessels.values()) for (const j of v.jobs || []) if (j && typeof j.id === 'string') maxJob = Math.max(maxJob, parseInt(j.id.slice(1), 36) + 1 || 1);
       setJobSeq(maxJob);
       for (const p of this.players.values()) {
         if (!p.convoyId) continue;
@@ -102,6 +108,7 @@ export class Game {
       // Markets kept moving while the server was down (bounded to two days).
       const savedAt = s.savedAt ? Date.parse(s.savedAt) / 1000 : s.simTime;
       if (Number.isFinite(savedAt)) { const hours = Math.min(48, Math.max(0, (this.simTime - savedAt) / 3600)); for (const st of Object.values(this.harbors)) driftEconomy(st, hours, this.rnd); }
+      this.fleet.afterLoad(savedAt);                  // v6: captained ships migrate, storage dates shift by the downtime
       this.log(`[game] loaded ${this.players.size} players, ${this.wrecks.length} wrecks`);
     } catch (e) { this.log(`[game] state load failed: ${e.message}`); }
   }
@@ -133,8 +140,8 @@ export class Game {
     try {
       fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
       const s = {
-        savedAt: new Date().toISOString(), simTime: this.simTime, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
-        players: [...this.players.values()].map((p) => ({ ...p, hail: null, fishing: false, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1 })),
+        savedAt: new Date().toISOString(), fleetSchema: 1, simTime: this.simTime, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
+        players: [...this.players.values()].map((p) => ({ ...p, hail: null, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1 })),
       };
       const tmp = this.stateFile + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(s));
@@ -239,14 +246,13 @@ export class Game {
       const spawn = berth || this.spawnPointNear(h);
       p = {
         id: shortId(), token: token(), name: cleanName(name) || `Skipper-${Math.floor(Math.random() * 900 + 100)}`,
-        createdAt: Date.now(), ship: { cls: 'coaster', lat: spawn.lat, lon: spawn.lon, hdg: berth ? berth.hdg : 0, spd: 0, throttle: 0, rudder: 0 },
-        cond: 100, flooding: 0, fuel: SHIP_CLASSES.coaster.fuelCap, cargo: [], money: START_MONEY, wanted: 0, wantedAt: 0,
-        kits: 1, jobs: [], convoyId: null, docked: START_HARBOR, dockedAt: this.simTime, berth, assist: null, serviceDue: this.simTime + SERVICE_INTERVAL_S, lastInspected: -1e9, lastSeen: Date.now(),
+        createdAt: Date.now(), money: START_MONEY, wanted: 0, wantedAt: 0, convoyId: null, lastInspected: -1e9, lastSeen: Date.now(),
         stats: { delivered: 0, earned: 0, sunk: 0, inspected: 0, fined: 0, caught: 0, boarded: 0, pirated: 0, distanceKm: 0, collisions: 0 },
-        lastValid: { lat: spawn.lat, lon: spawn.lon }, shallowSince: 0, log: [],
-        warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1,
-        shipTime: this.simTime, warpRun: null, // V6 item 5: the ship's clock starts at the world clock
+        shallowSince: 0, log: [],
+        warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1, warpRun: null,
       };
+      // v6: the ship fields of today's literal live on the first vessel (Sea Bee), same values
+      this.fleet.createFirstVessel(p, { cls: 'coaster', spawn, berth, harbor: START_HARBOR });
       this.players.set(p.token, p); this.byId.set(p.id, p);
       this.log(`[game] new player ${p.name} (${p.id})`);
     } else if (name && cleanName(name) && cleanName(name) !== p.name) {
@@ -275,8 +281,7 @@ export class Game {
     const probe = { ship: { cls } };
     const fits = geom.berths.filter((b) => b && Number.isFinite(b.lat) && Number.isFinite(b.lon) && Number.isFinite(b.hdg) && !this.berthFits(probe, b));
     if (!fits.length) return null;
-    const used = new Map();
-    for (const q of this.players.values()) if (q.docked === h.id && q.berth?.id) used.set(q.berth.id, (used.get(q.berth.id) || 0) + 1);
+    const used = this.fleet.berthUse(h.id);           // v6: every vessel moored there (fleet and laid-up ships too)
     const a = this.harborAnchor(h);
     const dist = (b) => haversine(a.lat, a.lon, b.lat, b.lon);
     fits.sort((x, y) => (used.get(x.id) || 0) - (used.get(y.id) || 0) || dist(x) - dist(y));
@@ -297,8 +302,7 @@ export class Game {
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     const geom = harbor && units <= NEAR_BERTH_RANGE_U + 4000 ? this.harborGeom(harbor.id) : null;
     if (!geom || !Array.isArray(geom.berths) || !geom.berths.length) return null;
-    const occupied = new Set();
-    for (const q of this.players.values()) if (q !== p && q.docked === harbor.id && q.berth?.id) occupied.add(q.berth.id);
+    const occupied = this.fleet.berthsTaken(harbor.id, p.vessel);
     let g = null;
     try { g = pickGuideBerth({ berths: geom.berths, lat: p.ship.lat, lon: p.ship.lon, why: (b) => this.berthFits(p, b), occupied, prevId: p.guideBerth?.harbor === harbor.id ? p.guideBerth.id : null, spdKn: Math.abs(p.ship.spd || 0) }); } catch { g = null; }
     if (!g || !(g.distM <= NEAR_BERTH_RANGE_U)) return null;
@@ -323,6 +327,7 @@ export class Game {
       towCls: p.towing ? (p.jobs.find((j) => j.id === p.towing)?.victimCls || 'trawler') : null, fishing: !!p.fishing,
       warp: this.warpOf(p),
       tugs: tugsPublic(this, p),
+      vid: p.vessel?.id ?? null, vname: p.vessel?.name ?? null,   // v6: which of her ships the skipper sails
     };
   }
   privateState(p) {
@@ -338,6 +343,7 @@ export class Game {
       warp: this.warpOf(p), warpLimit: this.warpLimit(p),
       shipTime: round1(p.shipTime), shipRate: this.shipRate(p), // V6 item 5: the ship's clock (s) and how fast it runs now
       warpRun: p.warpRun ? { shipStart: round1(p.warpRun.shipStart), worldStart: round1(p.warpRun.worldStart) } : null,
+      ...this.fleet.youFields(p),                     // v6: aboard, vesselName, home, homeName, fleet {n, atSea, laidUp, owed, unread}
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
     };
   }
@@ -363,10 +369,12 @@ export class Game {
 
   // ------------------------------------------------------------------ networking helpers
   send(p, msg) {
+    if (p.isActor) return;                         // v6: a captain has no socket
     const ws = this.sockets.get(p.id);
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
   }
   event(p, kind, text, extra = {}) {
+    if (p.isActor) return this.fleet.actorEvent(p, kind, text, extra);   // v6: a captain's lines go to the owner's ships' log
     const ev = { t: 'event', id: this.eventSeq++, kind, text, time: Date.now(), ...extra };
     p.log = (p.log || []).slice(-30).concat([{ kind, text, time: ev.time }]);
     this.send(p, ev);
@@ -375,8 +383,9 @@ export class Game {
     const s = JSON.stringify(msg);
     for (const [id, ws] of this.sockets) if (id !== except && ws.readyState === 1) ws.send(s);
   }
-  sendYou(p, extra) { this.send(p, { t: 'you', you: this.privateState(p), ...(extra || {}) }); }
+  sendYou(p, extra) { if (p.isActor) return; this.send(p, { t: 'you', you: this.privateState(p), ...(extra || {}) }); }
   sendHarbor(p) {
+    if (p.isActor) return;
     const h = harborById(p.docked); if (!h) return;
     const st = this.harbors[h.id];
     this.regenHarbor(h, st, false);
@@ -388,7 +397,8 @@ export class Game {
         used: st.used || [], tradeIn: shipValue(p.ship.cls, p.cond), sellValue: p.ship.cls === 'pilot' ? 0 : shipValue(p.ship.cls, p.cond),
         berths: geom ? geom.berths || [] : [], anchor: { lat: anchor.lat, lon: anchor.lon }, geomSource: geom ? geom.source : null, berth: p.berth || null,
         tugCost: tugCostFor(p.ship.cls), fees: this.feesFor(p, h), serviceDue: p.serviceDue,
-        dockedPlayers: [...this.byId.values()].filter((o) => o.online && o.docked === h.id && o.id !== p.id).map((o) => ({ id: o.id, name: o.name })) },
+        dockedPlayers: [...this.byId.values()].filter((o) => o.online && o.docked === h.id && o.id !== p.id).map((o) => ({ id: o.id, name: o.name })),
+        ...this.fleet.harborFields(p, h) },          // v6: office, fleetHere, fleetFull, fleetN
     });
   }
   feesFor(p, h) { return { dues: portDues(p.ship.cls, h), berthPerDay: berthFeePerDay(p.ship.cls), pilotage: pilotageFee(p.ship.cls, h), tug: tugCostFor(p.ship.cls), service: serviceCostFor(p.ship.cls) }; }
@@ -416,6 +426,7 @@ export class Game {
     if (this.weather) { try { this.weather.request(p.ship.lat, p.ship.lon); } catch {} }
     this.broadcast({ t: 'join', player: this.publicState(p) }, p.id);
     if (p.docked) this.sendHarbor(p);
+    this.fleet.sendFleet(p);                           // v6 §10.2: the owner's FleetView on connect (chip, Office, HQ)
     this.event(p, 'info', `Welcome aboard, ${p.name}. ${p.docked ? 'You are docked at ' + harborById(p.docked).name + '.' : ''}`);
     return p;
   }
@@ -431,10 +442,12 @@ export class Game {
     }
     this.broadcast({ t: 'leave', id: p.id });
     this.cancelOffersOf(p);
+    this.fleet.unwatch(p);
   }
 
   // ------------------------------------------------------------------ inbound messages
   onState(p, m) {
+    if (m.vid != null && m.vid !== p.aboard) return;   // v6: states for the ship you just left never move the new one
     if (p.docked || p.flooding >= 1 || p.assist) return; // under tug assist the server owns the position
     const s = p.ship;
     const lat = Number(m.lat), lon0 = Number(m.lon);
@@ -505,7 +518,7 @@ export class Game {
         case 'tow_pickup': return this.towPickup(p, m.jobId);
         case 'deliver_offshore': return this.deliverOffshore(p, m.jobId);
         case 'express': return this.expressPassage(p, +m.lat, +m.lon);
-        case 'buy_used': return this.buyUsedShip(p, m.listingId);
+        case 'buy_used': return this.fleet.buyUsed(p, m);   // v6: tradeIn !== false → today's buyUsedShip
         case 'set_voyage': return this.setVoyage(p, m);
         case 'sails': p.sailsUp = !!m.up; this.sendYou(p); return;
         case 'repair': return this.repair(p);
@@ -516,7 +529,7 @@ export class Game {
         case 'buy_goods': return this.tradeGoods(p, m.good, +m.qty, true);
         case 'sell_goods': return this.tradeGoods(p, m.good, +m.qty, false);
         case 'dump_cargo': return this.dumpCargo(p, m.good);
-        case 'buy_ship': return this.buyShip(p, m.cls);
+        case 'buy_ship': return this.fleet.buyShip(p, m);   // v6: tradeIn !== false → today's buyShip
         case 'patch': return this.patch(p);
         case 'fish': return this.setFishing(p, !!m.on);
         case 'tow': return this.tow(p);
@@ -530,7 +543,7 @@ export class Game {
         case 'convoy_accept': return this.convoyAccept(p, m.convoyId);
         case 'convoy_leave': return this.convoyLeave(p);
         case 'rename': p.name = cleanName(m.name) || p.name; this.sendYou(p); this.broadcast({ t: 'rename', id: p.id, name: p.name }); return;
-        default: this.event(p, 'warn', `Unknown action ${a}`);
+        default: if (this.fleet.handles(a)) return this.fleet.onAction(p, m); this.event(p, 'warn', `Unknown action ${a}`);
       }
     } catch (e) {
       this.log(`[game] action ${a} failed: ${e.stack || e}`);
@@ -617,7 +630,7 @@ export class Game {
     const h = harborById(p.docked);
     // Berth fee per started 24 h alongside.
     const days = Math.max(1, Math.ceil((this.simTime - (p.dockedAt || this.simTime)) / 86400));
-    const fee = days * berthFeePerDay(p.ship.cls);
+    const fee = p.docked === this.fleet.homeOf(p) ? 0 : days * berthFeePerDay(p.ship.cls);   // v6: no berth fee at home
     if (fee > 0) { p.money = Math.max(0, p.money - fee); this.event(p, 'info', `Berth fee: ${days} day${days > 1 ? 's' : ''} alongside, ${fmt(fee)} cr.`); }
     const spawn = this.undockPoint(p, h);
     p.docked = null; p.contactSeen = null; p.berth = null; p.dockedAt = null;
@@ -654,8 +667,7 @@ export class Game {
     if (geom && (geom.berths || []).length) {
       const ok = geom.berths.filter((b) => !this.berthFits(p, b));
       // tugs never put her on top of a ship lying there (or being brought in there) when a free fitting berth exists
-      const taken = new Set();
-      for (const q of this.players.values()) { if (q === p || !(q.online || q.assist)) continue; if (q.docked === harbor.id && q.berth?.id) taken.add(q.berth.id); if (q.assist?.harbor === harbor.id && q.assist.berthId) taken.add(q.assist.berthId); }
+      const taken = this.fleet.berthsTaken(harbor.id, p.vessel);   // v6: every vessel moored or being brought in there
       const free = ok.filter((b) => !taken.has(b.id));
       const pool = free.length ? free : ok.length ? ok : geom.berths;
       const guided = p.guideBerth?.harbor === harbor.id ? pool.find((b) => b.id === p.guideBerth.id) : null; // the berth the guidance card leads to
@@ -1203,61 +1215,10 @@ export class Game {
       if (p.assist) { this.stepAssist(p, dt); continue; }
       if (!p.online) { if (p.voyage) this.simulateOffline(p, dt); else continue; }
       if (p.flooding >= 1) { this.sink(p); continue; }
-      const s = p.ship, C = SHIP_CLASSES[s.cls];
-      const load = cargoMass(p.cargo) / C.capacity;
-      const underway = Math.abs(s.throttle) > 0.03 || Math.abs(s.spd) > 0.5;
-      const wx = this.weatherAt(s.lat, s.lon);
-      // The ship's own clock: warp multiplies everything that happens aboard per hour (the world clock stays real time).
-      const hrs = simHours * this.warpOf(p);
-      if (!(p.serviceDue > 0)) p.serviceDue = this.simTime + SERVICE_INTERVAL_S;
-      if (underway && C.crewCost) p.money = Math.max(0, p.money - C.crewCost * hrs * (p.towing ? 1.2 : 1));
-      if (p.fuel > 0 && Math.abs(s.throttle) > 0.01) {
-        const burn = fuelBurnPerSimHour(s.cls, s.throttle, load, headwindFactor(s.hdg, wx.wind), p.cond) * hrs * (p.towing ? 1.3 : 1);
-        p.fuel = Math.max(0, p.fuel - burn);
-        if (p.fuel === 0) this.event(p, 'warn', 'Fuel exhausted. Engine stopped. You are drifting — call a tow or wait for a kind soul.');
-        else if (p.fuel < C.fuelCap * 0.1 && !p.lowFuelWarned) { p.lowFuelWarned = true; this.event(p, 'warn', 'Low fuel: under 10 % remaining.'); }
-        if (p.fuel > C.fuelCap * 0.2) p.lowFuelWarned = false;
-      }
-      if (underway && p.cond > 0) {
-        // Overdue maintenance ramps the wear multiplier (+2 %/day past serviceDue, up to +60 %).
-        const svc = serviceWearMul(p.serviceDue, this.simTime);
-        p.cond = Math.max(0, p.cond - wearPerSimHour(s.throttle, wx.wind.spd, C.wearMul) * svc * hrs);
-        if (svc > 1 && !p.serviceWarned) { p.serviceWarned = true; this.event(p, 'warn', 'Service overdue: the engineer reports rising wear. Book a service at the next yard (1 % of the hull price).'); }
-        if (svc <= 1) p.serviceWarned = false;
-        if (p.cond < 30 && !p.condWarned) { p.condWarned = true; this.event(p, 'warn', 'Hull condition under 30 %: steering is getting sluggish, leaks likely. Find a yard.'); }
-        if (p.cond > 50) p.condWarned = false;
-      }
-      if (p.cond <= 0) {
-        p.flooding = Math.min(1, p.flooding + (1.2 + 2 * wx.sea) * hrs);
-        if (!p.floodWarned) { p.floodWarned = true; this.event(p, 'warn', 'Hull failed: taking on water! Use a damage-control kit (K) or make for the nearest harbour.'); }
-      } else if (p.flooding > 0 && p.cond > 30) {
-        p.flooding = Math.max(0, p.flooding - 0.3 * hrs); // pumps keep up on a sound hull
-      }
-      if (p.flooding < 0.2) p.floodWarned = false;
-      if (p.fishing) {
-        const g = this.groundAt(s.lat, s.lon);
-        if (!g) { p.fishing = false; this.event(p, 'info', 'Left the fishing ground; nets hauled in.'); this.sendYou(p); }
-        else if (Math.abs(s.spd) < INTERACT.FISH_MAX_KN) {
-          const free = C.capacity - cargoMass(p.cargo);
-          const rate = catchRate(s.cls, g.richness) * (wx.storm > 0.5 ? 0.4 : 1);
-          const add = Math.max(0, Math.min(free, rate * hrs));
-          // keep full precision: at 10 ticks a second each step is a few grams, rounding it every tick lost all of it
-          const caught = ((p.fishInfo && p.fishInfo.caughtRaw) || 0) + add;
-          p.fishInfo = { ground: g.name, rate: Math.round(rate * 10) / 10, caught: Math.round(caught * 10) / 10, caughtRaw: caught, tooFast: false };
-          if (add > 0) {
-            const stack = p.cargo.find((c) => c.good === 'fish' && c.caught && !c.jobId);
-            if (stack) stack.qty += add; else p.cargo.push({ good: 'fish', qty: add, contraband: false, jobId: null, caught: true });
-            p.fullWarned = false;
-          } else if (free <= 0 && !p.fullWarned) { p.fullWarned = true; this.event(p, 'info', 'Hold is full of fish.'); this.sendYou(p); }
-          if (Date.now() - (p.fishSentAt || 0) > 2000) { p.fishSentAt = Date.now(); this.sendYou(p); } // the catch counter follows live
-        } else {
-          p.fishInfo = { ground: g.name, rate: 0, caught: (p.fishInfo && p.fishInfo.caught) || 0, caughtRaw: (p.fishInfo && p.fishInfo.caughtRaw) || 0, tooFast: true };
-        }
-      }
-      if (p.towing) this.checkTowHandover(p);
-      for (const j of p.jobs) if (j.type === 'tow' && !j.spotOk && !j.pickedUp) this.ensureTowSpot(j);
+      this.stepAtSea(p, simHours);                  // v6: the at-sea block, shared with the captains (server/captain.js)
       if (p.wanted > 0 && this.simTime - p.wantedAt > LAW.WANTED_DECAY_SIM_HOURS * 3600) { p.wanted--; p.wantedAt = this.simTime; this.event(p, 'law', `Wanted level dropped to ${p.wanted}.`); }
     }
+    this.fleet.tick(dt);                              // v6: drift booking, owed bills, captains, storage, `fleet` pushes
     this.updateCutters(dt);
     // Job boards regen lazily on dock; markets drift every minute; wrecks expire.
     if (Date.now() - this.lastEcon > 60000) this.driftMarkets();
@@ -1266,6 +1227,63 @@ export class Game {
     if (this.wrecks.length !== before) this.broadcast({ t: 'wrecks', wrecks: this.wrecks });
     for (const [id, o] of this.offers) if (Date.now() > o.expires) { this.offers.delete(id); const a = this.byId.get(o.from); if (a) this.event(a, 'info', 'Your trade offer expired.'); }
     if (Date.now() - this.lastSave > 30000) this.saveState();
+  }
+  // v6 (docs/V6-FLEET-CONTRACTS.md §11.2): one player's (or captain's) ship at sea for `simHours` of world time: crew wages
+  // (not for captains: the fleet pays them in whole credits), fuel, wear, flooding and pumps, the catch, the tow hand-over.
+  stepAtSea(p, simHours) {
+    const s = p.ship, C = SHIP_CLASSES[s.cls];
+    const load = cargoMass(p.cargo) / C.capacity;
+    const underway = Math.abs(s.throttle) > 0.03 || Math.abs(s.spd) > 0.5;
+    const wx = this.weatherAt(s.lat, s.lon);
+    // The ship's own clock: warp multiplies everything that happens aboard per hour (the world clock stays real time).
+    const hrs = simHours * this.warpOf(p);
+    if (!(p.serviceDue > 0)) p.serviceDue = this.simTime + SERVICE_INTERVAL_S;
+    if (underway && C.crewCost && !p.isActor) p.money = Math.max(0, p.money - C.crewCost * hrs * (p.towing ? 1.2 : 1));
+    if (p.fuel > 0 && Math.abs(s.throttle) > 0.01) {
+      const burn = fuelBurnPerSimHour(s.cls, s.throttle, load, headwindFactor(s.hdg, wx.wind), p.cond) * hrs * (p.towing ? 1.3 : 1);
+      p.fuel = Math.max(0, p.fuel - burn);
+      if (p.fuel === 0) this.event(p, 'warn', 'Fuel exhausted. Engine stopped. You are drifting — call a tow or wait for a kind soul.');
+      else if (p.fuel < C.fuelCap * 0.1 && !p.lowFuelWarned) { p.lowFuelWarned = true; this.event(p, 'warn', 'Low fuel: under 10 % remaining.'); }
+      if (p.fuel > C.fuelCap * 0.2) p.lowFuelWarned = false;
+    }
+    if (underway && p.cond > 0) {
+      // Overdue maintenance ramps the wear multiplier (+2 %/day past serviceDue, up to +60 %).
+      const svc = serviceWearMul(p.serviceDue, this.simTime);
+      p.cond = Math.max(0, p.cond - wearPerSimHour(s.throttle, wx.wind.spd, C.wearMul) * svc * hrs);
+      if (svc > 1 && !p.serviceWarned) { p.serviceWarned = true; this.event(p, 'warn', 'Service overdue: the engineer reports rising wear. Book a service at the next yard (1 % of the hull price).'); }
+      if (svc <= 1) p.serviceWarned = false;
+      if (p.cond < 30 && !p.condWarned) { p.condWarned = true; this.event(p, 'warn', 'Hull condition under 30 %: steering is getting sluggish, leaks likely. Find a yard.'); }
+      if (p.cond > 50) p.condWarned = false;
+    }
+    if (p.cond <= 0) {
+      p.flooding = Math.min(1, p.flooding + (1.2 + 2 * wx.sea) * hrs);
+      if (!p.floodWarned) { p.floodWarned = true; this.event(p, 'warn', 'Hull failed: taking on water! Use a damage-control kit (K) or make for the nearest harbour.'); }
+    } else if (p.flooding > 0 && p.cond > 30) {
+      p.flooding = Math.max(0, p.flooding - 0.3 * hrs); // pumps keep up on a sound hull
+    }
+    if (p.flooding < 0.2) p.floodWarned = false;
+    if (p.fishing) {
+      const g = this.groundAt(s.lat, s.lon);
+      if (!g) { p.fishing = false; this.event(p, 'info', 'Left the fishing ground; nets hauled in.'); this.sendYou(p); }
+      else if (Math.abs(s.spd) < INTERACT.FISH_MAX_KN) {
+        const free = C.capacity - cargoMass(p.cargo);
+        const rate = catchRate(s.cls, g.richness) * (wx.storm > 0.5 ? 0.4 : 1);
+        const add = Math.max(0, Math.min(free, rate * hrs));
+        // keep full precision: at 10 ticks a second each step is a few grams, rounding it every tick lost all of it
+        const caught = ((p.fishInfo && p.fishInfo.caughtRaw) || 0) + add;
+        p.fishInfo = { ground: g.name, rate: Math.round(rate * 10) / 10, caught: Math.round(caught * 10) / 10, caughtRaw: caught, tooFast: false };
+        if (add > 0) {
+          const stack = p.cargo.find((c) => c.good === 'fish' && c.caught && !c.jobId);
+          if (stack) stack.qty += add; else p.cargo.push({ good: 'fish', qty: add, contraband: false, jobId: null, caught: true });
+          p.fullWarned = false;
+        } else if (free <= 0 && !p.fullWarned) { p.fullWarned = true; this.event(p, 'info', 'Hold is full of fish.'); this.sendYou(p); }
+        if (Date.now() - (p.fishSentAt || 0) > 2000) { p.fishSentAt = Date.now(); this.sendYou(p); } // the catch counter follows live
+      } else {
+        p.fishInfo = { ground: g.name, rate: 0, caught: (p.fishInfo && p.fishInfo.caught) || 0, caughtRaw: (p.fishInfo && p.fishInfo.caughtRaw) || 0, tooFast: true };
+      }
+    }
+    if (p.towing) this.checkTowHandover(p);
+    for (const j of p.jobs) if (j.type === 'tow' && !j.spotOk && !j.pickedUp) this.ensureTowSpot(j);
   }
   // Keep the weather cache warm for every ship at sea or online (every 30 s, urgent) and, every 5 min, for the harbours
   // within 400 km of an online player (v7 world coverage: wherever people sail, not a fixed North Sea grid).
@@ -1282,6 +1300,7 @@ export class Game {
         if (p.online || (p.voyage && !p.docked)) ships.push(p.ship);
         if (p.online) online.push(p.ship);
       }
+      for (const s of this.fleet.weatherPoints(50)) ships.push(s);   // v6: captained ships at sea, round robin
       if (harbourSweep && typeof this.weather.requestAround === 'function') {
         this.lastWxHarbors = now;
         for (const s of ships) this.weather.request(s.lat, s.lon, true);
@@ -1757,6 +1776,7 @@ export class Game {
     for (const c of this.cutters || []) push(c, 60);
     if (this.liveAis && typeof this.liveAis.near === 'function') { try { for (const v of this.liveAis.near(lat, lon, rangeM, { limit: 500 }) || []) push(v, Number(v.length) || 120); } catch { /* AIS down */ } }
     for (const w of this.wrecks || []) push(w, 60);
+    for (const o of this.fleet.hullsNear(lat, lon, rangeM, p.vessel)) out.push(o);   // v6: fleet ships
     return out;
   }
   /**
@@ -1807,6 +1827,16 @@ export class Game {
     this.sendYou(p);
   }
   // Offline players with a voyage set keep moving on the server, waypoint by waypoint, slowing in harbour approaches.
+  /** tideAt per 0.1° cell and sim minute (the offline stepper calls it every substep for every voyage and fleet ship;
+   *  tideAt walks forward for the next high/low water, ~20 µs a call). Height drifts < 3 cm within a minute. */
+  tideCached(lat, lon) {
+    const min = Math.floor(this.simTime / 60);
+    if (this._tideMin !== min || !this._tide || this._tide.size > 20000) { this._tideMin = min; this._tide = new Map(); }
+    const key = Math.round(lat * 10) * 4000 + Math.round(lon * 10);
+    let t = this._tide.get(key);
+    if (!t) { t = tideAt(Math.round(lat * 10) / 10, Math.round(lon * 10) / 10, min * 60); this._tide.set(key, t); }
+    return t;
+  }
   simulateOffline(p, dt) {
     const v = p.voyage; if (!v || p.docked || p.flooding >= 1 || p.hail) return;
     const BANDS = [[1000, 4], [2500, 6], [5000, 10]]; // harbour speed limits (m from the nearest anchor → kn), = PILOT.BANDS (public/js/pilotcore.js)
@@ -1818,11 +1848,14 @@ export class Game {
     const last = v.route.length - 1;
     let i = Math.max(0, Math.min(last, Number(v.i) | 0));
     let wp = v.route[i], dist = haversine(s.lat, s.lon, wp[0], wp[1]);
-    while (i < last && dist < Math.max(300, 3 * C.length)) { i++; wp = v.route[i]; dist = haversine(s.lat, s.lon, wp[0], wp[1]); }
+    // Inside a built harbour patch the route threads basins and quay corners: take its waypoints closely (cutting 300 m
+    // corners there ran captains' ships into the quays — v6 fleet phase 2); in open water keep the wide reach.
+    const reach = this.landPenetration(s.lat, s.lon) != null ? Math.max(40, C.length) : Math.max(300, 3 * C.length);
+    while (i < last && dist < reach) { i++; wp = v.route[i]; dist = haversine(s.lat, s.lon, wp[0], wp[1]); }
     v.i = i;
     if (i === last && dist < 400) {
       const h = v.harbor ? harborById(v.harbor) : null;
-      p.voyage = null; s.throttle = 0;
+      p.voyage = null; s.throttle = 0; p.voyageEnd = 'arrived';
       p.log = (p.log || []).slice(-30).concat([{ kind: 'info', text: h ? `The crew reached the approach off ${h.name} and stopped engines.` : 'The crew reached the waypoint and stopped engines.', time: Date.now() }]);
       return;
     }
@@ -1831,7 +1864,7 @@ export class Game {
     for (const h of HARBORS) { if (Math.abs(h.lat - s.lat) > 0.1) continue; const a = this.harborAnchor(h); const d = haversine(s.lat, s.lon, a.lat, a.lon); if (d < nearM) nearM = d; }
     let capKn = Infinity; for (const [m, kn] of BANDS) if (nearM <= m) { capKn = kn; break; }
     const throttle = Math.min(v.throttle, capKn / C.maxKn);
-    const w = this.weatherAt(s.lat, s.lon), tide = tideAt(s.lat, s.lon, this.simTime);
+    const w = this.weatherAt(s.lat, s.lon), tide = this.tideCached(s.lat, s.lon);
     const env = {
       cond: p.cond, flooding: p.flooding, loadFrac: cargoMass(p.cargo) / C.capacity, wind: w.wind, current: currentAt(s.lat, s.lon, this.simTime), tideStream: tide.stream,
       fuelEmpty: p.fuel <= 0, sea: w.sea, waveH: w.waves.height, waveDir: w.waves.dir, towing: !!p.towing, sailsUp: p.sailsUp !== false,
@@ -1840,8 +1873,9 @@ export class Game {
     stepShip(s, { throttleCmd: throttle, rudderCmd: clamp(angleDiff(s.hdg, brg) / 25, -1, 1) }, env, dt);
     // Inside a built harbour patch the mask decides; elsewhere the coarse depth plus the tide.
     const pen = this.landPenetration(s.lat, s.lon);
-    const depth = pen != null ? (pen > 0 ? -1 : Infinity) : this.world.depthAt(s.lat, s.lon) + tide.height;
-    if (depth < C.draft) { s.lat = before.lat; s.lon = before.lon; s.spd = 0; p.voyage = null; p.log = (p.log || []).slice(-30).concat([{ kind: 'warn', text: 'The crew stopped: shoal water ahead on the autopilot course.', time: Date.now() }]); }
+    // (the same tolerance as onState: a hull centre grazing a mask edge by < LAND_PENETRATION_M is not aground)
+    const depth = pen != null ? (pen > LAND_PENETRATION_M ? -1 : Infinity) : this.world.depthAt(s.lat, s.lon) + tide.height;
+    if (depth < C.draft) { s.lat = before.lat; s.lon = before.lon; s.spd = 0; p.voyage = null; p.voyageEnd = 'shoal'; p.log = (p.log || []).slice(-30).concat([{ kind: 'warn', text: 'The crew stopped: shoal water ahead on the autopilot course.', time: Date.now() }]); }
     else p.lastValid = { lat: s.lat, lon: s.lon };
   }
 
@@ -2018,11 +2052,13 @@ export class Game {
   broadcastSnapshot() {
     const common = JSON.stringify(this.snapshot());
     const prefix = common.slice(0, -1); // drop the closing brace, append the per-player "ai" field
+    const full = this.fleet.snapFull();   // v6: every 10th snapshot also lists moored, anchored and laid-up fleet ships
     for (const [id, ws] of this.sockets) {
       if (ws.readyState !== 1) continue;
       const p = this.byId.get(id);
       const ai = p ? this.aiNear(p.ship.lat, p.ship.lon) : [];
-      ws.send(ai.length ? `${prefix},"ai":${JSON.stringify(ai)}}` : `${prefix},"ai":[]}`);
+      const fl = p ? `,"fleet":${JSON.stringify(this.fleet.viewFor(p, full))}${full ? ',"fleetFull":true' : ''}` : '';
+      ws.send(ai.length ? `${prefix},"ai":${JSON.stringify(ai)}${fl}}` : `${prefix},"ai":[]${fl}}`);
     }
     const now = Date.now();
     if (now - this.lastYou > 1000) { this.lastYou = now; for (const p of this.byId.values()) if (p.online) this.sendYou(p); }

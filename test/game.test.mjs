@@ -386,6 +386,7 @@ test('markets drift toward target between visits and over a restart', () => {
 });
 test('berth fee per started day on undock, pilotage for big ships at big ports, service resets the wear ramp', () => {
   const g = mkGame(); g.rnd = () => 0.99; const { p, ws } = join(g, 'Gi'); p.money = 100000;
+  p.office.home = 'hamburg'; // v6: no berth fee at home — this test is about the fee, so her office is elsewhere
   p.dockedAt = g.simTime - 2 * 86400 - 10; let m = p.money;
   g.onAction(p, { action: 'undock' }); assert.equal(p.money, m - 3 * berthFeePerDay('coaster')); assert.ok(events(ws).some((t) => /Berth fee: 3 days/.test(t)));
   p.ship.cls = 'feeder'; p.ship.lat = ROT.lat; p.ship.lon = ROT.lon; p.ship.spd = 0; m = p.money;

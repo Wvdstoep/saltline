@@ -28,10 +28,11 @@ const RANGES_KM = [2, 5, 10, 20, 50, 100, 250, 1000];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const CATS = ['cargo', 'working', 'passenger', 'motor yacht', 'sailing yacht'];
 const CAT_LABEL = { cargo: 'Cargo', working: 'Working', passenger: 'Passenger', 'motor yacht': 'Motor yachts', 'sailing yacht': 'Sailing yachts' };
-const TABS = ['overview', 'jobs', 'boards', 'market', 'shipyard', 'services', 'shady', 'players'];
+const TABS = ['overview', 'jobs', 'boards', 'market', 'shipyard', 'services', 'shady', 'office', 'players'];
 const TAB_ALIAS = { info: 'overview', port: 'overview', harbour: 'overview', harbor: 'overview', contracts: 'jobs', contract: 'jobs', harbourmaster: 'jobs', harbormaster: 'jobs', job: 'jobs',
   board: 'boards', jobboards: 'boards', yard: 'shipyard', ships: 'shipyard', ship: 'shipyard', chandler: 'services', fuel: 'services', repair: 'services', service: 'services',
-  bar: 'shady', blackmarket: 'shady', black: 'shady', look: 'shady', lookaround: 'shady', crew: 'players', skippers: 'players' };
+  bar: 'shady', blackmarket: 'shady', black: 'shady', look: 'shady', lookaround: 'shady', crew: 'players', skippers: 'players',
+  office: 'office', fleet: 'office', storage: 'office' }; // v6 fleet
 const JOB_LABEL = { freight: 'Freight', passengers: 'Passengers', charter: 'Charter', fishing: 'Fishing', supply: 'Offshore supply', tow: 'Tow', smuggling: 'Smuggling' };
 const NM = 1852;
 const DEFAULT_WARP = [1, 5, 20, 100, 400];
@@ -369,6 +370,7 @@ export class Hud {
     $('aisCardWrap')?.classList.add('hidden');
     this.chart.close();
     for (const id of ['shipsWrap', 'helpWrap', 'compareWrap', 'marketWrap']) $(id)?.classList.add('hidden');
+    this.app.hq?.close?.();   // v6 fleet: the HQ closes like the other sheets
     this.closeMore();
     if (this.touch) $('weatherPanel')?.classList.add('hidden');
   }
@@ -570,6 +572,7 @@ export class Hud {
     this.showRescue(you.rescue || null);
     this.showBerth(you.nearBerth || null, you.berth || null, you.assist || null, this.tugCost());
     if (!$('weatherPanel').classList.contains('hidden') && performance.now() - (this._wxAt || 0) > 1000) { this._wxAt = performance.now(); this.renderWeather(you.weather, you.tide); }
+    this.app.fleetUi?.updateChip(you);   // v6 fleet: top-bar chip "⚓ 3 · 2 at sea"
   }
   tugCost() { const you = this.app.you; const h = this.harborData; if (Number.isFinite(you?.tugCost)) return you.tugCost; if (Number.isFinite(h?.tugCost)) return h.tugCost; const C = you ? SHIP_CLASSES[you.ship.cls] : null; return C ? Math.max(400, Math.round(C.displacement * 0.35)) : 400; }
   /** Range estimate at the current throttle: (fuel / burn per hour) × SOG, in nm; null when stopped. */
@@ -870,10 +873,13 @@ export class Hud {
 
   // ---------------------------------------------------------------- harbour sheet
   showHarbor(h) {
-    const wasOpen = this.harborOpen(), same = this.harborData?.id === h.id;
+    const wasOpen = this.harborOpen(), same = this.harborData?.id === h.id, asked = !!this._pendingTab;
     this.harborData = h;
     if (this._pendingTab) { this.harborTab = this._pendingTab; this._pendingTab = null; }
     else if (!wasOpen && !same) { this.harborTab = 'overview'; this.compare = []; this.yardMode = 'new'; this.openBoards = null; }
+    // v6 fleet: actions from the Fleet HQ (lay up, recommission, sell, storage …) answer with a `harbor` message too —
+    // keep it as data while the HQ is open instead of popping the harbour sheet over it (and closing the HQ)
+    if (!wasOpen && !asked && this.app.hq?.isOpen?.()) { this._stale = new Set(TABS); return; }
     if (!wasOpen) { this.closeOverlays(); $('harborWrap').classList.remove('hidden'); this.hydrateIcons($('harborWrap')); }
     this.renderHarborTabs();
   }
@@ -960,6 +966,7 @@ export class Hud {
         case 'services': html = this.tabServices(h, you, C); break;
         case 'shady': html = this.tabShady(h, you, C); break;
         case 'players': html = this.tabPlayers(h); break;
+        case 'office': html = this.app.fleetUi ? this.app.fleetUi.tabOffice(h, you) : ''; break; // v6 fleet (fleet.js)
       }
     } catch (e) { console.error('[hud] render', t, e); html = `<div class="empty">${ic('warning')}<span>This section could not be shown (${esc(e.message)}).</span></div>`; }
     el.innerHTML = html;
@@ -1155,8 +1162,11 @@ export class Hud {
     const sp = specsOf(id, entry);
     const own = !used && you.ship.cls === id;
     const price = used ? used.price : sp.price;
-    const net = price - tradeIn;
+    const fu = this.app.fleetUi;   // v6 fleet: trade-in only when the box is ticked
+    const net = fu ? fu.netPrice(price, this.harborData) : price - tradeIn;
     const afford = you.money >= net;
+    const blocked = fu?.buyBlocked(this.harborData) || null;
+    const buyAttr = blocked ? `disabled title="${esc(blocked)}"` : afford ? '' : 'disabled';
     const cmpKey = used ? `used:${used.id}` : `new:${id}`;
     const inCmp = this.compare.includes(cmpKey);
     const wear = used ? 1 - used.cond / 100 : 0;
@@ -1170,9 +1180,9 @@ export class Hud {
         <div class="dims"><span>${ic('ship')}${sp.length} × ${sp.beam} m</span><span>${ic('arrowDown')}draft ${sp.draft} m</span><span>${ic('users')}${sp.pax} pax</span><span>${ic('fuel')}${sp.burn} t/h</span></div>
         ${this.specBars(sp)}
         ${used ? `<div class="spec cond"><label>Condition</label><span class="meter ${used.cond < 50 ? 'bad' : used.cond < 70 ? 'warn' : 'good'}"><i style="width:${used.cond}%"></i></span><span class="v">${used.cond} %</span></div>` : ''}
-        <div class="netLine">${tradeIn > 0 ? `Net after trade-in <b>${fmt(net)} cr</b>` : 'No trade-in value'}${!afford && !own ? ` · <span class="down">${fmt(net - you.money)} cr short</span>` : ''}</div>
+        <div class="netLine">${fu && !fu.tradeIn ? (blocked ? `<span class="down">${esc(blocked)}</span>` : `Price <b>${fmt(net)} cr</b> · your ship stays yours`) : tradeIn > 0 ? `Net after trade-in <b>${fmt(net)} cr</b>` : 'No trade-in value'}${!afford && !(own && !(fu && !fu.tradeIn)) ? ` · <span class="down">${fmt(net - you.money)} cr short</span>` : ''}</div>
         <div class="shipFoot"><button class="cmp${inCmp ? ' on' : ''}" data-act="compare" data-key="${esc(cmpKey)}" title="Compare up to 3 ships side by side">${ic('compare')}<span class="lbl">${inCmp ? 'Comparing' : 'Compare'}</span></button>
-          ${own ? '<button disabled>Owned</button>' : used ? `<button class="primary" data-act="used" data-id="${esc(used.id)}" ${afford ? '' : 'disabled'}>Buy used</button>` : `<button class="primary" data-act="ship" data-cls="${esc(id)}" ${afford ? '' : 'disabled'}>Buy new</button>`}</div>
+          ${own && !(fu && !fu.tradeIn) ? '<button disabled>Owned</button>' : used ? `<button class="primary" data-act="used" data-id="${esc(used.id)}" ${buyAttr}>Buy used</button>` : `<button class="primary" data-act="ship" data-cls="${esc(id)}" ${buyAttr}>Buy new</button>`}</div>
       </div></article>`;
   }
   tabShipyard(h, you, C) {
@@ -1205,8 +1215,8 @@ export class Hud {
     }
     const tray = this.compare.length ? `<div class="compareTray"><b>${ic('compare')} Compare ${this.compare.length}/3</b><div class="slots">${this.compare.map((k) => { const it = this.compareItem(k); return it ? `<span class="slot">${this.thumbHTML(it.id, { w: 88, h: 56, angle: 'side', wear: it.wear })}${esc(it.name)}<button class="iconBtn small" data-act="compare" data-key="${esc(k)}" aria-label="Remove">${ic('x')}</button></span>` : ''; }).join('')}</div>
         <button data-act="compareClear">Clear</button><button class="primary" data-act="compareOpen" ${this.compare.length < 2 ? 'disabled title="Pick at least two ships"' : ''}>Compare side by side</button></div>` : '';
-    return `<div class="secHead"><div><h2>${ic('shipyard')}Shipyard</h2><p>Your ${esc(C.name)} (${Math.round(you.cond)} %) is worth <b>${fmt(tradeIn)} cr</b> — traded in automatically when you buy. Credits: <b>${fmt(you.money)} cr</b>.</p></div></div>
-      <div class="yardBar">${seg}${chips}</div>${body}${tray}`;
+    return `<div class="secHead"><div><h2>${ic('shipyard')}Shipyard</h2><p>Your ${esc(C.name)} (${Math.round(you.cond)} %) is worth <b>${fmt(tradeIn)} cr</b> — ${this.app.fleetUi ? 'traded in when you tick the box below; otherwise she stays in your fleet' : 'traded in automatically when you buy'}. Credits: <b>${fmt(you.money)} cr</b>.</p></div></div>
+      <div class="yardBar">${seg}${chips}</div>${mode === 'sell' ? '' : this.app.fleetUi?.tradeInBoxHTML(h) || ''}${body}${tray}`;
   }
   compareItem(key) {
     const h = this.harborData; if (!h) return null;
@@ -1367,8 +1377,8 @@ export class Hud {
       case 'compareOpen': return this.renderCompare();
       case 'compareClear': this.compare = []; $('compareWrap').classList.add('hidden'); return this.renderTab('shipyard');
       case 'compareClose': return $('compareWrap').classList.add('hidden');
-      case 'ship': { const C = SHIP_CLASSES[el.dataset.cls]; if (confirm(`Buy a new ${C?.name || el.dataset.cls}? Your current ship is traded in.`)) { net.action('buy_ship', { cls: el.dataset.cls }); $('compareWrap').classList.add('hidden'); } return; }
-      case 'used': if (confirm('Buy this second-hand hull? Your current ship is traded in.')) { net.action('buy_used', { listingId: el.dataset.id }); $('compareWrap').classList.add('hidden'); } return;
+      case 'ship': { const C = SHIP_CLASSES[el.dataset.cls]; if (a.fleetUi) { a.fleetUi.buy('new', el.dataset.cls, C?.price ?? 0, C?.name || el.dataset.cls, this.harborData, you); $('compareWrap').classList.add('hidden'); return; } if (confirm(`Buy a new ${C?.name || el.dataset.cls}? Your current ship is traded in.`)) { net.action('buy_ship', { cls: el.dataset.cls }); $('compareWrap').classList.add('hidden'); } return; }
+      case 'used': if (a.fleetUi) { const l = (this.harborData?.used || []).find((x) => x.id === el.dataset.id); a.fleetUi.buy('used', el.dataset.id, l?.price ?? 0, l?.name || 'hull', this.harborData, you); $('compareWrap').classList.add('hidden'); return; } if (confirm('Buy this second-hand hull? Your current ship is traded in.')) { net.action('buy_used', { listingId: el.dataset.id }); $('compareWrap').classList.add('hidden'); } return;
       case 'sellship': { const v = this.harborData?.sellValue ?? this.harborData?.tradeIn ?? 0; if (confirm(`Sell your ${SHIP_CLASSES[you.ship.cls]?.name || 'ship'} for ${fmt(v)} cr? You will be left with a pilot boat.`)) net.action('sell_ship'); return; }
       case 'chartAt': { const lat = +el.dataset.lat, lon = +el.dataset.lon; this.openChart(); this.chart.setCenter(lat, lon, 10); return; }
       case 'boardToggle': { if (!this.openBoards) this.openBoards = new Set(); const id = el.dataset.id; if (this.openBoards.has(id)) this.openBoards.delete(id); else this.openBoards.add(id); const card = el.closest('.boardCard'); card?.classList.toggle('open', this.openBoards.has(id)); el.setAttribute('aria-expanded', String(this.openBoards.has(id))); return; }
@@ -1378,6 +1388,7 @@ export class Hud {
       case 'leaveConvoy': return net.action('convoy_leave');
       case 'ashore': return this.toggleAshore();
       case 'castoff': return a.castOff();
+      default: if (act && act.startsWith('fl')) return this.app.fleetUi?.sheetAction(act, el); // v6 fleet: Office tab, trade-in box
     }
   }
   /** Live previews for quantity boxes and the fuel slider (no re-render). */
@@ -1418,6 +1429,7 @@ export class Hud {
         <div class="actRow">${this.playerActions(o.id)}</div></div></article>`).join('')}</div>`
       : `<div class="empty">${ic('users')}<span>No other skippers online right now. Share the link — everyone sails the same ocean.</span></div>`;
     if (a.you?.convoy) html += `<div class="card" style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">${ic('users')}<span>Your convoy: ${a.you.convoy.members.map((m) => esc(m.name)).join(', ')}</span><button data-act="leaveConvoy" style="margin-left:auto">Leave convoy</button></div>`;
+    html += this.app.fleetUi?.shipsListHTML?.() || '';   // v6 fleet: "Fleet ships" near you (no Board / Trade / Convoy)
     html += `<h3 class="subHead">${ic('radar')}Shipping traffic (AIS)</h3>`;
     html += ai.length ? `<div class="cards wide">${ai.map(({ s, d }) => `<article class="card vesselCard">${this.thumbHTML(SHIP_CLASSES[s.cls] ? s.cls : 'coaster', { w: 264, h: 192, angle: 'quarter' })}
         <div class="vb"><b>${esc(s.name)}${s.flag ? ` <span class="muted small">${esc(s.flag)}</span>` : ''}</b><small>${esc(SHIP_CLASSES[s.cls]?.name || s.cls || 'vessel')}</small>

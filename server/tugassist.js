@@ -417,7 +417,7 @@ export function stepTugAssist(game, p, dt) {
 export function tickTugs(game, dt) {
   const ops = OPS.get(game); if (!ops || !ops.size) return;
   for (const [key, op] of ops) {
-    const p = game.byId?.get(op.pid) || game.players?.get(op.pid);
+    const p = game.byId?.get(op.pid) || game.players?.get(op.pid) || game.fleet?.actorById?.(op.pid) || null; // v6: a captain's assist keeps its tugs
     if (op.phase !== 'return') {
       if (p && p.assist && p.assist.opId === op.id) continue; // stepped by stepTugAssist
       startReturn(op);                                        // the assist ended elsewhere (impound, reset…)

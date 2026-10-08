@@ -257,8 +257,10 @@ export class World {
     const cacheDir = path.join(DATA_DIR, 'cache');
     fs.mkdirSync(cacheDir, { recursive: true });
     const carveHash = hashString(JSON.stringify(carvings));
+    this.cacheFiles = [];
     for (const layer of this.layers) {
       const cacheFile = path.join(cacheDir, `${layer.def.name}-${layer.res}-v${CACHE_VERSION}-${carveHash}.bin`);
+      this.cacheFiles.push(cacheFile);
       if (fs.existsSync(cacheFile)) {
         const buf = fs.readFileSync(cacheFile);
         if (buf.length === layer.w * layer.h) {
@@ -335,4 +337,30 @@ function hashString(s) {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(16);
+}
+
+/**
+ * Delete raster cache files this World did not load (old carvings / versions) and every sea-routes table but the one in
+ * use (`keep`) and the newest (docs/WORLD-DETAIL-STREAMING.md §3.5: 47 files / 813 MB had piled up). Call once from
+ * server.js after `new World().load(...)`; the route worker loads the same carvings → the same files. Never throws;
+ * returns { removed, freedMB }. opts: { dir (DATA_DIR/cache), keep: [file paths or names never to delete] }.
+ */
+export function pruneRasterCache(world, log = console.log, opts = {}) {
+  const dir = opts.dir || path.join(DATA_DIR, 'cache');
+  const keep = new Set((world?.cacheFiles || []).map((f) => path.basename(f)));
+  const keepAlso = new Set((opts.keep || []).filter(Boolean).map((f) => path.basename(f)));
+  let removed = 0, freed = 0;
+  try {
+    if (!keep.size) return { removed, freedMB: 0 };   // never prune before a successful load
+    const files = fs.readdirSync(dir);
+    const routes = files.filter((f) => /^sea-routes-v\d+-[0-9a-z]+\.json$/.test(f))
+      .map((f) => { try { return { f, t: fs.statSync(path.join(dir, f)).mtimeMs }; } catch { return null; } }).filter(Boolean)
+      .sort((a, b) => b.t - a.t);
+    const drop = files.filter((f) => /^(global|region)-[\d.]+-v\d+-[0-9a-f]+\.bin$/.test(f) && !keep.has(f))
+      .concat(routes.slice(1).map((r) => r.f))
+      .filter((f) => !keepAlso.has(f) && !keep.has(f));
+    for (const f of drop) { try { const p = path.join(dir, f); const sz = fs.statSync(p).size; fs.unlinkSync(p); freed += sz; removed++; } catch { /* in use / gone */ } }
+    if (removed) log(`[world] pruned ${removed} stale cache files (${Math.round(freed / 1048576)} MB)`);
+  } catch { /* no cache dir */ }
+  return { removed, freedMB: Math.round(freed / 1048576) };
 }

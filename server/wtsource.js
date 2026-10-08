@@ -154,6 +154,16 @@ export function createSources(opts = {}) {
   const breakerThreshold = opts.breakerThreshold ?? 5, breakerMs = opts.breakerMs ?? 60e3, breakerMaxMs = opts.breakerMaxMs ?? 15 * 60e3;
   const negativeTtlMs = opts.negativeTtlMs ?? 10 * 60e3;
   const pinFile = path.join(dataDir, 'world', 'pin.json');
+  // Upstream base URLs (a local stub / mirror for boot checks): SALTLINE_WT_OFM_BASE replaces
+  // "https://tiles.openfreemap.org/planet" (TileJSON at <base>, tiles at <base>/<ver>/{z}/{x}/{y}.pbf),
+  // SALTLINE_WT_TERRARIUM_BASE replaces ".../elevation-tiles-prod/terrarium", SALTLINE_WT_OVERPASS a single endpoint.
+  const trim = (u) => String(u).replace(/\/+$/, '');
+  const ofmBase = opts.ofmBase || process.env.SALTLINE_WT_OFM_BASE || null;
+  const terrBase = opts.terrariumBase || process.env.SALTLINE_WT_TERRARIUM_BASE || null;
+  const tileJsonUrl = ofmBase ? trim(ofmBase) : OFM_TILEJSON;
+  const tileUrl = (v, z, x, y) => (ofmBase ? `${trim(ofmBase)}/${v}/${z}/${x}/${y}.pbf` : ofmUrl(v, z, x, y));
+  const bathyUrl = (z, x, y) => (terrBase ? `${trim(terrBase)}/${z}/${x}/${y}.png` : terrariumUrl(z, x, y));
+  const overpassUrls = opts.overpassUrls || (process.env.SALTLINE_WT_OVERPASS ? [process.env.SALTLINE_WT_OVERPASS] : OVERPASS_URLS);
 
   const st = { ofm: 0, ofmOk: 0, ofm404: 0, bathy: 0, bathyOk: 0, overpass: 0, overpassOk: 0, failed: 0, repins: 0, negativeHits: 0 };
   const day = { start: now(), ofm: 0, overpass: 0 };
@@ -202,7 +212,7 @@ export function createSources(opts = {}) {
   async function latestVersion() {
     if (offline || typeof fetchImpl !== 'function' || breakerOpen('ofm')) return null;
     try {
-      const r = await http(OFM_TILEJSON, { headers: { Accept: 'application/json' } }, timeoutMs);
+      const r = await http(tileJsonUrl, { headers: { Accept: 'application/json' } }, timeoutMs);
       if (r.status !== 200 || !r.buf) { breakerResult('ofm', r.status === 404); return null; }
       breakerResult('ofm', true);
       const j = JSON.parse(new TextDecoder().decode(r.buf));
@@ -257,7 +267,7 @@ export function createSources(opts = {}) {
         const v = pin ? pin.ofm : ver;
         await ofmSlot();
         let r;
-        try { st.ofm++; day.ofm++; r = await http(ofmUrl(v, z, x, y), { headers: { Accept: 'application/x-protobuf,*/*' } }, timeoutMs); }
+        try { st.ofm++; day.ofm++; r = await http(tileUrl(v, z, x, y), { headers: { Accept: 'application/x-protobuf,*/*' } }, timeoutMs); }
         catch { breakerResult('ofm', false); setNeg(key); return { ok: false, reason: 'error' }; }
         finally { release('ofm'); }
         if (r.status === 200 || r.status === 204) {
@@ -293,7 +303,7 @@ export function createSources(opts = {}) {
       if (breakerOpen('terrarium')) return { ok: false, reason: 'breaker' };
       await acquire('terrarium', bathyConc);
       let r;
-      try { st.bathy++; r = await http(terrariumUrl(9, x9, y9), { headers: { Accept: 'image/png' } }, timeoutMs); }
+      try { st.bathy++; r = await http(bathyUrl(9, x9, y9), { headers: { Accept: 'image/png' } }, timeoutMs); }
       catch { breakerResult('terrarium', false); setNeg(key); return { ok: false, reason: 'error' }; }
       finally { release('terrarium'); }
       if (r.status !== 200 || !r.buf) { breakerResult('terrarium', !(r.status === 429 || r.status >= 500 || r.status === 0)); setNeg(key); return { ok: false, reason: r.status === 404 ? 'missing' : 'error' }; }
@@ -319,7 +329,7 @@ export function createSources(opts = {}) {
         const wait = Math.max(overpassLast + overpassGapMs, overpassRetryAt) - now();
         if (wait > 0) await sleep(wait);
         overpassLast = now(); st.overpass++; day.overpass++;
-        const url = OVERPASS_URLS[overpassEp % OVERPASS_URLS.length];
+        const url = overpassUrls[overpassEp % overpassUrls.length];
         let r;
         try { r = await http(url, { method: 'POST', body: 'data=' + encodeURIComponent(overlayQuery(x12, y12)), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' } }, overpassTimeoutMs); }
         catch { breakerResult('overpass', false); overpassEp++; setNeg(key); return { ok: false, reason: 'error' }; }

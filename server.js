@@ -21,6 +21,12 @@ import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
 import { getTile } from './server/maptiles.js';
 import { LiveAis } from './server/ais/index.js';
+import * as worldtiles from './server/worldtiles.js';                                   // WORLD TILES (docs/WORLD-STREAMING-WIRING.md)
+import { createWorldStack, geomFacade, handleTileSwap, guardGrounding, shipsOf } from './server/worldstack.js';
+import { startPrefetch } from './server/wtprefetch.js';
+import { tileFToLatLon } from './shared/wtformat.js';
+import { haversine } from './shared/geo.js';
+import { pruneRasterCache } from './server/world.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -28,12 +34,25 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 const world = new World().load(carvingsForWorld(), log);
 harborgeom.init(world);
+// WORLD TILES: D14 / C11 detail from OpenFreeMap (docs/WORLD-DETAIL-STREAMING.md). `stack` answers like World from the
+// finest layer in memory; `geom` is harborgeom with the tiles answering where no patch does. The raster `world` stays
+// the input of the lane graph and the route planner (unchanged hashes, §6.2). SALTLINE_WT=0 switches the tiles off
+// entirely (the game gets the raster and harborgeom themselves, /api/wt answers 404 fallback); SALTLINE_OFFLINE=1 or
+// SALTLINE_WT_OFFLINE=1 never fetch (tiles already on disk keep serving). Cache: <data>/world, SALTLINE_WT_CACHE_MB (600).
+const WT_ON = process.env.SALTLINE_WT !== '0';
+const WT_OFFLINE = process.env.SALTLINE_OFFLINE === '1' || process.env.SALTLINE_WT_OFFLINE === '1';
+const wt = WT_ON ? worldtiles.init({ offline: WT_OFFLINE, log: (...a) => log('[wt]', ...a) }) : worldtiles.disabledTiles();
+if (WT_ON) harborgeom.configure({ wt });
+const stack = WT_ON ? createWorldStack(world, { geom: harborgeom, wt }) : world;
+const geom = WT_ON ? geomFacade(harborgeom, wt) : harborgeom;
+log(`[wt] world tiles ${!WT_ON ? 'OFF (SALTLINE_WT=0)' : WT_OFFLINE ? 'offline (disk only)' : 'on'}${WT_ON ? `, disk cap ${Math.round(wt.capMB())} MB` : ''}`);
 const weather = new WeatherService({ log });
 let game = null;
 const traffic = new Traffic(world, HARBORS, { log, weatherAt: (lat, lon) => (game ? game.weatherAt(lat, lon) : null) });
 const routePlanner = new RoutePlanner({ world, graph: traffic.graph, geom: harborgeom, log });            // AUTOPILOT (route planner v2 off the main thread)
 const routeTable = new RouteTable({ plan: (a, b, o) => routePlanner.plan(a, b, o, { priority: 'low' }), log }); // MARKET (harbour-to-harbour sea km)
-game = new Game(world, log, { weather, traffic, harborgeom, routeTable });     // MARKET adds routeTable; TIME reads it
+pruneRasterCache(world, log, { keep: [routeTable.file] });   // WORLD TILES phase 1b: stale raster / sea-route caches (disk space)
+game = new Game(stack, log, { weather, traffic, harborgeom: geom, routeTable, routePlanner });     // MARKET adds routeTable; TIME reads it; v6 fleet: captains plan with routePlanner   // WORLD TILES: stack + facade
 const priceHistory = new PriceHistory({ file: path.join(DATA_DIR, 'market-history.json'), log });           // MARKET
 priceHistory.load(); priceHistory.maybeSample(game); routeTable.start();                                     // MARKET
 setInterval(() => { try { priceHistory.maybeSample(game); } catch (e) { log('[market] sample failed', e.message); } }, 60000);
@@ -43,6 +62,32 @@ const liveAis = new LiveAis({ log, harbors: HARBORS });
 liveAis.start();
 game.aiFilter = (a) => !liveAis.covers(a.lat, a.lon);
 game.liveAis = liveAis;                     // V7 step 0: the express passage keeps clear of live AIS vessels
+// WORLD TILES §3.6.4: a tile that arrives / changes revision under a ship moves her to open water (≤ 300 m, depth ≥
+// draught + 1 m), never damages her (grounding is ignored for 30 s), and tells clients near it to refetch (ETag changed).
+let wtPrefetch = null;
+if (WT_ON) {
+  guardGrounding(game, wt);
+  wt.onSwap((ev) => {
+    try {
+      handleTileSwap(game, stack, wt, ev);
+      const c = tileFToLatLon(ev.z, ev.x + 0.5, ev.y + 0.5);
+      const msg = JSON.stringify({ t: 'wt', k: ev.key, rev: ev.rev });
+      for (const [id, ws] of game.sockets) {
+        if (ws.readyState !== 1) continue;
+        const p = game.byId.get(id); if (!p?.ship) continue;
+        if (haversine(p.ship.lat, p.ship.lon, c.lat, c.lon) <= 6000) ws.send(msg);
+      }
+    } catch (e) { log('[wt] swap handler failed', e.message); }
+  });
+  wtPrefetch = startPrefetch({ game, wt, harbors: HARBORS, routePlanner, log });
+  // Phase 1b: harbour patches rebuilt from the tiles (GEOM_VERSION 6) in the background, one harbour every 30 s, never
+  // under a ship of an online player or a sailing fleet ship; the old patch serves until then. SALTLINE_WT_REBUILD=0 skips.
+  if (!WT_OFFLINE && process.env.SALTLINE_WT_REBUILD !== '0') {
+    const busy = (h) => shipsOf(game).some(({ s, online, v, docked }) => (online || (v && !docked)) && haversine(s.lat, s.lon, h.lat, h.lon) < 6000);
+    const idle = () => wt.queued() === 0 && (wtPrefetch?.stats().lagMs ?? 0) <= 50;
+    setTimeout(() => { if (wt.healthy()) harborgeom.rebuildFromTiles({ delayMs: 30_000, busy, idle }).catch(() => {}); }, 180_000).unref?.();
+  }
+}
 const AIS_NEAR_M = 40000, AIS_NEAR_LIMIT = 200, AIS_PUSH_MS = 2000;
 if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 1500 }).catch((e) => log('[geom] prefetch failed', e.message));
 
@@ -54,7 +99,7 @@ app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
-app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576) }); });
+app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576) }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
@@ -105,6 +150,26 @@ app.get('/api/maptile/:layer/:z/:x/:y.png', async (req, res) => {
     res.setHeader('Content-Type', t.type || 'image/png'); res.setHeader('Cache-Control', 'public, max-age=86400'); res.end(t.buf);
   } catch (e) { res.status(502).end(); }
 });
+// WORLD TILES (§3.5): the gzip'd SLWT bytes; a missing tile joins the queue at P0 and the request waits ≤ 6 s (503 +
+// Retry-After after that), 404 + X-WT: fallback when the source is down / tiles are off and nothing is cached (the
+// client keeps the coarse world). `meta` and `at` must stay before the :z/:x/:y route.
+app.get('/api/wt/meta', (req, res) => res.json(wt.meta()));
+app.get('/api/wt/at', (req, res) => {
+  const lat = +req.query.lat, lon = +req.query.lon;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return res.status(400).end();
+  // debug: the tile cell plus what the game's physics sees there (stack height / layer, facade land penetration)
+  const r2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : v ?? null);
+  let phys = null;
+  try { phys = { h: r2(stack.heightAt(lat, lon)), detail: stack.detailAt ? stack.detailAt(lat, lon) : 'raster', pen: r2(geom.landPenetration(lat, lon)) }; } catch { phys = null; }
+  res.json({ ...(wt.debugAt(lat, lon) || {}), phys });
+});
+app.get('/api/wt/:z/:x/:y', async (req, res) => {
+  const [z, x, y] = [req.params.z, req.params.x, req.params.y].map((v) => (/^\d{1,7}$/.test(v) ? +v : NaN));
+  const a = await wt.serveTile(z, x, y, { ifNoneMatch: req.headers['if-none-match'] || null });
+  for (const [k, v] of Object.entries(a.headers)) res.setHeader(k, v);
+  res.status(a.status);
+  if (a.body) res.end(a.body); else res.end();
+});
 app.get('/api/tile/:level/:tx/:ty', (req, res) => {
   const [level, tx, ty] = [req.params.level, req.params.tx, req.params.ty].map((v) => (/^\d{1,5}$/.test(v) ? +v : NaN));
   if (![level, tx, ty].every(Number.isInteger)) return res.status(400).end();
@@ -136,6 +201,7 @@ app.get('/api/route', async (req, res) => {
   if (routePlanner.full()) return res.status(503).json({ error: 'route planner busy' });
   const C = q.cls ? SHIP_CLASSES[q.cls] : null;
   try { if (q.toHarbor && !harborgeom.getHarborPatch(q.toHarbor)) await withTimeout(harborgeom.ensureHarbor(q.toHarbor), 3000); } catch { /* plan without the patch */ }
+  if (WT_ON) { try { await withTimeout(Promise.all([wt.ensureAround(q.from.lat, q.from.lon, 4000, worldtiles.PRIO.P0, { timeoutMs: 3000 }), wt.ensureAround(q.to.lat, q.to.lon, 4000, worldtiles.PRIO.P0, { timeoutMs: 3000 })]), 3000); } catch { /* plan on the raster */ } }   // WORLD TILES §3.6.2
   let r = null;
   try {
     r = await routePlanner.plan(q.from, q.to, { toHarbor: q.toHarbor, draft: C ? C.draft : 0, beam: C ? C.beam : 0, length: C ? C.length : 0, wp: q.wp, avoid: q.avoid, simTime: Date.now() / 1000 }, { priority: 'high' });
@@ -148,6 +214,7 @@ app.get('/api/market', (req, res) => res.json(cachedSnapshot(game)));
 app.get('/api/market/history', (req, res) => { const a = historyAnswer(priceHistory, req.query); res.status(a.status).json(a.body); });
 app.get('/api/market/routes', routesHandler({ game, routeTable }));
 app.get('/api/players', (req, res) => res.json([...game.byId.values()].filter((p) => p.online).map((p) => game.publicState(p))));
+app.get('/api/fleetstats', (req, res) => res.json(game.fleet.stats()));   // v6 fleet: counts only (no private data)
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
@@ -162,6 +229,7 @@ wss.on('connection', (ws, req) => {
     if (!player) {
       if (m.t !== 'hello') return;
       player = game.connect(ws, m.token, m.name);
+      if (WT_ON && player?.ship) wt.ensureAround(player.ship.lat, player.ship.lon, 1500, worldtiles.PRIO.P0, { timeoutMs: 8000 }).catch(() => null);   // WORLD TILES: the swap rule moves her if she now sits on land
       return;
     }
     switch (m.t) {
@@ -209,8 +277,9 @@ function saveAll(why) {
   log(why);
   try { game.saveState({ sync: true }); } catch (e) { log('[save] state failed', e.message); }
   try { priceHistory?.save(); } catch (e) { log('[save] market history failed', e.message); }
+  try { wt.flushIndex(); } catch { /* best effort */ }
 }
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { saveAll('shutting down, saving state'); try { routePlanner?.close(); } catch {} process.exit(0); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { saveAll('shutting down, saving state'); try { routePlanner?.close(); } catch {} try { wtPrefetch?.stop(); harborgeom.stopRebuild(); wt.close(); } catch {} process.exit(0); });
 process.on('uncaughtException', (e) => { log('[fatal] uncaught', e.stack || e); saveAll('saving after an uncaught exception'); });
 process.on('unhandledRejection', (e) => log('[warn] unhandled rejection', e));
 

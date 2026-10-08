@@ -85,6 +85,8 @@ export function leaveText(fleet, v) {
 
 // ------------------------------------------------------------------------------------------------ the step
 /** §7.3: one step of world time `dt` (s) for a captained vessel. */
+const PILOT_KN = 5, PILOT_ACCEL_KN_S = 0.1;   // the harbour pilot's speed inside a patch and how fast she gathers way
+const FAR_SUBSTEP_S = 1;   // substep for ships no online skipper is near (shared/fleet.js is frozen, so it lives here)
 export function stepVessel(fleet, v, dt) {
   if (!v || v.status !== 'active' || !(dt > 0)) return;
   const g = fleet.game, a = fleet.actorOf(v), p = fleet.ownerOf(v);
@@ -303,7 +305,8 @@ function requestPlan(fleet, v, tgt) {
   log.push(now); fleet.planLog.set(v.ownerId, log);
   rt.tgt = tgt;
   cap.phase = 'planning'; cap.why = null; cap.target = targetWire(tgt); cap.jobId = tgt.jobId || null;
-  const from = { lat: v.ship.lat, lon: v.ship.lon }, to = { lat: tgt.lat, lon: tgt.lon };
+  const from = { lat: v.ship.lat, lon: v.ship.lon };
+  const to = { lat: tgt.lat, lon: tgt.lon };
   if (!planner) { rt.plan = directPlan(fleet, v, from, tgt); return; }
   const gen = rt.gen;
   const opts = { toHarbor: tgt.kind === 'harbor' ? tgt.harbor : undefined, draft: C.draft, beam: C.beam, length: C.length, avoid: tgt.avoid || stormsNear(g, from, to), simTime: now };
@@ -388,11 +391,39 @@ function castOff(fleet, v, plan) {
   if (v.docked) return fail(fleet, v, 'She could not cast off');
   fleet.rtOf(v).plan = null;
   startLeg(fleet, v, plan.points, tgt, plan.distM);
+  // The harbour's tugs / her thrusters swing her off the quay onto the first leg: left on the berth heading, her turning
+  // circle would carry the hull into the quay and the offline stepper stops her for 'shoal water' (phase-2 browser run).
+  const s = v.ship, next = v.voyage?.route?.find((q) => haversine(s.lat, s.lon, q[0], q[1]) > 60);
+  if (next) { s.hdg = bearing(s.lat, s.lon, next[0], next[1]); s.spd = 0; s.rudder = 0; }
   const C = clsOf(v.ship.cls);
   const eta = v.cap.etaS ? ` ETA ${fmtEtaUtc(v.cap.etaS, g.simTime)}.` : '';
   const dest = tgt.kind === 'harbor' ? short(harborById(tgt.harbor)?.name) : tgt.kind === 'ground' ? `the ${tgt.name}` : tgt.name || 'her position';
   fleet.note(v, 'info', `cast off from ${short(from?.name)} for ${dest}, ${fmt(plan.distM / 1000)} km.${eta}`);
   void C;
+}
+/** Inside a built harbour patch (basins, quays): the harbour pilot's waters. */
+function inPatch(g, s) { try { return typeof g.landPenetration === 'function' && g.landPenetration(s.lat, s.lon) != null; } catch { return false; } }
+/** The harbour pilot (phase 2): inside a patch she follows the planner's water-only polyline exactly at harbour speed
+ *  (≤ 5 kn), instead of the offline stepper's physics, whose turning circle cut the basin corners into the quays.
+ *  Outside the patch the stepper takes over. Same voyage bookkeeping as simulateOffline (`i`, `voyageEnd`, lastValid). */
+function pilotStep(g, v, h) {
+  const vo = v.voyage, s = v.ship, C = clsOf(s.cls);
+  if (!vo || !Array.isArray(vo.route) || !vo.route.length) return;
+  const last = vo.route.length - 1;
+  const want = Math.min(PILOT_KN, (C.maxKn || 10) * Math.max(0.05, vo.throttle ?? FLEET.SERVICE_THROTTLE));
+  s.spd = Math.min(want, Math.max(0, s.spd || 0) + PILOT_ACCEL_KN_S * h);
+  s.throttle = Math.min(vo.throttle ?? FLEET.SERVICE_THROTTLE, want / (C.maxKn || 10)); s.rudder = 0;
+  let left = s.spd * 0.514444 * h, i = Math.max(0, Math.min(last, vo.i | 0));
+  while (left > 0 && i <= last) {
+    const wp = vo.route[i], d = haversine(s.lat, s.lon, wp[0], wp[1]);
+    if (d < 1) { i++; continue; }
+    const b = bearing(s.lat, s.lon, wp[0], wp[1]);
+    s.hdg = b;
+    if (d <= left) { s.lat = wp[0]; s.lon = wp[1]; left -= d; i++; } else { const q = destination(s.lat, s.lon, b, left); s.lat = q.lat; s.lon = q.lon; left = 0; }
+  }
+  v.lastValid = { lat: s.lat, lon: s.lon };
+  if (i > last) { vo.i = last; v.voyage = null; s.throttle = 0; v.voyageEnd = 'arrived'; return; }
+  vo.i = i;
 }
 /** Sail `points` towards target `tgt` (phase sailing). */
 function startLeg(fleet, v, points, tgt, distM) {
@@ -455,7 +486,12 @@ function sail(fleet, v, dt) {
   v.voyage.throttle = thr;
   const before = { lat: s.lat, lon: s.lon };
   let left = dt;
-  while (left > 1e-9 && v.voyage && !v.docked && v.flooding < 1) { const h = Math.min(FLEET.SUBSTEP_S, left); left -= h; g.simulateOffline(a, h); }
+  // 0.5 s substeps near online skippers (what they see); 1 s far from everyone (1,000 far ships ≤ 4 ms a tick, docs/V6-FLEET-PHASE2.md §7.2)
+  const sub = fleet.rtOf(v).far ? FAR_SUBSTEP_S : FLEET.SUBSTEP_S;
+  while (left > 1e-9 && v.voyage && !v.docked && v.flooding < 1) {
+    const h = Math.min(sub, left); left -= h;
+    if (inPatch(g, s)) pilotStep(g, v, h); else g.simulateOffline(a, h);
+  }
   const moved = haversine(before.lat, before.lon, s.lat, s.lon);
   if (moved > 0 && moved < 1e6) v.stats.distanceKm = (v.stats.distanceKm || 0) + moved / 1000;
   if (cap.phase === 'sailing' && now - (rt.etaAt || 0) >= 60) { rt.etaAt = now; cap.etaS = etaOf(fleet, v); }

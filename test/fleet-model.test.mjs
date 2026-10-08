@@ -13,7 +13,7 @@ import { newCap, fishLoop } from '../server/captain.js';
 import { FISHING_GROUNDS } from '../server/harbors.js';
 import { destination } from '../shared/geo.js';
 
-const PHASE2 = { skip: 'needs game.js wiring (phase 2)' };
+const PHASE2 = {};
 const save = (p) => JSON.parse(JSON.stringify({ ...p, hail: null, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1 }));
 const OLD = () => ({ id: 'p1', token: 't1', name: 'Old', ship: { cls: 'coaster', lat: 51.98, lon: 4.03, hdg: 0, spd: 0, throttle: 0, rudder: 0 }, cond: 90, flooding: 0, fuel: 50, cargo: [{ good: 'grain', qty: 40, contraband: false, jobId: null }], money: 1000, wanted: 0, wantedAt: 0, kits: 0, jobs: [], convoyId: null, docked: 'rotterdam', stats: { delivered: 1 } });
 function load(g, rec) { g.fleet.adoptPlayer(rec); g.migratePlayer(rec); g.players.set(rec.token, rec); g.byId.set(rec.id, rec); return rec; }

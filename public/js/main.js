@@ -105,6 +105,11 @@ class App {
     // Harbour tugs (V5-PLAN item 4, tugs.js): every skipper's assist tugs from the snapshots, with towlines and prop wash
     this.tugLayer = null;
     import('./tugs.js').then((m) => { this.tugLayer = new m.TugLayer(this); }).catch((e) => console.warn('[tugs] unavailable', e));
+    // v6 fleet (fleet.js, hq.js): harbour Office tab, fleet dialogs, the top-bar chip and the Fleet HQ (O)
+    this.fleetShips = new Map();   // snap.fleet (FleetPublic): fleet ships near you, drawn like AI traffic
+    this.fleetUi = null; this.hq = null;
+    import('./fleet.js').then((m) => { this.fleetUi = new m.FleetUi(this); }).catch((e) => console.warn('[fleet] unavailable', e));
+    import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
     this.touchHelm = null;
     window.addEventListener('resize', () => this.resize()); this.resize();
     this.bindInput();
@@ -153,7 +158,9 @@ class App {
       case 'welcome': this.onWelcome(m); break;
       case 'snap': this.onSnap(m); break;
       case 'ais': try { this.aisLayer.ingest(m.ships || [], m.time); } catch (e) { console.warn('[ais] ingest failed', e); } break;
-      case 'you': this.onYou(m.you, false, !!m.correction); break;
+      case 'you': this.onYou(m.you, false, !!m.correction, !!m.switched); break;
+      case 'fleet': this.fleetUi?.onFleet(m.fleet); this.hq?.onFleet(m.fleet); break;
+      case 'fleet_board': this.fleetUi?.onBoard(m); break;
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
       case 'harbor': this.hud.showHarbor(m.harbor); break;
       case 'chat': this.hud.chat(m); break;
@@ -176,24 +183,28 @@ class App {
     this.syncWrecks();
     this.ready = true;
     if (!this.started) this.hud.setStatus('Connected. Pick a name and set sail.');
+    try { // v6 §10.3 fixture mode (development): ?fixture=fleet renders the Office/HQ from docs/fixtures/fleet.sample.json
+      if (new URLSearchParams(location.search).get('fixture') === 'fleet') fetch('/docs/fixtures/fleet.sample.json').then((r) => r.json()).then((fx) => { this.fleetUi?.onFleet(fx.fleet); this.hq?.onFleet(fx.fleet); }).catch(() => {});
+    } catch { /* no URL API */ }
   }
   // `correction` is set by the server when it rejected / moved our position: always snap to its ship then, otherwise
   // the two sides disagree forever (the server keeps rejecting every state sent from the stale client position).
-  onYou(you, first, correction) {
+  onYou(you, first, correction, switched) {
     const prev = this.you;
     this.you = you;
+    this.net.vid = you.aboard ?? null;   // v6: states carry the ship they are for
     this.shipClock = { t: Number(you.shipTime) || 0, rate: Number(you.shipRate) || 1, at: performance.now(), warpRun: you.warpRun || null }; // V6 item 5
     const s = you.ship;
     const serverWarp = WARP_LEVELS.includes(Number(you.warp)) ? Number(you.warp) : 1;
     // Under warp the local ship runs ahead of the server's copy by (latency + upload interval) × speed × warp: only a
     // gap beyond that is a real disagreement (teleport, tow, impound) that must snap the ship.
     const lead = Math.abs(Number(s.spd) || 0) * GEO.KN_TO_MS * SIM.MOTION_SCALE * Math.max(this.warp, serverWarp) * 2;
-    const hard = !this.ship || first || !prev || prev.ship.cls !== s.cls || !!prev.docked !== !!you.docked || (!you.assist && unitsBetween(this.ship.lat, this.ship.lon, s.lat, s.lon) > 400 + lead);
+    const hard = !this.ship || first || !prev || prev.ship.cls !== s.cls || !!prev.docked !== !!you.docked || (!!prev && prev.aboard !== you.aboard) || (!you.assist && unitsBetween(this.ship.lat, this.ship.lon, s.lat, s.lon) > 400 + lead);
     if (hard || (correction && !you.assist)) {
       // a plain correction is a few hundred metres: keep the helm commands and do not force a frame rebuild
       this.ship = { ...s, throttleCmd: hard ? s.throttle : this.input.throttleCmd, rudderCmd: hard ? 0 : this.input.rudderCmd };
       if (hard) { this.input.throttleCmd = you.docked ? 0 : s.throttle; this.input.rudderCmd = 0; this.selfSamples = []; }
-      if (!this.myMesh || prev?.ship.cls !== s.cls) {
+      if (!this.myMesh || prev?.ship.cls !== s.cls || prev?.aboard !== you.aboard) {
         if (this.myMesh) { if (this.interior.active) this.interior.exit(); this.drop(this.myMesh); }
         this.myMesh = buildShip(s.cls, you.name, 7); this.scene.add(this.myMesh);
         this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false);
@@ -219,6 +230,15 @@ class App {
       // (or a rebuild was deferred because the player was typing in it); the 'harbor' message re-renders on its own.
       const key = [you.money, you.fuel, you.cond, you.flooding, you.kits, you.ship.cls, JSON.stringify(you.cargo), JSON.stringify(you.jobs), you.convoy?.members?.length ?? 0, you.serviceDue ?? 0, you.berth?.id ?? ''].join('|');
       if (key !== this.lastHarborKey || this.hud.harborDirty) { this.lastHarborKey = key; this.hud.renderHarborTabs(); }
+    }
+    if (switched) {   // v6 §8.4: a new ship under you
+      if (this.interior.active) this.interior.exit();
+      if (this.ashore?.active) this.ashore.exit?.();
+      this.hq?.close?.();                                             // show her: the HQ steps aside
+      this.clearRoute(); this.autopilot = false; this.warp = 1;      // the server already reset warp; no event
+      this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.touchHelm?.setThrottle?.(0);
+      this.fleetUi?.switchFade(you);
+      if (you.docked) this.net.action('dock');                       // a fresh harbour sheet for her harbour
     }
   }
   /** V6 item 5: the ship's clock (s), smooth between the 1 Hz `you` — it runs at the warp factor (under tugs: the op's rate). */
@@ -258,6 +278,25 @@ class App {
       for (const [id, o] of this.ai) if (!seenAi.has(id)) { this.drop(o.mesh); this.ai.delete(id); }
     }
     if (Array.isArray(m.rescues)) this.syncRescues(m.rescues, now);
+    if (Array.isArray(m.fleet)) this.syncFleet(m.fleet, !!m.fleetFull, now);
+  }
+  /** v6: fleet ships (snap.fleet) drawn and interpolated like AI traffic; labels "<ship> · <owner>" / "· yours" / "· laid up". */
+  syncFleet(list, full, now) {
+    const seen = new Set();
+    for (const f of list) {
+      if (!f || !f.id || !Number.isFinite(f.lat) || !Number.isFinite(f.lon)) continue;
+      seen.add(f.id);
+      const own = f.ownerId === this.you?.id, cls = SHIP_CLASSES[f.cls] ? f.cls : 'coaster';
+      const label = `${f.name} · ${f.state === 'laid_up' ? 'laid up' : own ? 'yours' : f.owner}`;
+      let o = this.fleetShips.get(f.id);
+      if (!o) { o = { id: f.id, cls, mesh: buildShip(cls, label, hashStr(f.id) % 97 + 1), samples: [], cur: { lat: f.lat, lon: f.lon, hdg: f.hdg, spd: f.spd }, vis: { heave: 0, pitch: 0, roll: 0 }, label }; this.scene.add(o.mesh); o.mesh.userData.setLights?.(!!this.lightsOn); this.fleetShips.set(f.id, o); }
+      else if (o.cls !== cls) { this.drop(o.mesh); o.cls = cls; o.mesh = buildShip(cls, label, 5); this.scene.add(o.mesh); o.mesh.userData.setLights?.(!!this.lightsOn); }
+      if (o.label !== label) { o.label = label; o.mesh.userData.label?.userData.setText(label); }
+      Object.assign(o, { name: f.name, owner: f.owner, ownerId: f.ownerId, state: f.state, cond: f.cond, fishing: !!f.fishing, towing: !!f.towing, towCls: f.towCls || null });
+      o.mesh.userData.setWear?.(1 - (f.cond ?? 100) / 100);
+      o.samples.push({ t: now, lat: f.lat, lon: f.lon, hdg: f.hdg, spd: f.spd }); if (o.samples.length > 4) o.samples.shift();
+    }
+    for (const [id, o] of this.fleetShips) if (!seen.has(id) && (full || o.state === 'at_sea')) { this.drop(o.mesh); this.fleetShips.delete(id); }
   }
   /** Remove a ship / harbour / wreck / marker group from the scene and free its GPU resources. */
   drop(obj) { if (!obj) return; this.scene.remove(obj); if (obj.userData.wakeGroup?.parent) obj.userData.wakeGroup.parent.remove(obj.userData.wakeGroup); obj.userData.dispose?.(); }
@@ -266,7 +305,9 @@ class App {
     if (!o) {
       o = { id: p.id, name: p.name, cls: p.cls, mesh: buildShip(p.cls, p.name, p.id.charCodeAt(0)), samples: [], cur: { lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }, vis: { heave: 0, pitch: 0, roll: 0 } };
       this.scene.add(o.mesh); this.others.set(p.id, o);
-    } else if (o.cls !== p.cls) { this.drop(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); }
+    } else if (o.cls !== p.cls || (p.vid && o.vid && o.vid !== p.vid)) { this.drop(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); o.samples = []; o.vname = undefined; } // v6: switched ships — no glide across the map
+    o.vid = p.vid;
+    if (o.vname !== p.vname) { o.vname = p.vname; o.mesh.userData.label?.userData.setText(p.vname ? `${p.name} — ${p.vname}` : p.name); }
     Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, towCls: p.towCls || null, fishing: !!p.fishing, offline: p.offline, warp: WARP_LEVELS.includes(Number(p.warp)) ? Number(p.warp) : 1 });
     o.samples.push({ t: now, lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }); if (o.samples.length > 4) o.samples.shift();
     o.mesh.userData.setWear(1 - p.cond / 100); o.mesh.userData.setFlood(p.flooding);
@@ -343,7 +384,7 @@ class App {
     for (const [id, m] of this.groundMeshes) { const g = this.world.fishing.find((x) => x.id === id); if (g) this.place(m, g.lat, g.lon); else { this.drop(m); this.groundMeshes.delete(id); } }
     for (const [id, m] of this.platformMeshes) { if (!m) continue; const pl = (this.world.platforms || []).find((x) => x.id === id); if (pl) this.place(m, pl.lat, pl.lon); else { this.drop(m); this.platformMeshes.delete(id); } }
     for (const w of this.wrecks) { const m = this.wreckMeshes.get(w.id); if (m) this.place(m, w.lat, w.lon, -2); }
-    for (const o of [...this.others.values(), ...this.cutters.values(), ...this.ai.values(), ...this.rescues.values()]) { const wg = o.mesh.userData.wakeGroup; if (wg) wg.position.set(wg.position.x - p.x, wg.position.y, wg.position.z - p.z); }
+    for (const o of [...this.others.values(), ...this.cutters.values(), ...this.ai.values(), ...this.rescues.values(), ...this.fleetShips.values()]) { const wg = o.mesh.userData.wakeGroup; if (wg) wg.position.set(wg.position.x - p.x, wg.position.y, wg.position.z - p.z); }
     if (this.myMesh?.userData.wakeGroup) { const wg = this.myMesh.userData.wakeGroup; wg.position.set(wg.position.x - p.x, wg.position.y, wg.position.z - p.z); }
   }
   /** Calm water inside breakwaters: the share of 8 directions blocked by land/quays/breakwaters within 700 m (harbour SDF). */
@@ -553,6 +594,7 @@ class App {
       if (k === 'h') return document.getElementById('helpWrap')?.classList.toggle('hidden');
       if (k === 'r' && this.hud.chartOpen()) { this.hud.chartMode = this.hud.chartMode === 'region' ? 'world' : 'region'; this.hud.drawChart(); return; }
       if (k === 'l') return this.market?.toggle();
+      if (k === 'o') return this.hq?.toggle();
       if (this.ashore?.active) return; // ashore: the ship's controls are aboard
       if (k === 't') return this.toggleDock();
       if (k === 'j') return this.jobAction();
@@ -962,6 +1004,7 @@ class App {
     for (const o of this.others.values()) { if (o.docked || o.sinking) continue; push(o, SHIP_CLASSES[o.cls] || o.mesh.userData); }
     for (const c of this.cutters.values()) push(c, CUTTER_DIMS);
     for (const a of this.ai.values()) { if (a.state === 'moored') continue; push(a, SHIP_CLASSES[a.cls] || a.mesh.userData); }
+    for (const f of this.fleetShips.values()) { if (f.state === 'docked' || f.state === 'laid_up') continue; push(f, SHIP_CLASSES[f.cls] || f.mesh.userData); }
     for (const v of this.aisLayer.others({ rangeM: 600 })) out.push(v); // real AIS hulls at their reported size
     return out;
   }
@@ -1102,7 +1145,7 @@ class App {
     const lightsOn = night > 0.5;
     if (this.lightsOn !== lightsOn) {
       this.lightsOn = lightsOn;
-      for (const o of [...this.others.values(), ...this.cutters.values(), ...this.ai.values()]) o.mesh.userData.setLights?.(lightsOn);
+      for (const o of [...this.others.values(), ...this.cutters.values(), ...this.ai.values(), ...this.fleetShips.values()]) o.mesh.userData.setLights?.(lightsOn);
       this.myMesh?.userData.setLights?.(lightsOn);
     }
     this.sky.position.copy(this.camera.position);
@@ -1129,6 +1172,7 @@ class App {
     for (const o of this.others.values()) { this.interp(o, now); this.shipVisual(o.mesh, o.cur.lat, o.cur.lon, o.cur.hdg, o.cur.spd, o.vis, o.flooding || 0, dt, !!o.docked); }
     for (const c of this.cutters.values()) { this.interp(c, now); this.shipVisual(c.mesh, c.cur.lat, c.cur.lon, c.cur.hdg, c.cur.spd, c.vis, 0, dt, false); if (c.mesh.userData.beacon) c.mesh.userData.beacon.material.emissiveIntensity = c.state === 'patrol' ? 0.5 : 2 + 2 * Math.sin(this.time * 12); }
     for (const a of this.ai.values()) { this.interp(a, now); this.shipVisual(a.mesh, a.cur.lat, a.cur.lon, a.cur.hdg, a.state === 'underway' ? a.cur.spd : 0, a.vis, 0, dt, a.state !== 'underway'); }
+    for (const f of this.fleetShips.values()) { this.interp(f, now); this.shipVisual(f.mesh, f.cur.lat, f.cur.lon, f.cur.hdg, f.state === 'at_sea' ? f.cur.spd : 0, f.vis, 0, dt, f.state !== 'at_sea'); }
     for (const r of this.rescues.values()) {
       this.interp(r, now);
       if (r.kind === 'helicopter') { const p = this.place(r.mesh, r.cur.lat, r.cur.lon, 60 + Math.sin(this.time * 0.8) * 2); r.mesh.rotation.set(-0.08, -r.cur.hdg * D2R, 0, 'YXZ'); r.mesh.userData.setRotor?.(this.time); void p; }
@@ -1209,6 +1253,7 @@ class App {
     for (const c of this.cutters.values()) contacts.push({ kind: 'cutter', lat: c.cur.lat, lon: c.cur.lon, color: c.state === 'patrol' ? '#ff6b6b' : '#ff2020' });
     for (const o of this.others.values()) contacts.push({ kind: 'ship', lat: o.cur.lat, lon: o.cur.lon, hdg: o.cur.hdg, color: o.convoyId && o.convoyId === this.you?.convoyId ? '#5ad6ff' : o.wanted ? '#ffb070' : '#ffffff', label: o.name });
     for (const a of this.ai.values()) contacts.push({ kind: 'ai', lat: a.cur.lat, lon: a.cur.lon, hdg: a.cur.hdg, spd: a.cur.spd, color: '#9aa3ab', label: a.name, dest: a.destName, state: a.state });
+    for (const f of this.fleetShips.values()) contacts.push({ kind: 'ai', lat: f.cur.lat, lon: f.cur.lon, hdg: f.cur.hdg, spd: f.cur.spd, color: f.ownerId === this.you?.id ? '#6fe3d6' : '#c8d6e2', label: f.name, state: f.state === 'at_sea' ? 'underway' : 'moored' });
     for (const c of this.aisLayer.contacts()) contacts.push({ ...c, kind: 'ai', color: c.color || '#9aa3ab' });
     for (const r of this.rescues.values()) contacts.push({ kind: 'rescue', lat: r.cur.lat, lon: r.cur.lon, hdg: r.cur.hdg, color: '#ff8c42', label: r.kind === 'helicopter' ? 'SAR heli' : 'Lifeboat' });
     if (this.you?.nearBerth) { const b = this.you.nearBerth; if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) contacts.push({ kind: 'berth', lat: b.lat, lon: b.lon, hdg: b.hdg, color: '#58d68d', label: b.name }); }

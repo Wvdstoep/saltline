@@ -14,7 +14,7 @@ import { clearRadius } from '../server/safespot.js';
 import { setOrder, stepVessel, dutyOf, giveWay } from '../server/captain.js';
 import { SHIP_CLASSES } from '../shared/constants.js';
 
-const PHASE2 = { skip: 'needs game.js wiring (phase 2)' };
+const PHASE2 = {};
 const IJ = harborById('ijmuiden');
 const day = (p, g) => p.office.book.days[dayKey(g.simTime)] || {};
 const sum = (p, cat, vid) => Object.values(p.office.book.days).reduce((s, d) => s + Object.entries(d).filter(([k]) => !vid || k === vid).reduce((t, [, row]) => t + (row[cat] || 0), 0), 0);
@@ -291,7 +291,9 @@ test('rate limit: 25 renames in a burst → at most 20 applied; malformed payloa
   const g = new FakeGame(); const { p, ws } = g.join('Ann'); const f = g.fleet;
   const tr = g.addVessel(p, { cls: 'trawler' });
   let applied = 0, last = tr.name;
-  for (let i = 0; i < 25; i++) { f.onAction(p, { action: 'fleet_rename', vesselId: tr.id, name: `Boat ${String.fromCharCode(65 + i)}${i}` }); if (tr.name !== last) { applied++; last = tr.name; } }
+  const realNow = Date.now, t0 = realNow();   // one instant: the bucket refills on wall time and a loaded machine let a 21st through
+  Date.now = () => t0;
+  try { for (let i = 0; i < 25; i++) { f.onAction(p, { action: 'fleet_rename', vesselId: tr.id, name: `Boat ${String.fromCharCode(65 + i)}${i}` }); if (tr.name !== last) { applied++; last = tr.name; } } } finally { Date.now = realNow; }
   assert.ok(applied <= FLEET.ACTION_BURST && applied >= 19, `applied ${applied}`);
   f.buckets.clear();
   const before = JSON.stringify(p.fleet);
@@ -388,5 +390,46 @@ test('real game: a captain berths with the cached Rotterdam tugs at a berth nobo
     assert.ok(sawOp, 'the harbour tugs took her'); assert.equal(v.docked, 'rotterdam'); assert.ok(v.berth?.id);
     const others = [...g.fleet.vessels.values()].filter((x) => x !== v && x.docked === 'rotterdam' && x.berth?.id).map((x) => x.berth.id);
     assert.ok(!others.includes(v.berth.id), `berth ${v.berth.id} is hers alone`);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// Phase-2 browser run: captains leaving Rotterdam Maasvlakte stopped a few metres off the quay with "shoal water ahead":
+// the offline stepper's turning circle (and its 300 m waypoint reach) cut the basin corners of the planner's water-only
+// exit path. Inside a built patch the harbour pilot now follows the polyline exactly (captain.js pilotStep).
+const ROT_EXIT = [[51.96332, 4.03037], [51.963093, 4.030426], [51.962902, 4.030631], [51.961346, 4.034605], [51.960969, 4.048678], [51.961751, 4.052657], [51.962019, 4.053136], [51.962354, 4.053243], [51.965127, 4.053134], [51.965392, 4.053048], [51.965643, 4.052704], [51.97534, 4.008497], [51.977287, 3.997622], [52, 3.98], [52.3, 4.3]];
+test('real game: a captain leaves the Rotterdam basins along the planned exit (harbour pilot), no shoal stop, never inside a quay', haveRot ? PHASE2 : { skip: 'no cached Rotterdam geometry' }, async () => {
+  const os = await import('node:os'), path = await import('node:path');
+  const { Game } = await import('../server/game.js');
+  const { World } = await import('../server/world.js');
+  const { carvingsForWorld } = await import('../server/harbors.js');
+  process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
+  const world = new World().load(carvingsForWorld(), () => {});
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'saltline-fleet-exit-'));
+  fs.mkdirSync(path.join(tmp, 'geom'));
+  for (const f of ['rotterdam.json', 'rotterdam.bin']) fs.copyFileSync(ROT_GEOM + f, path.join(tmp, 'geom', f));
+  const hg = await import('../server/harborgeom.js');
+  hg.configure({ dataDir: tmp, offline: true, preload: false, log: () => {} });
+  hg.init(world);
+  try {
+    assert.ok(await hg.ensureHarbor('rotterdam'));
+    const planner = { full: () => false, plan: async () => ({ points: ROT_EXIT.map((q) => [q[0], q[1]]), distM: 40000 }) };
+    const g = new Game(world, () => {}, { stateFile: '/nonexistent/saltline-fleet-exit.json', harborgeom: hg, routePlanner: planner }); g.saveState = () => {}; g.rnd = () => 0.5;
+    const p = g.connect({ readyState: 1, sent: [], send() {}, close() {} }, null, 'Ann'); p.money = 1e7; g.tick(0.1);
+    g.onAction(p, { action: 'buy_ship', cls: 'psv', tradeIn: false });
+    const v = p.fleet[1];
+    place(g, v, 51.964038, 4.030656); v.ship.hdg = 200;
+    assert.ok(g.landPenetration(51.964038, 4.030656) != null, 'starts inside the Rotterdam patch');
+    g.fleet.onAction(p, { action: 'fleet_order', vesselId: v.id, order: { type: 'sail_to', harbor: 'ijmuiden' } });
+    let t = 0, worst = 0;
+    const past = () => (v.voyage?.i ?? 0) >= 13 || g.landPenetration(v.ship.lat, v.ship.lon) == null;
+    while (t < 4800 && !past()) {
+      g.tick(0.5); t += 0.5; await Promise.resolve();
+      worst = Math.max(worst, g.landPenetration(v.ship.lat, v.ship.lon) || 0);
+    }
+    const shoal = (p.office.log || []).filter((l) => /shoal/i.test(l.text));
+    assert.equal(shoal.length, 0, shoal.map((l) => l.text).join(' | '));
+    assert.ok(past(), `past the patch exit after ${t} s (at ${v.ship.lat.toFixed(5)}, ${v.ship.lon.toFixed(5)}, phase ${v.cap?.phase})`);
+    assert.ok(worst <= 0.5, `never inside a quay (worst ${worst.toFixed(2)} m)`);
+    assert.equal(v.cap.phase, 'sailing');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });

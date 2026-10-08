@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { FakeGame, events, last } from './fleet-helpers.mjs';
 import { dayKey } from '../shared/fleet.js';
 
-const PHASE2 = { skip: 'needs game.js wiring (phase 2)' };
+const PHASE2 = {};
 const book = (p, g, vid) => (p.office.book.days[dayKey(g.simTime)] || {})[vid] || {};
 function setup(money = 500000) { const g = new FakeGame(); const j = g.join('Ann', { money }); return { g, f: g.fleet, ...j }; }
 

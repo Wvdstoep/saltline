@@ -42,6 +42,8 @@ export const POI_INFO = {
   police: { tab: null, label: 'Harbour police', short: 'Police', color: '#22457a', icon: 'shield' },
   cafe: { tab: 'overview', label: 'Café — harbour news, weather & tide', short: 'Café', color: '#8a5a1f', icon: 'cup' },
 };
+// v6 fleet: at your home harbour the harbourmaster's door is also your office (opens the Office tab)
+const HOME_OFFICE = { ...POI_INFO.harbourmaster, tab: 'office', label: 'Harbourmaster & your office — contracts, boards and your fleet', short: 'Harbourmaster & your office' };
 const ROAD_STYLE = {
   motorway: { mat: 'asphalt', y: 0.17, mark: 'motorway', lamps: 40 },
   primary: { mat: 'asphalt', y: 0.16, mark: 'dash', walk: true, lamps: 32 },
@@ -1066,7 +1068,7 @@ export class Ashore {
     const metal = new THREE.MeshStandardMaterial({ color: 0x8c949c, metalness: 0.6, roughness: 0.4 });
     for (const P of pois) {
       if (!P?.door || !Number.isFinite(P.door.lat)) continue;
-      const info = POI_INFO[P.kind]; if (!info) continue;
+      const info = P.kind === 'harbourmaster' && this.app.you?.home && this.app.you.home === this.harborId ? HOME_OFFICE : POI_INFO[P.kind]; if (!info) continue; // v6: your office at home
       const [dx, dz] = this.toXZ(P.door.lat, P.door.lon);
       const b = P.building >= 0 ? blds[P.building] : null;
       // wall point and outward normal

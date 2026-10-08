@@ -207,3 +207,9 @@ body.touch #harborWrap .flBtns .flBtnWrap { max-width: none; }
   .flXfer { grid-template-columns: 1fr; }
   .flBars { gap: 6px; }
 }
+
+/* v6 phase 2: the Office tab makes 9 harbour sections — keep them all on a 360–420 px phone's bottom bar */
+@media (max-width: 440px) {
+  body.touch .sheetNav button { min-width: 0; flex: 1 1 0; padding: 4px 0; }
+  body.touch .sheetNav .sl { font-size: 9.5px; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: clip; max-width: 100%; }
+}

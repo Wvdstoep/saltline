@@ -10,3 +10,4 @@ data/tiles/
 node_modules/
 data/market-history.json
 data/market-history.json.tmp
+data/state.pre-v6-*.json

@@ -1,5 +1,11 @@
 # World detail streaming — wiring (phase 1a server.js, phase 1b harborgeom / world)
 
+> **Status 2026-10-08: wired.** server.js, harborgeom.js (`buildFromTiles`, `GEOM_VERSION = 6`, `rebuildFromTiles`) and
+> world.js (`pruneRasterCache`) are in; tests in `test/wt-wiring.test.mjs`. Deviations from the paste-ins below: v5 patch
+> files keep serving (marked stale) until the background rebuild replaces them (one harbour / 30 s, P4, never where an
+> online ship or a sailing fleet ship is within 6 km, starts 3 min after boot); `/api/wt/at` also returns `phys` (stack
+> height / layer and facade land penetration); the prune keeps the route table in use as well as the newest one.
+
 Companion to `docs/WORLD-DETAIL-STREAMING.md` (the spec). Lane A's modules are built and tested **without touching any
 existing file**; this page is the exact paste-in for the wiring step after the current deploy. Every anchor below is a
 search string (other lanes are editing `server.js`, so line numbers would be stale).
@@ -141,7 +147,12 @@ In `saveAll(why)` add `try { wt.flushIndex(); } catch { /* best effort */ }`, an
 |---|---|---|
 | `SALTLINE_WT_OFFLINE=1` | off | no upstream at all; disk keeps serving; game = today's behaviour |
 | `SALTLINE_WT_CONC` | 4 | OpenFreeMap requests in flight (0 = stop fetching, the "kill the upstream" scenario §5.3-8) |
-| `SALTLINE_WT_CACHE_MB` | 1536 | disk cap for tiles + overlays + bathy (LRU 95 % → 85 %, pinned harbour rings ≤ 25 %) |
+| `SALTLINE_WT_CACHE_MB` | **600** (was 1536: production has ≈ 1.5 GB free) | disk cap for tiles + overlays + bathy under `<data>/world` (LRU 95 % → 85 %, pinned harbour rings ≤ 25 %) |
+| `SALTLINE_WT_RESERVE_MB` | 400 | the cap also shrinks to (tile bytes + free space − reserve), re-checked every 60 s, floor 32 MB |
+| `SALTLINE_WT=0` | on | tiles switched off entirely: the game gets the raster `world` and `harborgeom` themselves, `/api/wt/*` → 404 `X-WT: fallback`, no prefetch, no rebuild, nothing under `<data>/world` |
+| `SALTLINE_OFFLINE=1` | off | implies `SALTLINE_WT_OFFLINE=1` (and harborgeom never builds from tiles) |
+| `SALTLINE_WT_REBUILD=0` | on | skip the phase 1b background rebuild of harbour patches from tiles |
+| `SALTLINE_WT_OFM_BASE`, `SALTLINE_WT_TERRARIUM_BASE`, `SALTLINE_WT_OVERPASS` | public hosts | upstream base URLs (local stub / mirror; boot checks against `test/fixtures/wt`) |
 
 ### 1.9 After deploy (phase 0 leftovers on production)
 

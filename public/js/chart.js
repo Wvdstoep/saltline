@@ -87,7 +87,7 @@ export class Chart {
     this.center = { lat: 54, lon: 3 }; this.zoom = 5;
     this.W = 0; this.H = 0; this.dpr = 1;
     this.route = []; this.track = []; this.mode = 'route';
-    this.layers = { base: true, tiles: true, seamarks: true, lanes: true, ai: true, jobs: true, track: true, storms: true, fishing: true, platforms: true, harbors: true, ships: true, wrecks: true, rescues: true, market: false };
+    this.layers = { base: true, tiles: true, seamarks: true, lanes: true, ai: true, jobs: true, track: true, storms: true, fishing: true, platforms: true, harbors: true, ships: true, wrecks: true, rescues: true, market: false, fleet: true }; // fleet: v6 (fleet.js drawChartLayer)
     this.base = { world: null, region: null };
     this.tiles = new Map(); this.tilesDrawn = 0; this.seaDrawn = 0;
     this.jobsTimer = null; this.drawTimer = null;
@@ -289,6 +289,7 @@ export class Chart {
     this.drawRoute();
     if (this.layers.ai) this.drawAi();
     if (this.layers.ships) this.drawShips();
+    if (this.layers.fleet) this.app.fleetUi?.drawChartLayer(this, this.ctx); // v6: your ships (routes, ETA) and others' fleet ships
     if (this.layers.rescues) this.drawRescues();
     this.drawMe();
     if (this.layers.harbors) this.drawHarbors();
@@ -809,6 +810,7 @@ export class Chart {
     for (const o of a.others?.values?.() || []) { const c = o.cur || o; consider(c.lat, c.lon, { kind: 'player', text: `${o.name} · ${SHIP_CLASSES[o.cls]?.name || o.cls || 'ship'}`, data: o }); }
     for (const c of a.cutters?.values?.() || []) { const cur = c.cur || c; consider(cur.lat, cur.lon, { kind: 'cutter', text: `${c.name || 'Coast guard'} · ${c.state || 'patrol'}`, data: c }); }
     for (const r of collectRescues(a)) consider(r.lat, r.lon, { kind: 'rescue', text: `SAR ${r.kind} → ${r.playerName || ''}`, data: r });
+    if (this.layers.fleet) this.app.fleetUi?.chartHits(consider); // v6 fleet ships
     return best;
   }
   click(x, y) {
@@ -900,6 +902,7 @@ export class Chart {
     const a = this.app, s = a.ship, d = hit.data;
     this.openPopup(hit.lat, hit.lon, (head, body) => {
       const b = document.createElement('b'); b.textContent = hit.kind === 'ai' ? d.name : hit.kind === 'cutter' ? (d.name || 'Coast guard cutter') : hit.kind === 'rescue' ? `SAR ${d.kind}` : d.name; head.appendChild(b);
+      if (hit.kind === 'fleet') { this.app.fleetUi?.chartPopup(hit, body); return; } // v6
       const lines = [];
       const cur = d.cur || d;
       if (hit.kind === 'ai' && d.live) { // live AIS: the full card from the 3D layer when it knows the vessel, else what the box query gave
@@ -955,6 +958,7 @@ export class Chart {
     on('chartSail', () => this.sailRoute());
     on('chartSeamarks', () => this.setLayer('seamarks', !this.layers.seamarks));
     on('chartBase', () => this.setLayer('base', !this.layers.base));
+    on('chartFleet', () => this.setLayer('fleet', !this.layers.fleet));
     on('chartTilesBtn', () => this.setLayer('tiles', !this.layers.tiles));
     on('chartClose', () => this.app.hud?.toggleChart ? this.app.hud.toggleChart() : this.close());
     this.syncButtons();
@@ -970,6 +974,7 @@ export class Chart {
     }
     const s = q('chartSeamarks'); if (s) s.classList.toggle('on', this.layers.seamarks);
     const b = q('chartBase'); if (b) b.classList.toggle('on', this.layers.base);
+    const fl = q('chartFleet'); if (fl) fl.classList.toggle('on', this.layers.fleet);
     const t = q('chartTilesBtn'); if (t) t.classList.toggle('on', this.layers.tiles);
   }
 }

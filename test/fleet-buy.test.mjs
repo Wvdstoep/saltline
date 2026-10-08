@@ -8,7 +8,7 @@ import { destination } from '../shared/geo.js';
 import { SHIP_CLASSES } from '../shared/constants.js';
 import { berthFeePerDay } from '../server/economy.js';
 
-const PHASE2 = { skip: 'needs game.js wiring (phase 2)' };
+const PHASE2 = {};
 const ROT = harborById('rotterdam');
 function rich(o) { const g = new FakeGame(o); const j = g.join('Ann', { money: 200000 }); return { g, ...j, f: g.fleet }; }
 const book = (p, g, vid) => (p.office.book.days[dayKey(g.simTime)] || {})[vid] || {};

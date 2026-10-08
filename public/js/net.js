@@ -53,7 +53,7 @@ export class Net {
     const now = performance.now();
     if (now - this.lastStateSent < 95) return;
     this.lastStateSent = now;
-    this.send({ t: 'state', lat: s.lat, lon: s.lon, hdg: s.hdg, spd: s.spd, throttle: s.throttle, rudder: s.rudder });
+    this.send({ t: 'state', lat: s.lat, lon: s.lon, hdg: s.hdg, spd: s.spd, throttle: s.throttle, rudder: s.rudder, vid: this.vid ?? null }); // v6: vid set by main.js onYou
   }
   // Envelope fields go last so an extra payload field can never clobber `t` / `action`.
   action(action, extra = {}) { this.send({ ...extra, t: 'action', action }); }

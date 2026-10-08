@@ -103,7 +103,7 @@ export function startPrefetch({ game, wt, harbors = HARBORS, log = () => {}, tic
       for (const { s, online, p } of ships) if (p && !online) ring(WT.Z_DETAIL, s.lat, s.lon, PREFETCH.OFFLINE_M, PRIO.P3);
       // P4: warm-up, one harbour per tick, only when everything else is done and the box is idle
       const info = wt.sources?.sourceInfo?.() || {};
-      if (wt.queued() === 0 && wt.healthy() && (info.today?.ofm ?? 0) < PREFETCH.P4_DAILY && st.lagMs <= 50 && loadavg() <= 3 && warmOrder.length) {
+      if (wt.queued() === 0 && wt.healthy() && (info.today?.ofm ?? 0) < PREFETCH.P4_DAILY && st.lagMs <= 50 && loadavg() / os.cpus().length <= 0.75 && warmOrder.length) {
         const h = warmOrder[warmIdx % warmOrder.length]; warmIdx++; st.warmHarbors++;
         warmHarbor(h);
       } else st.skippedP4++;

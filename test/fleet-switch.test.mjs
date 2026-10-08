@@ -8,7 +8,7 @@ import { destination, haversine } from '../shared/geo.js';
 import { spotProblem, separation } from '../server/safespot.js';
 import { SHIP_CLASSES } from '../shared/constants.js';
 
-const PHASE2 = { skip: 'needs game.js wiring (phase 2)' };
+const PHASE2 = {};
 function setup(o = {}) { const g = new FakeGame(o); const j = g.join('Ann', { money: 100000 }); return { g, f: g.fleet, ...j }; }
 const cool = (p) => { p.office.lastSwitchAt = 0; };
 
@@ -170,4 +170,37 @@ test('real game: switch through onAction, then the old ship is stepped by her ca
   assert.equal(p.ship.cls, 'trawler'); assert.equal(co.cap.phase, 'idle');
   for (let i = 0; i < 20; i++) g.tick(0.1);
   assert.ok(co.shipTime > g.simTime - 10);
+});
+
+test('real game: connect sends the FleetView right after the welcome (§10.2: chip, Office and HQ have data at once)', PHASE2, async () => {
+  const { Game } = await import('../server/game.js');
+  const { World } = await import('../server/world.js');
+  const { carvingsForWorld } = await import('../server/harbors.js');
+  process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
+  const g = new Game(new World().load(carvingsForWorld(), () => {}), () => {}, { stateFile: '/nonexistent/saltline-fleet-connect.json' }); g.saveState = () => {};
+  const sent = [];
+  const p = g.connect({ readyState: 1, send(s) { sent.push(JSON.parse(s)); }, close() {} }, null, 'Cy');
+  const kinds = sent.map((m) => m.t);
+  assert.equal(kinds[0], 'welcome');
+  const fl = sent.find((m) => m.t === 'fleet');
+  assert.ok(fl, `no fleet message on connect: ${kinds.join(',')}`);
+  assert.equal(fl.fleet.vessels.length, 1); assert.equal(fl.fleet.vessels[0].id, p.aboard); assert.equal(fl.fleet.home, 'rotterdam');
+});
+
+test('after a remote switch: the view keeps the launch fee during the cooldown and a fresh view is pushed when it ends', () => {
+  const { g, f, p, ws } = setup();
+  const home = p.vessel;
+  const tr = g.addVessel(p, { cls: 'trawler', at: destination(p.ship.lat, p.ship.lon, 270, 100000) }); tr.cap.phase = 'anchored';
+  p.online = true;
+  f.onAction(p, { action: 'switch_ship', vesselId: tr.id });
+  assert.equal(p.aboard, tr.id);
+  const back = f.fleetView(p).vessels.find((v) => v.id === home.id);
+  assert.equal(back.can.helm, 'One moment — the launch is still coming back.');
+  assert.equal(back.can.helmFee, 450, 'the dialog shows the real fee, not "close by — no fee"');
+  const n0 = ws.sent.filter((m) => m.t === 'fleet').length;
+  p.office.lastSwitchAt = Date.now() - 10001; f.sentAt.set(p.id, 0);
+  f.tick(0.1);
+  const after = ws.sent.filter((m) => m.t === 'fleet');
+  assert.ok(after.length > n0, 'a fleet view is pushed when the cooldown ends');
+  assert.equal(after.at(-1).fleet.vessels.find((v) => v.id === home.id).can.helm, true);
 });

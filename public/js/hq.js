@@ -366,7 +366,7 @@ export class HqMap {
       this.hit.push({ id: s.id, x: q.x, y: q.y });
     }
     for (const q of placed) {
-      const s = q.s, c = q.cell, ly = c.y - (c.n - 1 - q.i) * 18 + (c.n > 1 ? ((c.n - 1) * 18) / 2 : 0);
+      const s = q.s, c = q.cell, ly = c.y - (c.n - 1 - q.i) * 18;   // stacked upwards: the home label sits below the marker
       label(g, `${s.name}${s.aboard ? ' (you)' : s.state === 'laid_up' ? ' (laid up)' : ''}`, c.x + 6 + c.n * 12, ly, s.aboard ? '#ffffff' : '#dbe8f2', true);
     }
   }

@@ -746,15 +746,15 @@ export class Fleet {
     if (!t || t.ownerId !== p.id) return { ok: false, why: 'That is not your ship.' };
     if (t.status !== 'active') return { ok: false, why: `${t.name} is laid up — recommission her first.` };
     if (t.id === p.aboard) return { ok: false, why: null, silent: true };
-    if (Date.now() - (p.office.lastSwitchAt || 0) < FLEET.SWITCH_COOLDOWN_MS) return { ok: false, why: 'One moment — the launch is still coming back.' };
+    const same = !!p.docked && p.docked === t.docked;
+    const distM = haversine(p.ship.lat, p.ship.lon, t.ship.lat, t.ship.lon);
+    const fee = same ? 0 : transferFee(distM);   // computed first: the HQ/dialog show the fee even while a check below refuses
+    if (Date.now() - (p.office.lastSwitchAt || 0) < FLEET.SWITCH_COOLDOWN_MS) return { ok: false, why: 'One moment — the launch is still coming back.', fee, distM };
     if (p.hail) return { ok: false, why: 'Not with the coast guard on the radio.' };
     if (p.rescue || p.flooding >= 1) return { ok: false, why: 'You are in the life raft.' };
     if (p.assist || t.assist) return { ok: false, why: 'The tugs have her — wait until she is alongside.' };
     if (p.flooding >= FLEET.NO_SWITCH_FLOODING) return { ok: false, why: 'Not now — she is taking water. Patch the hull (K) first.' };
     if (t.flooding >= 1) return { ok: false, why: `${t.name} is going down.` };
-    const same = !!p.docked && p.docked === t.docked;
-    const distM = haversine(p.ship.lat, p.ship.lon, t.ship.lat, t.ship.lon);
-    const fee = same ? 0 : transferFee(distM);
     if (fee > 0 && p.office.owed > 0) return { ok: false, why: `Settle the office's unpaid bills first (${fmt(p.office.owed)} cr).`, fee, distM };
     if (fee > 0 && Math.floor(p.money) < fee) return { ok: false, why: `${distM > 200000 ? 'A helicopter' : 'A launch'} out to ${t.name} (${fmt(distM / 1000)} km) costs ${fmt(fee)} cr. You have ${fmt(Math.floor(p.money))}.`, fee, distM };
     return { ok: true, fee, distM, same };
@@ -798,7 +798,7 @@ export class Fleet {
     a.warp = 1; a.warpRouted = false; a.warpRun = null;
     if (old.fishing && !(order && order.type === 'contract') && !old.docked) { try { g.setFishing(a, false); } catch { old.fishing = false; } }
     captain.setOrder(this, old, order);
-    p.office.lastSwitchAt = Date.now();
+    p.office.lastSwitchAt = Date.now(); p.office.cdSent = false;
     p.moveBudget = null; p.lastState = Date.now(); p.rejects = 0; p.shallowSince = 0; p.contactSeen = null;
     t.lastValid = { lat: t.ship.lat, lon: t.ship.lon };
     g.resetWarp?.(p);
@@ -912,12 +912,15 @@ export class Fleet {
       if (this.isAboard(v)) { rt.acc = 0; continue; }   // her person sails her (never bank time for when she is left)
       rt.acc += dt;
       const d = rt.acc; rt.acc = 0;
+      rt.far = !v.assist && !near.has(v.id);   // phase-2 decision: far ships integrate in FAR_SUBSTEP_S steps (perf budget)
       try { captain.stepVessel(this, v, d); } catch (e) { g.log?.(`[fleet] step ${v.id} failed: ${e.stack || e}`); }
       stepped++;
       if (!v.docked) { const p = this.ownerOf(v); if (p) this.dirty(p); }
     }
     if (g.simTime - this.lastDaily >= 60) { this.lastDaily = g.simTime; this.daily(g.simTime); }
     const now = Date.now();
+    // the switch cooldown ran out: push a fresh view so the helm buttons / dialog enable again (nothing else may change)
+    for (const p of g.byId.values()) { const o = p.office; if (p.online && o && o.lastSwitchAt && !o.cdSent && now - o.lastSwitchAt >= FLEET.SWITCH_COOLDOWN_MS) { o.cdSent = true; this.dirty(p); } }
     for (const p of g.byId.values()) {
       if (!p.online || !p.office) continue;
       const last = this.sentAt.get(p.id) || 0;
