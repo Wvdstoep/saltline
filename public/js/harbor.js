@@ -17,7 +17,7 @@ import { toLocal, fromLocal } from '/shared/geo.js';
 import { PATCH } from '/shared/constants.js';
 import { makeLabel, disposeGroup, buildPlatform } from './ship.js';
 import { PartBuilder, hashStr, rng, cleanRing, ringArea, pointInRing, ringCentroid, ringBBox, extrudeRing, splitGroups, textTexture } from './models.js';
-import { surfaceHeightAt } from './ocean.js';
+import { surfaceHeightAt } from './ocean2.js';
 import { patchHeightAt, patchMaskAt } from './harborgeom.js';
 import { patchEntry, drapeState } from './terrain.js';
 

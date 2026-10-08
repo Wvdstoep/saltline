@@ -69,7 +69,9 @@ app.get('/api/maptile/:layer/:z/:x/:y.png', async (req, res) => {
   if (!['osm', 'seamark'].includes(layer) || ![z, x, y].every(Number.isInteger) || z < 2 || z > 18 || x >= 2 ** z || y >= 2 ** z) return res.status(400).end();
   try {
     const t = await getTile(layer, z, x, y);
-    if (!t) return res.status(404).end();
+    // Not available right now (upstream unreachable / backing off, or no such tile): 204 + no-store, so the browser
+    // asks again later and does not log a console error per tile; the chart and the drape treat it as a miss.
+    if (!t) { res.setHeader('Cache-Control', 'no-store'); return res.status(204).end(); }
     res.setHeader('Content-Type', t.type || 'image/png'); res.setHeader('Cache-Control', 'public, max-age=86400'); res.end(t.buf);
   } catch (e) { res.status(502).end(); }
 });

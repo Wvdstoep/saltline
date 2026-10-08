@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { SHIP_CLASSES } from '/shared/constants.js';
 import { PartBuilder, noiseTexture } from './models.js';
-import { surfaceHeightAt, oceanState } from './ocean.js';
+import { surfaceHeightAt, oceanState } from './ocean2.js';
 
 // ----------------------------------------------------------------------------------------------- wear shader
 // shipPos: per-vertex position in the SHIP group's frame, baked at build time (fixed to the plating, y = up, so the

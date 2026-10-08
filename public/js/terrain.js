@@ -20,7 +20,7 @@ import * as THREE from 'three';
 import { TILE, LAYERS, PATCH, decodeHeight, decodePatchHeight, GEO } from '/shared/constants.js';
 import { toLocal } from '/shared/geo.js';
 import { patchHeightAt, computeSDF } from './harborgeom.js';
-import { setShoreField } from './ocean.js';
+import { setShoreField } from './ocean2.js';
 
 export const VSCALE = 1; // the world is rendered 1:1 — real metres horizontally and vertically
 /** Default chase camera for the 1:1 world (§4): main.js applies it. */

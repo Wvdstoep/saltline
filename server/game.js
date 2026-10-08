@@ -176,12 +176,13 @@ export class Game {
     let p = tok ? this.players.get(tok) : null;
     if (!p) {
       const h = harborById(START_HARBOR);
-      const spawn = this.spawnPointNear(h);
+      const berth = this.startBerth(h, 'coaster');
+      const spawn = berth || this.spawnPointNear(h);
       p = {
         id: shortId(), token: token(), name: cleanName(name) || `Skipper-${Math.floor(Math.random() * 900 + 100)}`,
-        createdAt: Date.now(), ship: { cls: 'coaster', lat: spawn.lat, lon: spawn.lon, hdg: 0, spd: 0, throttle: 0, rudder: 0 },
+        createdAt: Date.now(), ship: { cls: 'coaster', lat: spawn.lat, lon: spawn.lon, hdg: berth ? berth.hdg : 0, spd: 0, throttle: 0, rudder: 0 },
         cond: 100, flooding: 0, fuel: SHIP_CLASSES.coaster.fuelCap, cargo: [], money: START_MONEY, wanted: 0, wantedAt: 0,
-        kits: 1, jobs: [], convoyId: null, docked: START_HARBOR, dockedAt: this.simTime, berth: null, assist: null, serviceDue: this.simTime + SERVICE_INTERVAL_S, lastInspected: -1e9, lastSeen: Date.now(),
+        kits: 1, jobs: [], convoyId: null, docked: START_HARBOR, dockedAt: this.simTime, berth, assist: null, serviceDue: this.simTime + SERVICE_INTERVAL_S, lastInspected: -1e9, lastSeen: Date.now(),
         stats: { delivered: 0, earned: 0, sunk: 0, inspected: 0, fined: 0, caught: 0, boarded: 0, pirated: 0, distanceKm: 0, collisions: 0 },
         lastValid: { lat: spawn.lat, lon: spawn.lon }, shallowSince: 0, log: [],
         warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1,
@@ -204,6 +205,23 @@ export class Game {
       } catch (e) { this.log(`[game] harborAnchor ${h.id} failed: ${e.message}`); }
     }
     return { lat: h.lat, lon: h.lon, built: false };
+  }
+  // v0.4: a new skipper starts moored alongside a quay of the start harbour (built geometry only) — the least used
+  // fitting berth, nearest the anchor — so going ashore walks down the gangway onto the real quay. Without built
+  // geometry (or no fitting berth) the ship lies at the anchor as before and the launch takes the crew ashore.
+  startBerth(h, cls) {
+    const geom = h && this.harborGeom(h.id);
+    if (!geom || !Array.isArray(geom.berths) || !geom.berths.length) return null;
+    const probe = { ship: { cls } };
+    const fits = geom.berths.filter((b) => b && Number.isFinite(b.lat) && Number.isFinite(b.lon) && Number.isFinite(b.hdg) && !this.berthFits(probe, b));
+    if (!fits.length) return null;
+    const used = new Map();
+    for (const q of this.players.values()) if (q.docked === h.id && q.berth?.id) used.set(q.berth.id, (used.get(q.berth.id) || 0) + 1);
+    const a = this.harborAnchor(h);
+    const dist = (b) => haversine(a.lat, a.lon, b.lat, b.lon);
+    fits.sort((x, y) => (used.get(x.id) || 0) - (used.get(y.id) || 0) || dist(x) - dist(y));
+    const b = fits[0];
+    return { harbor: h.id, id: b.id, name: b.name, hdg: normDeg(b.hdg), lat: b.lat, lon: b.lon, depth: b.depth, length: b.length };
   }
   spawnPointNear(h) {
     const a = this.harborAnchor(h);
@@ -259,6 +277,7 @@ export class Game {
       waveH: round2(w.waves.height), waveDir: Math.round(w.waves.dir), wavePeriod: round1(w.waves.period),
       swellH: round2(w.swell.height), swellDir: Math.round(w.swell.dir), swellPeriod: round1(w.swell.period),
       visibility: Math.round(w.visibility), pressure: round1(w.pressure), temp: round1(w.temp), cloud: round2(w.cloud), source: w.source,
+      sst: Number.isFinite(w.sst) ? round1(w.sst) : null, curSpd: w.current ? round2(w.current.speed) : null, curDir: w.current ? Math.round(w.current.dir) : null,
     };
   }
   worldInfo() {
@@ -1524,6 +1543,7 @@ export class Game {
       wind: { u, v, spd, dir, gust: Math.max(spd, num(w.gust, spd)) }, sea: Math.min(1, waves.height / 6), storm, rain, waves, swell,
       visibility: clamp(num(s.visibility, 20000), 50, 100000), pressure: num(s.pressure, 1013), temp: num(s.temp, 12), cloud: clamp(num(s.cloud, 0.5), 0, 1),
       source: s.source || 'open-meteo', fetchedAt: s.fetchedAt,
+      windWaves: s.windWaves || null, current: s.current || null, sst: Number.isFinite(s.sst) ? s.sst : null,
     };
   }
   // At most one request per 0.5° cell per 30 s from the hot path (the service dedups too; this keeps the Map small).

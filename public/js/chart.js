@@ -14,6 +14,7 @@ export function tileUrl(kind, z, x, y) { return `/api/maptile/${kind === 'sea' |
 const OSM_URL = (z, x, y) => tileUrl('osm', z, x, y);
 const SEA_URL = (z, x, y) => tileUrl('seamark', z, x, y);
 const TILE_RETRY_MS = 300000;
+const TILE_MISS = Object.freeze({ img: null, state: 'err', at: 0 }); // not requested (tiles unavailable, backing off)
 
 const clampLat = (v) => Math.max(-85.05, Math.min(85.05, v));
 const mx = (lon) => (lon + 180) / 360;                                                        // 0..1 across the world
@@ -209,10 +210,17 @@ export class Chart {
       if (t.state === 'err' && performance.now() - t.at > TILE_RETRY_MS) t = null;
       else { this.tiles.delete(key); this.tiles.set(key, t); return t; }         // refresh LRU position
     }
+    // every tile failing (no internet / tile server backing off): ask for no new tiles for a while (30 s doubling to
+    // 10 min) instead of one request per tile per pan; the base chart stays visible underneath
+    if (this.tileDownUntil > performance.now()) return TILE_MISS;
     t = { img: new Image(), state: 'loading', at: performance.now() };
     t.img.decoding = 'async';
-    t.img.onload = () => { t.state = 'ok'; this.requestDraw(); };
-    t.img.onerror = () => { t.state = 'err'; t.at = performance.now(); };        // the base chart stays visible underneath
+    t.img.onload = () => { t.state = 'ok'; this.tileFails = 0; this.tileBackoff = 0; this.requestDraw(); };
+    t.img.onerror = () => {
+      t.state = 'err'; t.at = performance.now();
+      this.tileFails = (this.tileFails || 0) + 1;
+      if (this.tileFails >= 6) { this.tileBackoff = Math.min(600000, (this.tileBackoff || 15000) * 2); this.tileDownUntil = performance.now() + this.tileBackoff; this.tileFails = 0; }
+    };
     t.img.src = (kind === 'sea' ? SEA_URL : OSM_URL)(z, x, y);
     this.tiles.set(key, t);
     while (this.tiles.size > MAX_TILES) { const k = this.tiles.keys().next().value; this.tiles.delete(k); }

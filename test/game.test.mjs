@@ -53,6 +53,19 @@ test('new players spawn docked at Rotterdam with the starter coaster', () => {
   assert.equal(last(ws, 'welcome').world.harbors.length > 80, true);
   assert.ok(last(ws, 'harbor').harbor.jobs.length >= 3);
 });
+test('new players start moored at the least used fitting quay of a built start harbour, else at the anchor', () => {
+  const b1 = mkBerth('rotterdam-b1', 'Berth 1', 90, 300), b2 = mkBerth('rotterdam-b2', 'Berth 2', 90, 600);
+  const pont = mkBerth('rotterdam-b3', 'Pontoon', 90, 100, { kind: 'pontoon', depth: 4, length: 30 }), shallow = mkBerth('rotterdam-b4', 'Shallow', 90, 50, { depth: 2 });
+  const g = mkGame({ harborgeom: fakeGeom('rotterdam', [pont, shallow, b2, b1]) });
+  const a = join(g, 'Ann').p, b = join(g, 'Bob').p, c = join(g, 'Cy').p;
+  assert.equal(a.docked, 'rotterdam'); assert.equal(a.berth.id, 'rotterdam-b1', 'the fitting quay nearest the anchor first');
+  assert.equal(a.ship.lat, b1.lat); assert.equal(a.ship.lon, b1.lon); assert.equal(a.ship.hdg, 45); assert.equal(a.berth.harbor, 'rotterdam');
+  assert.equal(b.berth.id, 'rotterdam-b2', 'the next skipper gets a free quay, not a pontoon or a shallow berth');
+  assert.ok(['rotterdam-b1', 'rotterdam-b2'].includes(c.berth.id), 'all quays taken: share the least used one');
+  const g2 = mkGame({ harborgeom: fakeGeom('rotterdam', [pont]) }); const d = join(g2, 'Di').p;
+  assert.equal(d.berth, null); assert.ok(Math.abs(d.ship.lat - ROT.lat) < 1e-9, 'no fitting berth: at the anchor');
+  const e = join(mkGame(), 'Ed').p; assert.equal(e.berth, null); assert.equal(e.docked, 'rotterdam', 'no geometry: docked at the anchor');
+});
 test('accepting freight loads cargo, delivering at the destination pays', () => {
   const g = mkGame(); const { p, ws } = join(g, 'Bob');
   const job = freightJob(g, 1200);
@@ -255,8 +268,10 @@ test('storms raise local wind and sea state; offline voyages keep sailing', () =
 test('berthing: moor only alongside a berth within 60 m under 2 kn; the ship snaps to the berth and casts off beside it', () => {
   const b1 = mkBerth('rotterdam-b1', 'Berth 1', 90, 300);
   const g = mkGame({ harborgeom: fakeGeom('rotterdam', [b1]) }); const { p, ws } = join(g, 'Ann');
+  assert.equal(p.berth?.id, 'rotterdam-b1', 'a new skipper starts moored alongside the built quay');
   g.onAction(p, { action: 'undock' });
-  assert.ok(Math.abs(p.ship.lat - ROT.lat) < 1e-9 && Math.abs(p.ship.lon - ROT.lon) < 1e-9, 'legacy-free spawn at the built anchor');
+  const d0 = haversine(p.ship.lat, p.ship.lon, b1.lat, b1.lon);
+  assert.ok(d0 > 15 && d0 < 25, `first cast off ${d0.toFixed(1)} m off the start berth`);
   const far = destination(b1.lat, b1.lon, 180, 200); p.ship.lat = far.lat; p.ship.lon = far.lon; p.ship.spd = 1;
   g.onAction(p, { action: 'dock' });
   assert.ok(!p.docked); assert.ok(events(ws).some((t) => /alongside a berth/.test(t)), 'guidance when not at a berth');
@@ -405,7 +420,10 @@ test('snapshots carry nearby AI per player; you carries tide, extended weather a
   for (const k of ['windDir', 'windSpd', 'gust', 'sea', 'storm', 'rain', 'waveH', 'waveDir', 'wavePeriod', 'swellH', 'swellDir', 'swellPeriod', 'visibility', 'pressure', 'temp', 'cloud']) assert.ok(Number.isFinite(you.weather[k]), k);
   assert.equal(you.weather.source, 'synthetic'); assert.equal(you.nearBerth, null, 'docked: no berth guidance'); assert.equal(you.assist, null);
   g.onAction(p, { action: 'undock' }); const y2 = last(ws, 'you').you;
-  assert.equal(y2.nearBerth.id, 'rotterdam-b1'); assert.ok(y2.nearBerth.distM > 250 && y2.nearBerth.distM < 350 && y2.nearBerth.hdg === 45 && y2.nearBerth.depth === 12);
+  // the new skipper started at Berth 1, so casting off leaves the ship ~20 m off it
+  assert.equal(y2.nearBerth.id, 'rotterdam-b1'); assert.ok(y2.nearBerth.distM > 15 && y2.nearBerth.distM < 25 && y2.nearBerth.hdg === 45 && y2.nearBerth.depth === 12);
+  const anchorPt = destination(b1.lat, b1.lon, 270, 300); p.ship.lat = anchorPt.lat; p.ship.lon = anchorPt.lon; g.sendYou(p);
+  const y3 = last(ws, 'you').you; assert.ok(y3.nearBerth.distM > 250 && y3.nearBerth.distM < 350, 'distance follows the ship');
   p.ship.lat = 55; p.ship.lon = 3; g.sendYou(p); assert.equal(last(ws, 'you').you.nearBerth, null, 'beyond 2500 m');
   // a Game without traffic still produces valid snapshots
   const g2 = mkGame(); const { ws: ws2 } = join(g2, 'Ko'); g2.broadcastSnapshot(); assert.deepEqual(last(ws2, 'snap').ai, []);

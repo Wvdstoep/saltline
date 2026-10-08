@@ -10,7 +10,9 @@ import { GEO, SIM, SHIP_CLASSES, INTERACT, LAYERS, WARP } from '/shared/constant
 import { toLocal, fromLocal, haversine, bearing, unitsBetween, angleDiff, normDeg, fmtDistance } from '/shared/geo.js';
 import { stepShip, currentAt } from '/shared/physics.js';
 import { Net } from './net.js';
-import { Ocean } from './ocean.js';
+import { Ocean } from './ocean2.js';
+import { createMotion, stepMotion } from './motion.js';
+import { SoundEngine } from './sound.js';
 import { Terrain, VSCALE } from './terrain.js';
 import * as ShipMod from './ship.js';
 import * as HarborMod from './harbor.js';
@@ -60,6 +62,9 @@ class App {
     this.terrain = new Terrain(this.scene);
     this.geoms = new HarborGeomSet(); this.geomState = new Map(); // harbour id -> { state: 'loading'|'loaded'|'failed', t }
     this.weatherFx = new WeatherFX(this.scene, this.camera);
+    try { this.sound = new SoundEngine(); } catch (e) { console.warn('[sound] unavailable', e); this.sound = null; }
+    this.soundState = { view: 'deck', room: null, shipCls: 'coaster', throttle: 0, rpmFrac: 0, speedKn: 0, windSpd: 0, windRelDeg: 0, waveH: 0, rain: 0, storm: 0, night: 0, nearHarborM: null, nearShips: [], underway: false, docked: true, towing: false, warp: 1 };
+    this.lastNearHarbor = 0; this.lastFootstep = 0; this.shelterSet = false;
     this.origin = { lat: 52, lon: 4 };
     this.net = new Net({ status: (s) => this.onStatus(s), message: (m) => this.onMessage(m) });
     this.hud = new Hud(this);
@@ -304,6 +309,7 @@ class App {
     // Everything cached in the old frame shifts by -p so there is no frame of nothing: the camera keeps its offset
     // from the ship, and scenery is re-placed instead of thrown away and rebuilt 500 ms later.
     this.camera.position.x -= p.x; this.camera.position.z -= p.z;
+    this.ocean.shiftOrigin?.(p.x, p.z);
     if (this.camPrevTarget) { this.camPrevTarget.x -= p.x; this.camPrevTarget.z -= p.z; }
     this.terrain.setOrigin(this.origin);
     const mp = toLocal(this.ship.lat, this.ship.lon, this.origin);
@@ -314,6 +320,98 @@ class App {
     for (const w of this.wrecks) { const m = this.wreckMeshes.get(w.id); if (m) this.place(m, w.lat, w.lon, -2); }
     for (const o of [...this.others.values(), ...this.cutters.values(), ...this.ai.values(), ...this.rescues.values()]) { const wg = o.mesh.userData.wakeGroup; if (wg) wg.position.set(wg.position.x - p.x, wg.position.y, wg.position.z - p.z); }
     if (this.myMesh?.userData.wakeGroup) { const wg = this.myMesh.userData.wakeGroup; wg.position.set(wg.position.x - p.x, wg.position.y, wg.position.z - p.z); }
+  }
+  /** Calm water inside breakwaters: the share of 8 directions blocked by land/quays/breakwaters within 700 m (harbour SDF). */
+  shelterAt(x, z) {
+    const g = this.geoms; if (!g || !g.entries || !g.entries.size) return 0;
+    const ll = fromLocal(x, z, this.origin), s0 = g.sdfAt(ll.lat, ll.lon);
+    if (!s0) return 0;
+    if (s0.d < 0) return 1;
+    let blocked = 0;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2, dx = Math.sin(a), dz = -Math.cos(a);
+      let t = Math.max(4, s0.d);
+      while (t < 700) {
+        const q = fromLocal(x + dx * t, z + dz * t, this.origin), s = g.sdfAt(q.lat, q.lon);
+        if (!s) break;
+        if (s.d < 1) { blocked++; break; }
+        t += Math.max(5, s.d * 0.9);
+      }
+    }
+    return THREE.MathUtils.clamp((blocked / 8 - 0.35) / 0.5, 0, 1);
+  }
+  refreshShelter() { if (this.ocean.setShelter) this.ocean.setShelter((x, z) => this.shelterAt(x, z)); }
+  toggleMute() {
+    if (!this.sound) return;
+    this.sound.unlock(); this.sound.setMuted(!this.sound.muted);
+    this.syncSoundButton();
+    this.hud.event?.({ kind: 'info', text: this.sound.muted ? 'Sound off (N)' : 'Sound on (N) — Y sounds the horn' });
+  }
+  /** Frame-rate governor for the spectral ocean: a slow GPU steps the sea down (grid, foam target, spray, ripples) before
+   *  the game becomes unplayable, and steps it back up once there is headroom again. Hidden tabs and hitches are ignored. */
+  governOceanQuality(now) {
+    if (!this.ocean.setQuality) return;
+    const g = this.qGov || (this.qGov = { ema: 1 / 60, since: now, last: now, top: this.ocean.quality ?? 1 });
+    const dt = (now - g.last) / 1000; g.last = now;
+    if (dt <= 0 || dt > 3 || document.hidden) { g.since = Math.max(g.since, now - 2000); return; } // tab switch / hitch
+    g.ema += (dt - g.ema) * 0.05;
+    if (now - g.since < 4000) return;
+    const q = this.ocean.quality ?? 1;
+    if (g.ema > 1 / 24 && q > 0.2) { this.ocean.setQuality(q >= 0.75 ? 0.5 : 0.2); g.since = now; g.ema = 1 / 40; }
+    else if (g.ema > 1 / 24 && this.renderer.getPixelRatio() > 0.6) { // still slow on the lowest sea: shade fewer pixels
+      this.renderer.setPixelRatio(Math.max(0.6, this.renderer.getPixelRatio() - 0.25)); g.since = now; g.ema = 1 / 40;
+    }
+    else if (g.ema < 1 / 55 && q < g.top && now - g.since > 20000) { this.ocean.setQuality(q < 0.4 ? 0.5 : g.top); g.since = now; }
+  }
+  /** The sound toggle lives in the More menu (a floating button collided with the dock and the radar). */
+  ensureMuteButton() {
+    const b = document.getElementById('btnSound');
+    if (!b || b.dataset.wired || !this.sound) return;
+    b.dataset.wired = '1';
+    b.addEventListener('click', (e) => { e.stopPropagation(); this.toggleMute(); this.hud.closeMore?.(); });
+    this.syncSoundButton();
+  }
+  syncSoundButton() {
+    const b = document.getElementById('btnSound'); if (!b || !this.sound) return;
+    const m = this.sound.muted;
+    this.hud.setIcon?.(b.querySelector('.si'), m ? 'mute' : 'volume');
+    const l = b.querySelector('.lbl'); if (l) l.textContent = m ? 'Sound off (N)' : 'Sound on (N)';
+  }
+  updateSound(dt, now, ashore) {
+    const snd = this.sound; if (!snd || !this.ship || !this.you) return;
+    if (!this.shelterSet && this.geoms?.entries?.size) { this.shelterSet = true; this.refreshShelter(); }
+    this.ensureMuteButton();
+    const s = this.ship, you = this.you, st = this.soundState, w = this.wx || {};
+    let view = 'deck', room = null;
+    if (ashore) view = 'ashore';
+    else if (this.interior.active) {
+      view = 'interior';
+      const I = this.interior, r = I.roomAt?.(I.pos.x, I.pos.z, I.y), id = String(r?.id || '');
+      room = id.startsWith('cabin') ? 'cabin' : id === 'engine' ? 'engine' : (id === 'bridge' || id === 'wheelhouse') ? 'bridge' : (id === 'mess' || id === 'saloon' || id === 'galley') ? 'mess' : 'passage';
+      if (room === 'bridge') view = 'bridge';
+      const moving = I.keys?.size > 0 || this.touchHelm?.stick?.active;
+      if (moving && now - this.lastFootstep > (I.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep(room === 'engine' ? 'grating' : room === 'cabin' ? 'wood' : 'steel'); }
+    } else if (this.hud.chartOpen?.()) view = 'chart';
+    else if (this.cam.mode === 2) view = 'bridge';
+    if (ashore && this.ashore?.keys?.size > 0 && now - this.lastFootstep > (this.ashore.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep('concrete'); }
+    st.view = view; st.room = room; st.shipCls = s.cls; st.throttle = s.throttle || 0; st.rpmFrac = Math.min(1, Math.abs(s.throttle || 0));
+    st.speedKn = Math.abs(s.spd || 0);
+    const wspd = this.localWind?.spd ?? this.wind?.spd ?? 0, wdir = this.localWind?.dir ?? this.wind?.dir ?? 0;
+    st.windSpd = wspd; st.windRelDeg = angleDiff(s.hdg, wdir);
+    st.waveH = Number(w.waveH) || 0; st.rain = Number(w.rain) || 0; st.storm = Number(w.storm) || 0; st.night = this.night || 0;
+    st.underway = Math.abs(s.spd || 0) > 0.5 || Math.abs(s.throttle || 0) > 0.05; st.docked = !!you.docked; st.towing = !!you.towing; st.warp = this.warp || 1;
+    if (now - this.lastNearHarbor > 1000) {
+      this.lastNearHarbor = now;
+      let nd = Infinity; for (const hb of this.world.harbors || []) { const d = haversine(s.lat, s.lon, hb.lat, hb.lon); if (d < nd) nd = d; }
+      st.nearHarborM = Number.isFinite(nd) ? nd : null;
+      const ships = [];
+      const add = (o, cls) => { if (!o?.cur) return; const d = haversine(s.lat, s.lon, o.cur.lat, o.cur.lon); if (d > 2500) return; ships.push({ id: o.id, distM: d, bearingRel: angleDiff(s.hdg, bearing(s.lat, s.lon, o.cur.lat, o.cur.lon)), cls, speedKn: Math.abs(o.cur.spd || 0) }); };
+      for (const o of this.others.values()) add(o, o.cls);
+      for (const a of this.ai.values()) add(a, a.cls);
+      for (const c of this.cutters.values()) add(c, 'pilot');
+      ships.sort((a, b) => a.distM - b.distM); st.nearShips = ships.slice(0, 4);
+    }
+    snd.update(st, dt);
   }
   heightLocal(x, z) { const ll = fromLocal(x, z, this.origin); return this.terrain.heightAt(ll.lat, ll.lon); }
   place(obj, lat, lon, y = 0) { const p = toLocal(lat, lon, this.origin); obj.position.set(p.x, y, p.z); return p; }
@@ -396,6 +494,8 @@ class App {
         if (this.hud.transientOpen()) this.hud.closeOverlays(); else if (this.hud.harborOpen()) this.hud.hideHarbor(); return; // chart/ships/help first, harbour panel next
       }
       if (k === 'g') return this.toggleAshore();
+      if (k === 'y' && !this.interior.active && !this.ashore?.active) { this.sound?.unlock(); this.sound?.horn(e.shiftKey ? 'short' : 'long'); return; }
+      if (k === 'n' && !this.interior.active && !this.ashore?.active) { this.toggleMute(); return; }
       if (k === 'i') return this.toggleInterior();
       // the walkers (on foot ashore, below decks) get their keys first: WASD walk, E use, V view, T taxi ashore …
       if (this.ashore?.active && this.ashore.handleKey(e)) return;
@@ -745,7 +845,7 @@ class App {
     const now = performance.now();
     if (now - this.lastGrounding > 4000) { // always tell the player; only a real bump costs hull condition
       this.lastGrounding = now;
-      if (bump) this.net.action('grounding');
+      if (bump) { this.net.action('grounding'); this.sound?.event('grounding', Math.min(1, Math.abs(s.spd) / 6)); }
       this.hud.alert('ground', 'AGROUND — reverse off (S)', ''); setTimeout(() => this.hud.clearAlert('ground'), 4000);
     }
   }
@@ -774,7 +874,7 @@ class App {
     this.flash();
     const kindTxt = res.kind === 'ship' ? 'another hull' : res.kind === 'breakwater' ? 'the breakwater' : res.mask === 1 ? 'the shore' : 'the quay';
     this.hud.alert('coll', `COLLISION — hit ${kindTxt} at ${res.speedKn.toFixed(1)} kn`, ''); setTimeout(() => this.hud.clearAlert('coll'), 3500);
-    if (now - this.lastCollision > COLLISION_RATE_MS) { this.lastCollision = now; this.net.action('collision', { speedKn: res.speedKn, kind: res.kind || 'quay' }); }
+    if (now - this.lastCollision > COLLISION_RATE_MS) { this.lastCollision = now; this.net.action('collision', { speedKn: res.speedKn, kind: res.kind || 'quay' }); this.sound?.event('collision', Math.min(1, (res.speedKn || 1) / 8)); }
   }
   interp(o, now) {
     const S = o.samples; if (!S.length) return;
@@ -795,24 +895,28 @@ class App {
   }
   shipVisual(mesh, lat, lon, hdg, spd, vis, flooding, dt, docked) {
     const p = this.place(mesh, lat, lon, 0);
-    const L = mesh.userData.length, B = mesh.userData.beam;
-    const h = hdg * D2R, fx = Math.sin(h), fz = -Math.cos(h);
-    const t = this.time;
-    const wave = (x, z) => this.ocean.heightAt(x, z, t);
-    const hb = wave(p.x + fx * L * 0.4, p.z + fz * L * 0.4), hs = wave(p.x - fx * L * 0.4, p.z - fz * L * 0.4);
-    const hp = wave(p.x - fz * B * 0.5, p.z + fx * B * 0.5), hst = wave(p.x + fz * B * 0.5, p.z - fx * B * 0.5);
-    const k = Math.min(1, dt * 2.5);
-    const damp = docked ? 0.3 : 1;
-    vis.heave += ((hb + hs + hp + hst) / 4 * damp - vis.heave) * k;
-    vis.pitch += (Math.atan2(hb - hs, L * 0.8) * damp - vis.pitch) * k;
-    vis.roll += (Math.atan2(hp - hst, B) * damp + flooding * 0.25 - vis.roll) * k;
+    const ud = mesh.userData, h = hdg * D2R;
+    // per-class second-order heave / pitch / roll driven by the real wave field (motion.js); one state per mesh
+    if (!vis.motion || vis.motionCls !== ud.cls) { vis.motion = createMotion(ud.cls); vis.motionCls = ud.cls; }
+    const C = SHIP_CLASSES[ud.cls];
+    const own = mesh === this.myMesh;
+    const ctx = vis.ctx || (vis.ctx = {});
+    ctx.length = ud.length; ctx.beam = ud.beam; ctx.draft = ud.draft; ctx.freeboard = ud.freeboard;
+    ctx.displacementT = C?.displacement || Math.max(5, ud.length * ud.beam * (ud.draft || 2) * 0.55);
+    ctx.speedKn = spd || 0; ctx.hdgRad = h; ctx.x = p.x; ctx.z = p.z; ctx.time = this.time; ctx.ocean = this.ocean;
+    ctx.throttle = own ? (this.ship?.throttle || 0) : 0; ctx.rudder = own ? (this.ship?.rudder || 0) : 0;
+    ctx.flooding = flooding || 0; ctx.docked = !!docked;
+    ctx.windSpd = this.localWind?.spd ?? this.wind?.spd ?? 0; ctx.windDir = this.localWind?.dir ?? this.wind?.dir ?? 0;
+    ctx.sails = own ? this.you?.sailsUp !== false : true;
+    const r = stepMotion(vis.motion, ctx, dt);
+    vis.heave = r.heave; vis.pitch = r.pitch; vis.roll = r.roll; vis.slam = r.slam; vis.greenWater = r.greenWater;
+    if (own && r.slam > 0.5 && this.time - (this.lastSlamSound || 0) > 1.5) { this.lastSlamSound = this.time; this.sound?.event('splash', r.slam); }
     const sink = flooding >= 1 ? Math.min(60, (vis.sinkT = (vis.sinkT || 0) + dt) * 6) : 0;
     if (flooding < 1) vis.sinkT = 0;
-    mesh.position.y = vis.heave + this.tideLevel - flooding * (mesh.userData.freeboard + 2) - sink;
-    mesh.rotation.set(vis.pitch, -h, vis.roll, 'YXZ');
+    mesh.position.y = r.heave + this.tideLevel - flooding * (ud.freeboard + 2) - sink; // the flooding list is already in roll
+    mesh.rotation.set(r.pitch, -h, r.roll, 'YXZ');
     mesh.userData.setWake?.(Math.abs(spd) / 10);
     mesh.userData.setWaterY?.(mesh.position.y);
-    const ud = mesh.userData;
     if (ud.updateWake) {
       if (ud.wakeGroup && !ud.wakeGroup.parent) this.scene.add(ud.wakeGroup);
       ud.updateWake(dt, mesh.position, h, flooding >= 1 ? 0 : spd);
@@ -848,7 +952,7 @@ class App {
       this.camera.position.copy(bp); const look = new THREE.Vector3(Math.sin(la), -0.05, -Math.cos(la)).add(bp); this.camera.lookAt(look); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
     }
     if (this.myMesh.userData.label) this.myMesh.userData.label.visible = true;
-    const wave = this.ocean.heightAt(pos.x, pos.z, this.time) + this.tideLevel;
+    const wave = this.ocean.heightAt(pos.x, pos.z, this.time);
     pos.y = Math.max(pos.y, wave + 4);
     this.camera.position.lerp(pos, Math.min(1, dt * 6));
     this.camera.lookAt(target);
@@ -858,11 +962,11 @@ class App {
     const r = this.you.rescue;
     if (!this.raft) { this.raft = buildRaft(); this.scene.add(this.raft); }
     const p = this.place(this.raft, r.lat, r.lon, 0);
-    const wave = this.ocean.heightAt(p.x, p.z, this.time) + this.tideLevel;
+    const wave = this.ocean.heightAt(p.x, p.z, this.time);
     this.raft.position.y = wave + 0.2; this.raft.rotation.set(Math.sin(this.time * 0.7) * 0.08, this.time * 0.05, Math.cos(this.time * 0.9) * 0.08);
     this.cam.yaw += dt * 0.12;
     const pos = new THREE.Vector3(Math.sin(this.cam.yaw) * 16, 5, Math.cos(this.cam.yaw) * 16).add(this.raft.position);
-    pos.y = Math.max(pos.y, this.ocean.heightAt(pos.x, pos.z, this.time) + this.tideLevel + 2.5);
+    pos.y = Math.max(pos.y, this.ocean.heightAt(pos.x, pos.z, this.time) + 2.5);
     this.camera.position.lerp(pos, Math.min(1, dt * 3));
     this.camera.lookAt(this.raft.position.clone().add(new THREE.Vector3(0, 1, 0)));
     if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false;
@@ -922,6 +1026,8 @@ class App {
     if (this.terrain.version !== this.depthVersion) { this.depthVersion = this.terrain.version; this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), true); }
     else this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), false);
     this.ocean.update(this.time, this.camera.position.x, this.camera.position.z, dt);
+    this.governOceanQuality(now);
+    this.updateSound(dt, now, ashore);
     this.shipVisual(this.myMesh, this.ship.lat, this.ship.lon, this.ship.hdg, this.ship.spd, this.myVis, this.you.flooding, dt, !!this.you.docked);
     if (this.myMesh.userData.setSails && now - this.lastSails > 500) { this.lastSails = now; this.myMesh.userData.setSails(this.you.sailsUp !== false, this.windRel()); }
     for (const o of this.others.values()) { this.interp(o, now); this.shipVisual(o.mesh, o.cur.lat, o.cur.lon, o.cur.hdg, o.cur.spd, o.vis, o.flooding || 0, dt, !!o.docked); }
