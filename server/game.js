@@ -22,6 +22,7 @@ const START_MONEY = 25000;
 const SERVICE_INTERVAL_S = FEES.SERVICE_INTERVAL_DAYS * 86400;
 const NEAR_BERTH_RANGE_U = 2500;      // you.nearBerth is reported within this of a berth
 const DOCK_SEARCH_RANGE_U = 6000;     // beyond this of the anchor there is no harbour to talk to
+const FISH_RATE_T_PER_H = 10;         // nets: t/h = class fishRate × ground richness × this (stern trawler on the Dogger Bank: 30 t/h)
 const LAND_PENETRATION_M = 0.5;       // onState rejects positions this far inside a quay/land
 
 function rndFn() { return Math.random(); }
@@ -139,13 +140,13 @@ export class Game {
     this.lastEcon = Date.now();
   }
   regenHarbor(h, st, force) {
-    st.jobs = (st.jobs || []).filter((j) => j && j.deadline > this.simTime);
+    st.jobs = (st.jobs || []).filter((j) => j && j.deadline > this.simTime && (j.type !== 'tow' || this.ensureTowSpot(j)));
     const n = jobCountFor(h);
     // Second-hand hulls turn over every 6 h (1–4 listings by harbour size).
     if (!st.used || !st.used.length || !(st.usedAt > 0) || this.simTime - st.usedAt > ECON.USED_REFRESH_H * 3600) { st.used = generateUsedShips(h, this.rnd); st.usedAt = this.simTime; }
     if (force || this.simTime - st.lastRegen > 3600 * 2) {
       let guard = 0;
-      while (st.jobs.length < n && guard++ < 40) { const j = generateJob(h, this.simTime, this.rnd); if (j) st.jobs.push(j); }
+      while (st.jobs.length < n && guard++ < 40) { const j = generateJob(h, this.simTime, this.rnd, undefined, this.jobEnv()); if (j) st.jobs.push(j); }
       // Black-market contact: 70% present per regen, 1-3 runs.
       if (this.rnd() < 0.7) {
         const k = 1 + Math.floor(this.rnd() * 3);
@@ -154,6 +155,37 @@ export class Game {
       st.lastRegen = this.simTime;
     }
     refreshPrices(h, st);
+  }
+  jobEnv() { return this._jobEnv || (this._jobEnv = { towSpot: (lat, lon, draft) => this.towSpotOk(lat, lon, draft) }); }
+  // Can a disabled vessel lie here? Open water at least draft + 6 m deep, deep water 1.5 km all round (no lee shore
+  // to drift onto, no channel bank), 6 km clear of any harbour, outside every built harbour patch.
+  towSpotOk(lat, lon, draft = 4) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+    const need = (Number.isFinite(draft) ? draft : 4) + 6;
+    if (!(this.world.depthAt(lat, lon) >= need)) return false;
+    for (let b = 0; b < 360; b += 45) { const q = destination(lat, lon, b, 1500); if (!(this.world.depthAt(q.lat, q.lon) >= need - 4)) return false; }
+    const pen = this.landPenetration(lat, lon); if (pen != null) return false;
+    const { units } = this.nearestHarbor(lat, lon);
+    return !(units < 6000);
+  }
+  // Older boards and accepted contracts may hold a casualty on land: move it to the nearest valid open water (rings out
+  // to 150 km), once per job. False when there is no water anywhere near (the job is then dropped from the board).
+  ensureTowSpot(j) {
+    if (!j || j.type !== 'tow' || !j.at) return true;
+    if (j.spotOk) return true;
+    const draft = SHIP_CLASSES[j.victimCls]?.draft ?? 4;
+    if (this.towSpotOk(j.at.lat, j.at.lon, draft)) { j.spotOk = true; return true; }
+    for (let r = 2000; r <= 150000; r += r < 40000 ? 2000 : 5000) {
+      for (let b = 0; b < 360; b += 22.5) {
+        const q = destination(j.at.lat, j.at.lon, b, r);
+        if (this.towSpotOk(q.lat, q.lon, draft)) {
+          j.at = { lat: round6(q.lat), lon: round6(q.lon) }; j.spotOk = true;
+          j.title = `Tow a disabled ${SHIP_CLASSES[j.victimCls]?.name.toLowerCase() || 'vessel'} at ${j.at.lat.toFixed(2)}°, ${j.at.lon.toFixed(2)}° to ${harborById(j.to)?.name || j.to}`;
+          return true;
+        }
+      }
+    }
+    return false;
   }
   // Every market drifts toward its target stock; called from tick once a minute and after loading state.
   driftMarkets() {
@@ -252,12 +284,13 @@ export class Game {
       id: p.id, name: p.name, cls: s.cls, lat: round6(s.lat), lon: round6(s.lon), hdg: Math.round(s.hdg * 10) / 10,
       spd: Math.round(s.spd * 10) / 10, cond: Math.round(p.cond), flooding: Math.round(p.flooding * 100) / 100,
       convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.flooding >= 1 || !!p.rescue, towing: !!p.towing, offline: !p.online,
+      towCls: p.towing ? (p.jobs.find((j) => j.id === p.towing)?.victimCls || 'trawler') : null, fishing: !!p.fishing,
       warp: this.warpOf(p),
     };
   }
   privateState(p) {
     return {
-      id: p.id, name: p.name, ship: { ...p.ship }, cond: p.cond, flooding: p.flooding, fuel: p.fuel, cargo: p.cargo,
+      id: p.id, name: p.name, ship: { ...p.ship }, cond: p.cond, flooding: p.flooding, fuel: p.fuel, cargo: p.cargo.map((c) => (c.caught ? { ...c, qty: Math.round(c.qty * 10) / 10 } : c)),
       money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs, convoyId: p.convoyId, docked: p.docked,
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
@@ -720,6 +753,11 @@ export class Game {
     if (fromContact) st.contact.jobs = st.contact.jobs.filter((j) => j.id !== jobId); else st.jobs = st.jobs.filter((j) => j.id !== jobId);
     p.jobs.push({ ...job, acceptedAt: this.simTime });
     this.event(p, fromContact ? 'shady' : 'info', `${fromContact ? 'Deal.' : 'Contract signed:'} ${job.title} — ${fmt(job.pay)} cr.`);
+    const hint = job.type === 'tow' ? `The casualty is marked by an orange light column at sea. Come within ${INTERACT.TOW_RANGE_U} m under 3 kn and pass the tow line (J); harbour tugs take her over ${km1(INTERACT.TOW_HANDOVER_M)} km off ${harborById(job.to)?.name || 'the port'}.`
+      : job.type === 'supply' ? `${job.platformName} is marked at sea. Hold station within ${INTERACT.PLATFORM_RANGE_U} m under 3 kn and start the crane transfer (J).`
+      : job.type === 'fishing' ? `Sail to the ${job.groundName}, put the nets out (F) and trawl under ${INTERACT.FISH_MAX_KN} kn; land the catch here.`
+      : `Sail to ${harborById(job.to)?.name || job.to} and moor there to deliver. Route on the contract card lays the course.`;
+    this.event(p, 'info', hint);
     this.sendYou(p); this.sendHarbor(p);
   }
   abandonJob(p, jobId) {
@@ -727,7 +765,7 @@ export class Game {
     p.jobs = p.jobs.filter((x) => x.id !== jobId);
     // Contract cargo goes back to the shipper (docked) or over the side (at sea); it never becomes free goods.
     p.cargo = p.cargo.filter((c) => c.jobId !== j.id);
-    if (j.towing) p.towing = null;
+    if (p.towing === j.id) p.towing = null;
     const penalty = Math.min(p.money, Math.round(j.pay * 0.1));
     p.money -= penalty;
     this.event(p, 'warn', `Abandoned: ${j.title}. Cancellation fee ${fmt(penalty)} cr.`);
@@ -754,22 +792,26 @@ export class Game {
         if (stack) { ok = true; frac = Math.min(1, stack.qty / j.qty); p.cargo = p.cargo.filter((c) => c !== stack); }
       }
       if (!ok) continue;
-      let pay = Math.round(j.pay * frac);
-      const late = this.simTime > j.deadline;
-      if (late) pay = Math.round(pay * 0.5);
-      if (frac < 1) this.event(p, 'warn', `Short delivery: only ${Math.round(frac * 100)} % of the contracted quantity.`);
-      // Demand bonus: a port short of the good pays extra, and the delivery replenishes its stock.
-      let bonus = 0;
-      const st = this.harbors[harbor.id];
-      if (st && j.good && !j.contraband && j.type !== 'supply' && st.stock && st.stock[j.good] != null) {
-        bonus = Math.round(pay * demandBonus(st, j.good));
-        st.stock[j.good] += Math.round(j.qty * frac); refreshPrices(harbor, st);
-      }
-      pay += bonus;
-      p.money += pay; p.stats.delivered++; p.stats.earned += pay;
-      p.jobs = p.jobs.filter((x) => x.id !== j.id);
-      this.event(p, j.contraband ? 'shady' : 'info', `${late ? 'Late delivery (half pay)' : 'Delivered'}: ${j.title} — +${fmt(pay)} cr${bonus ? ` (incl. ${fmt(bonus)} demand bonus)` : ''}.`);
+      this.payJob(p, j, frac, harbor);
     }
+  }
+  // Pay a finished contract (late = half pay; a port short of the good pays a demand bonus and restocks) and drop it.
+  payJob(p, j, frac, harbor) {
+    let pay = Math.round(j.pay * frac);
+    const late = this.simTime > j.deadline;
+    if (late) pay = Math.round(pay * 0.5);
+    if (frac < 1) this.event(p, 'warn', `Short delivery: only ${Math.round(frac * 100)} % of the contracted quantity.`);
+    // Demand bonus: a port short of the good pays extra, and the delivery replenishes its stock.
+    let bonus = 0;
+    const st = this.harbors[harbor.id];
+    if (st && j.good && !j.contraband && j.type !== 'supply' && st.stock && st.stock[j.good] != null) {
+      bonus = Math.round(pay * demandBonus(st, j.good));
+      st.stock[j.good] += Math.round(j.qty * frac); refreshPrices(harbor, st);
+    }
+    pay += bonus;
+    p.money += pay; p.stats.delivered++; p.stats.earned += pay;
+    p.jobs = p.jobs.filter((x) => x.id !== j.id);
+    this.event(p, j.contraband ? 'shady' : 'info', `${late ? 'Late delivery (half pay)' : 'Delivered'}: ${j.title} — +${fmt(pay)} cr${bonus ? ` (incl. ${fmt(bonus)} demand bonus)` : ''}.`);
   }
   // Supply/demand: buying takes from the harbour stock (price rises), selling adds to it (price falls).
   tradeGoods(p, good, qty, buying) {
@@ -846,8 +888,8 @@ export class Game {
     if (on && !this.groundAt(p.ship.lat, p.ship.lon)) return this.event(p, 'warn', 'No fishing ground here. Check the chart for fishing banks (dashed circles).');
     if (!!p.fishing === !!on) return;
     p.fishing = on;
-    if (on) { const g = this.groundAt(p.ship.lat, p.ship.lon); p.fishInfo = { ground: g.name, rate: 0, caught: 0, tooFast: Math.abs(p.ship.spd) >= 3 }; }
-    this.event(p, 'info', on ? `Nets out on the ${this.groundAt(p.ship.lat, p.ship.lon).name}. Keep her under 3 knots; the catch rate shows in the HUD.` : `Nets hauled in. ${p.fishInfo ? p.fishInfo.caught + ' t caught this haul.' : ''}`);
+    if (on) { const g = this.groundAt(p.ship.lat, p.ship.lon); p.fishInfo = { ground: g.name, rate: 0, caught: 0, caughtRaw: 0, tooFast: Math.abs(p.ship.spd) >= INTERACT.FISH_MAX_KN }; }
+    this.event(p, 'info', on ? `Nets out on the ${this.groundAt(p.ship.lat, p.ship.lon).name}. Trawl under ${INTERACT.FISH_MAX_KN} knots; the catch shows in the HUD.` : `Nets hauled in. ${p.fishInfo ? p.fishInfo.caught + ' t caught this haul.' : ''}`);
     this.sendYou(p);
   }
   groundAt(lat, lon) {
@@ -1045,19 +1087,25 @@ export class Game {
       if (p.fishing) {
         const g = this.groundAt(s.lat, s.lon);
         if (!g) { p.fishing = false; this.event(p, 'info', 'Left the fishing ground; nets hauled in.'); this.sendYou(p); }
-        else if (Math.abs(s.spd) < 3) {
+        else if (Math.abs(s.spd) < INTERACT.FISH_MAX_KN) {
           const free = C.capacity - cargoMass(p.cargo);
-          const rate = C.fishRate * g.richness * 5 * (wx.storm > 0.5 ? 0.4 : 1);
+          const rate = C.fishRate * g.richness * FISH_RATE_T_PER_H * (wx.storm > 0.5 ? 0.4 : 1);
           const add = Math.max(0, Math.min(free, rate * hrs));
-          p.fishInfo = { ground: g.name, rate: Math.round(rate * 10) / 10, caught: Math.round(((p.fishInfo && p.fishInfo.caught) || 0) + add), tooFast: false };
+          // keep full precision: at 10 ticks a second each step is a few grams, rounding it every tick lost all of it
+          const caught = ((p.fishInfo && p.fishInfo.caughtRaw) || 0) + add;
+          p.fishInfo = { ground: g.name, rate: Math.round(rate * 10) / 10, caught: Math.round(caught * 10) / 10, caughtRaw: caught, tooFast: false };
           if (add > 0) {
             const stack = p.cargo.find((c) => c.good === 'fish' && c.caught && !c.jobId);
-            if (stack) stack.qty = Math.round((stack.qty + add) * 10) / 10; else p.cargo.push({ good: 'fish', qty: Math.round(add * 10) / 10, contraband: false, jobId: null, caught: true });
-          } else if (free <= 0 && !p.fullWarned) { p.fullWarned = true; this.event(p, 'info', 'Hold is full of fish.'); }
+            if (stack) stack.qty += add; else p.cargo.push({ good: 'fish', qty: add, contraband: false, jobId: null, caught: true });
+            p.fullWarned = false;
+          } else if (free <= 0 && !p.fullWarned) { p.fullWarned = true; this.event(p, 'info', 'Hold is full of fish.'); this.sendYou(p); }
+          if (Date.now() - (p.fishSentAt || 0) > 2000) { p.fishSentAt = Date.now(); this.sendYou(p); } // the catch counter follows live
         } else {
-          p.fishInfo = { ground: g.name, rate: 0, caught: (p.fishInfo && p.fishInfo.caught) || 0, tooFast: true };
+          p.fishInfo = { ground: g.name, rate: 0, caught: (p.fishInfo && p.fishInfo.caught) || 0, caughtRaw: (p.fishInfo && p.fishInfo.caughtRaw) || 0, tooFast: true };
         }
       }
+      if (p.towing) this.checkTowHandover(p);
+      for (const j of p.jobs) if (j.type === 'tow' && !j.spotOk && !j.pickedUp) this.ensureTowSpot(j);
       if (p.wanted > 0 && this.simTime - p.wantedAt > LAW.WANTED_DECAY_SIM_HOURS * 3600) { p.wanted--; p.wantedAt = this.simTime; this.event(p, 'law', `Wanted level dropped to ${p.wanted}.`); }
       for (const j of p.jobs) if (!j.expiredWarned && this.simTime > j.deadline) { j.expiredWarned = true; this.event(p, 'warn', `Deadline passed: ${j.title} (half pay on delivery).`); }
     }
@@ -1386,8 +1434,20 @@ export class Game {
     if (p.towing) return this.event(p, 'warn', 'You already have a tow.');
     if (unitsBetween(p.ship.lat, p.ship.lon, j.at.lat, j.at.lon) > INTERACT.TOW_RANGE_U) return this.event(p, 'warn', `Get within ${INTERACT.TOW_RANGE_U} m of the casualty.`);
     if (Math.abs(p.ship.spd) > 3) return this.event(p, 'warn', 'Slow below 3 kn to pass the tow line.');
-    p.towing = j.id; j.pickedUp = true;
-    this.event(p, 'info', `Tow line secured on the ${SHIP_CLASSES[j.victimCls].name.toLowerCase()}. Bring her to ${harborById(j.to).name}${SHIP_CLASSES[p.ship.cls].towPower ? '' : ' — expect a third less speed'}.`);
+    p.towing = j.id; j.pickedUp = true; p.fishing = false;
+    this.event(p, 'info', `Tow line secured on the ${SHIP_CLASSES[j.victimCls].name.toLowerCase()}. Bring her to ${harborById(j.to).name}: harbour tugs take over ${km1(INTERACT.TOW_HANDOVER_M)} km off the port${SHIP_CLASSES[p.ship.cls].towPower ? '' : ' — expect a third less speed'}.`);
+    this.sendYou(p);
+  }
+  // Harbour tugs take the casualty off your hands outside the destination port; the contract pays there.
+  checkTowHandover(p) {
+    const j = p.jobs.find((x) => x.id === p.towing);
+    if (!j) { p.towing = null; return; }
+    const h = harborById(j.to); if (!h) return;
+    const a = this.geom?.harborAnchor?.(h.id) || h;
+    if (haversine(p.ship.lat, p.ship.lon, a.lat, a.lon) > INTERACT.TOW_HANDOVER_M) return;
+    p.towing = null;
+    this.event(p, 'info', `${h.name} harbour tugs take the ${SHIP_CLASSES[j.victimCls]?.name.toLowerCase() || 'casualty'} in. Tow line slipped.`);
+    this.payJob(p, j, 1, h);
     this.sendYou(p);
   }
   deliverOffshore(p, jobId) {

@@ -89,8 +89,10 @@ export const INTERACT = {
   SALVAGE_RANGE_U: 150,
   CONVOY_ESCORT_U: 1500,
   FISH_RADIUS_U: 1200,
-  PLATFORM_RANGE_U: 400,
-  TOW_RANGE_U: 150,
+  PLATFORM_RANGE_U: 500,
+  TOW_RANGE_U: 300,          // pass the tow line within this of the casualty, under 3 kn
+  TOW_HANDOVER_M: 4000,      // harbour tugs take a tow over this close to the destination harbour
+  FISH_MAX_KN: 4,            // trawling speed: nets fish below this
   BERTH_RANGE_U: 60,
   TUG_RANGE_U: 1500,
 };

@@ -7,12 +7,13 @@
 // interior, no ship simulation while ashore, no casting off from the quay), chase camera sized to the hull.
 import * as THREE from 'three';
 import { GEO, SIM, SHIP_CLASSES, INTERACT, LAYERS, WARP } from '/shared/constants.js';
-import { toLocal, fromLocal, haversine, bearing, unitsBetween, angleDiff, normDeg, fmtDistance } from '/shared/geo.js';
+import { toLocal, fromLocal, haversine, bearing, destination, unitsBetween, angleDiff, normDeg, fmtDistance } from '/shared/geo.js';
 import { stepShip, currentAt } from '/shared/physics.js';
 import { Net } from './net.js';
 import { Ocean } from './ocean2.js';
 import { createMotion, stepMotion } from './motion.js';
 import { SoundEngine } from './sound.js';
+import { JobLayer, jobTargets } from './jobs.js';
 import { Terrain, VSCALE } from './terrain.js';
 import * as ShipMod from './ship.js';
 import * as HarborMod from './harbor.js';
@@ -82,6 +83,7 @@ class App {
     this.lastGrounding = 0; this.lastCollision = 0; this.clock = new THREE.Clock(); this.time = 0; this.started = false; this.lastSend = 0;
     this.lastTerrainUpdate = 0; this.lastRadar = 0; this.lastTelemetry = 0; this.lastSails = 0; this.ready = false;
     this.interior = new Interior(this);
+    this.jobLayer = new JobLayer(this); this.jobTargets = [];
     // Going ashore (docs/V4-CONTRACTS.md §3): `app.ashore = new Ashore(this)`. Loaded as its own module so a problem in the
     // on-foot layer can never take the helm down with it; `ashoreReady` resolves to the instance (or null).
     this.ashore = null;
@@ -242,7 +244,7 @@ class App {
       o = { id: p.id, name: p.name, cls: p.cls, mesh: buildShip(p.cls, p.name, p.id.charCodeAt(0)), samples: [], cur: { lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }, vis: { heave: 0, pitch: 0, roll: 0 } };
       this.scene.add(o.mesh); this.others.set(p.id, o);
     } else if (o.cls !== p.cls) { this.drop(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); }
-    Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, offline: p.offline, warp: WARP_LEVELS.includes(Number(p.warp)) ? Number(p.warp) : 1 });
+    Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, towCls: p.towCls || null, fishing: !!p.fishing, offline: p.offline, warp: WARP_LEVELS.includes(Number(p.warp)) ? Number(p.warp) : 1 });
     o.samples.push({ t: now, lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }); if (o.samples.length > 4) o.samples.shift();
     o.mesh.userData.setWear(1 - p.cond / 100); o.mesh.userData.setFlood(p.flooding);
   }
@@ -345,7 +347,7 @@ class App {
     if (!this.sound) return;
     this.sound.unlock(); this.sound.setMuted(!this.sound.muted);
     this.syncSoundButton();
-    this.hud.event?.({ kind: 'info', text: this.sound.muted ? 'Sound off (N)' : 'Sound on (N) — Y sounds the horn' });
+    this.hud.event?.({ kind: 'info', text: this.sound.muted ? 'Sound off (U)' : 'Sound on (U) — Y sounds the horn' });
   }
   /** Frame-rate governor for the spectral ocean: a slow GPU steps the sea down (grid, foam target, spray, ripples) before
    *  the game becomes unplayable, and steps it back up once there is headroom again. Hidden tabs and hitches are ignored. */
@@ -375,7 +377,7 @@ class App {
     const b = document.getElementById('btnSound'); if (!b || !this.sound) return;
     const m = this.sound.muted;
     this.hud.setIcon?.(b.querySelector('.si'), m ? 'mute' : 'volume');
-    const l = b.querySelector('.lbl'); if (l) l.textContent = m ? 'Sound off (N)' : 'Sound on (N)';
+    const l = b.querySelector('.lbl'); if (l) l.textContent = m ? 'Sound off (U)' : 'Sound on (U)';
   }
   updateSound(dt, now, ashore) {
     const snd = this.sound; if (!snd || !this.ship || !this.you) return;
@@ -495,7 +497,7 @@ class App {
       }
       if (k === 'g') return this.toggleAshore();
       if (k === 'y' && !this.interior.active && !this.ashore?.active) { this.sound?.unlock(); this.sound?.horn(e.shiftKey ? 'short' : 'long'); return; }
-      if (k === 'n' && !this.interior.active && !this.ashore?.active) { this.toggleMute(); return; }
+      if (k === 'u' && !this.interior.active && !this.ashore?.active) { this.toggleMute(); return; }
       if (k === 'i') return this.toggleInterior();
       // the walkers (on foot ashore, below decks) get their keys first: WASD walk, E use, V view, T taxi ashore …
       if (this.ashore?.active && this.ashore.handleKey(e)) return;
@@ -506,6 +508,7 @@ class App {
       if (k === 'r' && this.hud.chartOpen()) { this.hud.chartMode = this.hud.chartMode === 'region' ? 'world' : 'region'; this.hud.drawChart(); return; }
       if (this.ashore?.active) return; // ashore: the ship's controls are aboard
       if (k === 't') return this.toggleDock();
+      if (k === 'j') return this.jobAction();
       if (k === 'f') return this.net.action('fish', { on: !this.you?.fishing });
       if (k === 'k') return this.net.action('patch');
       if (k === 'p') return this.toggleAutopilot();
@@ -625,6 +628,30 @@ class App {
     if (!this.you?.docked) return;
     if (this.ashore?.active) { this.hud.event({ kind: 'warn', text: 'Go aboard first (G) — the ship cannot cast off without her skipper.' }); return; }
     this.net.action('undock');
+  }
+  /** The contract card's action (J): pass the tow line, crane transfer, nets out / in. `t` = a jobTargets() entry. */
+  jobAction(t) {
+    t = t || this.hud.jobShown || (this.jobTargets || []).find((x) => x.action);
+    if (!t?.action) { this.hud.event({ kind: 'info', text: (this.jobTargets || []).length ? 'Nothing to do here for your contracts yet — follow the beacon.' : 'No contracts aboard. Sign one at the harbour master.' }); return; }
+    if (!t.action.enabled) { this.hud.event({ kind: 'warn', text: `${t.action.label}: ${t.action.why || 'not possible right now'}.` }); return; }
+    const id = t.action.id;
+    if (id === 'fish' || id === 'fish_off') this.net.action('fish', { on: id === 'fish' });
+    else this.net.action(id, { jobId: t.job.id });
+    this.sound?.ui?.('click');
+  }
+  /** Lay a sea route to a contract target (server route planner: straight over open water, else along the lanes). */
+  async routeToJob(t) {
+    const s = this.ship; if (!s || !t || !Number.isFinite(t.lat)) return;
+    let to = { lat: t.lat, lon: t.lon };
+    if (t.kind === 'ground' && t.distM > t.rangeM) to = destination(t.lat, t.lon, bearing(t.lat, t.lon, s.lat, s.lon), Math.max(0, t.rangeM - 2000)); // the near edge of the bank
+    const harbor = t.kind === 'harbor' ? t.job.to : '';
+    let pts = [[to.lat, to.lon]];
+    try {
+      const r = await fetch(`/api/route?from=${s.lat.toFixed(5)},${s.lon.toFixed(5)}&to=${to.lat.toFixed(5)},${to.lon.toFixed(5)}${harbor ? `&harbor=${encodeURIComponent(harbor)}` : ''}`);
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j.points) && j.points.length) pts = j.points; }
+    } catch { /* offline: straight line */ }
+    if (this.you?.docked) { this.setRoute(pts); return; }
+    this.autopilot = true; this.setRoute(pts); // the crew steers it; any helm input takes over again
   }
   requestTugs() {
     const you = this.you; if (!you || you.docked || you.assist) return;
@@ -1038,6 +1065,7 @@ class App {
       if (r.kind === 'helicopter') { const p = this.place(r.mesh, r.cur.lat, r.cur.lon, 60 + Math.sin(this.time * 0.8) * 2); r.mesh.rotation.set(-0.08, -r.cur.hdg * D2R, 0, 'YXZ'); r.mesh.userData.setRotor?.(this.time); void p; }
       else this.shipVisual(r.mesh, r.cur.lat, r.cur.lon, r.cur.hdg, r.cur.spd, r.vis, 0, dt, false);
     }
+    try { this.jobLayer.update(dt); } catch (e) { if (!this.jobLayerWarned) { this.jobLayerWarned = true; console.warn('[jobs] layer update failed', e); } }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
     // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views
     if (ashore) { this.camPrevTarget = null; try { this.ashore.update(dt); } catch (e) { console.warn('[ashore] update failed — back aboard', e); try { this.ashore.exit(); } catch {} this.afterAshoreChange(); } }
@@ -1088,6 +1116,7 @@ class App {
     this.hud.showWeather?.(this.wx, this.tide);
     this.hud.showRescue?.(you.rescue ? { ...you.rescue, now: Date.now() + (this.clockOffset || 0), harborName: this.world.harbors.find((x) => x.id === you.rescue.harbor)?.name } : null);
     this.hud.showBerth?.(you.nearBerth || null, you.berth || null, you.assist || null, Math.max(400, Math.round(C.displacement * 0.35)));
+    this.jobTargets = jobTargets(this); this.jobLayer.setTargets(this.jobTargets); this.hud.showJobs?.(this.jobTargets);
     this.hud.showVoyage?.(this.route, eta, this.route.length ? Math.round((this.routeLength() / 1852) * SIM.EXPRESS_CR_PER_NM) : 0);
     if (this.hud.chartOpen() && now - (this.lastChart || 0) > 1000) { this.lastChart = now; this.hud.drawChart(); }
   }
@@ -1102,6 +1131,7 @@ class App {
     for (const a of this.ai.values()) contacts.push({ kind: 'ai', lat: a.cur.lat, lon: a.cur.lon, hdg: a.cur.hdg, spd: a.cur.spd, color: '#9aa3ab', label: a.name, dest: a.destName, state: a.state });
     for (const r of this.rescues.values()) contacts.push({ kind: 'rescue', lat: r.cur.lat, lon: r.cur.lon, hdg: r.cur.hdg, color: '#ff8c42', label: r.kind === 'helicopter' ? 'SAR heli' : 'Lifeboat' });
     if (this.you?.nearBerth) { const b = this.you.nearBerth; if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) contacts.push({ kind: 'berth', lat: b.lat, lon: b.lon, hdg: b.hdg, color: '#58d68d', label: b.name }); }
+    for (const t of this.jobTargets || []) contacts.push({ kind: 'job', lat: t.lat, lon: t.lon, color: t.color, label: t.kind === 'casualty' ? 'Casualty' : t.name, radiusU: t.kind === 'ground' ? t.rangeM / GEO.SCALE : 0 });
     this.route.forEach((p, i) => contacts.push({ kind: 'wp', lat: p.lat, lon: p.lon, color: i === 0 ? '#f2b134' : 'rgba(242,177,52,0.55)', label: String(i + 1) }));
     this.hud.drawRadar(s, contacts, now);
   }

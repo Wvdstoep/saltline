@@ -193,15 +193,15 @@ test('warp: fuel, hull wear, crew wages and the fishing catch scale with the fac
   assert.ok(Math.abs(fuelB / fuelA - 100) < 1e-4, `fuel ×${fuelB / fuelA}`);
   assert.ok(Math.abs(wearB / wearA - 100) < 1e-4, `wear ×${wearB / wearA}`);
   assert.ok(Math.abs(payB / payA - 100) < 1e-4, `wages ×${payB / payA}`);
-  // Fishing on the Dogger Bank: 6 real minutes at 1× and at 100× (trawler: 3 × 1.0 × 5 = 15 t/h).
+  // Fishing on the Dogger Bank: 3 real minutes at 1× and at 100× (trawler: 3 × 1.0 × 10 = 30 t/h).
   const g2 = mkGame(); const f = atSea(g2, 'Fin', { lat: 54.7, lon: 2.8 }, { cls: 'trawler', spd: 1, throttle: 0.1 });
   f.p.fuel = 40; f.p.money = 1e6;
   g2.onAction(f.p, { action: 'fish', on: true }); assert.equal(f.p.fishing, true);
   const caught = () => f.p.cargo.filter((c) => c.good === 'fish' && c.caught).reduce((s, c) => s + c.qty, 0);
-  g2.tick(360); const c1 = caught();
+  g2.tick(180); const c1 = caught();
   assert.ok(Math.abs(c1 - 1.5) < 0.051, `1×: ${c1} t`);
   accepted(g2, f, 100, ROUTE);
-  g2.tick(360); const c2 = caught() - c1;
+  g2.tick(180); const c2 = caught() - c1;
   assert.ok(Math.abs(c2 - 150) < 0.051, `100×: ${c2} t`);
   assert.equal(f.p.warp, 100);
 });

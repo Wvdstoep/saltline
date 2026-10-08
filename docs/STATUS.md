@@ -1,25 +1,28 @@
-# Build status (updated 2026-10-07 20:45 UTC)
+# Build status (updated 2026-10-08 07:15 UTC)
 
 ## Live on the server
-- **v0.4** (commit dd7cdab): time warp, full-screen harbour UI with rendered ship pictures, going ashore in the real
-  harbour, map tile proxy + street-level imagery, COLREGS lights, real wind waves / currents / sea temperature fetched.
-- **Hotfix** (15e8415): real Port of Rotterdam waterways carved into the world raster and dredged to 16 m.
-- **v0.3**: harbours from OpenStreetMap with berths and collision, tug assist, tides, live weather, 90 AI ships,
-  walkable interior with third-person crew member.
+- **v0.4.1 contracts** — every job type works end to end and is guided in the world:
+  - fishing catches add up (the 10 Hz server tick rounded each few-gram step back to zero, even at 400×); nets fish
+    under 4 kn at twice the old rate (stern trawler on the Dogger Bank: 30 t/h);
+  - tow casualties lie on open water deep enough for the hull, 6 km clear of harbours (old board jobs on land are
+    moved once); pass the tow line within 300 m under 3 kn (J or the card button); the casualty follows astern on a
+    hawser; harbour tugs take the tow over 4 km off the destination port and the contract pays there;
+  - supply runs: crane transfer within 500 m of the platform under 3 kn (J);
+  - contract card at sea (bottom centre on desktop, top on phones): next step, distance/bearing, time left, pay, ‹ ›
+    between contracts, Route (server sea-route planner `/api/route`: straight over open water, else along the
+    sea-lane graph, string-pulled, every leg water-checked) with the autopilot steering it;
+  - in the world: light column + range ring on every target, the disabled ship with not-under-command lights and a
+    hazard strobe, the tow and the trawl warps (also on other skippers' ships); targets on the radar (rim arrows when
+    out of range) and the chart.
+- **Sea state + sound** (8bb918b): spectral sea from the live wave/swell data, per-class ship motion, procedural
+  sound (U toggles, Y horn), frame-rate governor for slow devices.
+- **v0.4** (dd7cdab): time warp, full-screen harbour UI, going ashore, street-level map tiles.
+- **Hotfix** (15e8415): real Port of Rotterdam waterways carved and dredged to 16 m.
 
-## Built but not wired yet (in the session scratchpad, next deploy)
-- `public/js/sound.js` — procedural WebAudio engine (engine by rpm/class, sea, wind, rain, harbour, horn, footsteps, UI).
-- `public/js/ais.js` — client layer for live AIS ships at real size with smooth dead reckoning and info cards.
-
-## Still building when this was written
-- `server/ais/*` — live AIS ingestion: AISStream.io (worldwide; key stored on the production server in
-  `data/secrets/aisstream.key`, never in git; verified 1,876 ships in 30 s for the North Sea) + Fintraffic Digitraffic
-  (Baltic, open data). Wiring: `LiveAis` in server.js → per-socket `ais` messages + `/api/ais`; switch synthetic AI off
-  where `covers()` is true; `AisLayer` in main.js, chart, radar, collision.
-- `server/harbor-positions.js` — accurate harbour positions from OpenSeaMap/OSM for all 86 harbours (apply to HARBORS).
-- `public/js/ocean2.js` + `public/js/motion.js` — realistic sea state from live wave/swell data (spectral cascades,
-  dense near grid, breaking whitecaps, spray) and per-class ship motion; swap the ocean import in main.js, use motion.js
-  in shipVisual, pass `windWaves`/`current`/`sst` through `game.weatherAt`, harbour shelter from the patch SDF.
+## Built, not deployed yet
+- `server/ais/*` + `public/js/ais.js` — live AIS (AISStream worldwide, key on the production server only, never in
+  git; Digitraffic Baltic). Wiring still to do: `LiveAis` in server.js, `AisLayer` in main.js / chart / radar.
+- `server/harbor-positions.js` — accurate harbour positions (audit to redo).
 
 ## Next (v0.5, see docs/V5-PLAN.md)
 Berth guidance marker + fairway lines, engine telegraph with astern, tugs with water-only path planning and visible tug

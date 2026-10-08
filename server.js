@@ -13,6 +13,7 @@ import * as harborgeom from './server/harborgeom.js';
 import { WeatherService } from './server/weather.js';
 import { Traffic } from './server/traffic.js';
 import { LANE_NODES } from './server/lanes.js';
+import { planRoute } from './server/searoute.js';
 import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
 import { getTile } from './server/maptiles.js';
@@ -92,6 +93,16 @@ app.get('/api/osm', (req, res) => {
   res.setHeader('Content-Type', 'application/json'); fs.createReadStream(f).pipe(res);
 });
 app.get('/api/jobs', (req, res) => res.json(game.publicJobs()));
+// Sea route from a point to a point (or harbour) for the skipper's Route button: straight, else along the sea lanes.
+app.get('/api/route', (req, res) => {
+  const ll = (q) => String(q || '').split(',').map(Number);
+  const [fLat, fLon] = ll(req.query.from), [tLat, tLon] = ll(req.query.to);
+  if (![fLat, fLon, tLat, tLon].every(Number.isFinite)) return res.status(400).json({ error: 'from=lat,lon&to=lat,lon' });
+  let r = null;
+  try { r = planRoute(world, traffic.graph || null, { lat: fLat, lon: fLon }, { lat: tLat, lon: tLon }, { toHarbor: typeof req.query.harbor === 'string' ? req.query.harbor : null }); } catch (e) { log('[route] failed', e.message); }
+  if (!r) return res.status(404).json({ error: 'no sea route found' });
+  res.json(r);
+});
 app.get('/api/players', (req, res) => res.json([...game.byId.values()].filter((p) => p.online).map((p) => game.publicState(p))));
 
 const server = http.createServer(app);

@@ -9,6 +9,7 @@ import { fuelBurnPerSimHour } from '/shared/physics.js';
 import { Chart, fetchJobs, cachedJobs, collectAi, collectRescues, collectStorms, fmtDur, fmtClock } from './chart.js';
 import { isTouch, TouchHelm } from './touch.js';
 import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js';
+import { jobWhere, fmtLeft, JOB_COLOR } from './jobs.js';
 
 const { GOODS, SHIP_CLASSES, GEO, SIM, INTERACT } = K;
 const $ = (id) => document.getElementById(id);
@@ -234,6 +235,10 @@ export class Hud {
     on('weatherClose', () => $('weatherPanel').classList.add('hidden'));
     on('btnMore', () => this.toggleMore());
     on('btnMoor', () => a.toggleDock());
+    on('jobPrev', () => this.cycleJob(-1));
+    on('jobNext', () => this.cycleJob(1));
+    on('btnJobRoute', () => { const t = this.jobShown; if (t) a.routeToJob?.(t); });
+    on('btnJobAct', () => { const t = this.jobShown; if (t) a.jobAction?.(t); });
     on('btnTugs', () => { if (typeof a.requestTugs === 'function') return a.requestTugs(); const c = this.tugCost(); if (confirm(`Request tug assistance for ${fmt(c)} cr? The tugs bring you alongside the nearest berth.`)) a.net.action('tug_assist'); });
     on('telToggle', () => {
       const t = $('telemetry'); t.classList.toggle('collapsed'); const open = !t.classList.contains('collapsed');
@@ -576,8 +581,47 @@ export class Hud {
     el.classList.remove('hidden');
     setText($('fishGround'), info.ground || '—');
     setText($('fishRate'), `${(info.rate || 0).toFixed(1)} t/h`);
-    setText($('fishCaught'), `${Math.round(info.caught || 0)} t`);
-    const w = $('fishWarn'); w.classList.toggle('hidden', !info.tooFast); setText(w, info.tooFast ? 'Too fast — slow under 3 kn to fish' : '');
+    setText($('fishCaught'), `${(info.caught || 0) >= 100 ? Math.round(info.caught) : (+info.caught || 0).toFixed(1)} t`);
+    const w = $('fishWarn'); w.classList.toggle('hidden', !info.tooFast); setText(w, info.tooFast ? `Too fast — trawl under ${K.INTERACT.FISH_MAX_KN || 4} kn to fish` : '');
+  }
+  // ---------------------------------------------------------------- contract card (next step of the accepted jobs)
+  cycleJob(d) {
+    const ts = this.jobTargets || []; if (ts.length < 2) return;
+    const i = Math.max(0, ts.findIndex((t) => t.job.id === this.jobFocus));
+    this.jobFocus = ts[(i + d + ts.length) % ts.length].job.id; this.jobPinned = performance.now();
+    this.showJobs(ts);
+  }
+  /** targets from jobs.js jobTargets(): the focused one (or the most urgent) on the card, ‹ › cycles the rest. */
+  showJobs(targets) {
+    const el = $('jobLine'); if (!el) return;
+    this.jobTargets = targets || [];
+    const you = this.app.you;
+    const on = !!(this.jobTargets.length && you && !you.docked && !you.assist && !you.rescue && !this.ashoreOn);
+    el.classList.toggle('hidden', !on); document.body.classList.toggle('jobOn', on);
+    if (!on) { this.jobShown = null; return; }
+    // an action that is possible right now takes the card unless the skipper picked a contract a moment ago
+    const ts = this.jobTargets, act = ts.find((t) => t.action?.enabled);
+    let t = ts.find((x) => x.job.id === this.jobFocus);
+    if (!t || (act && act !== t && performance.now() - (this.jobPinned || 0) > 20000)) t = act || t || ts[0];
+    this.jobFocus = t.job.id; this.jobShown = t;
+    const i = ts.indexOf(t);
+    el.style.setProperty('--job', t.color || JOB_COLOR[t.type] || '#f2b134');
+    this.setIcon($('jobIc'), JOB_ICON[t.type] || 'contract');
+    setText($('jobTitle'), t.title || t.type);
+    setText($('jobPay'), `${fmt(t.job.pay)} cr`);
+    setText($('jobStep'), t.step);
+    setText($('jobWhere'), jobWhere(t));
+    const left = fmtLeft(t.deadlineS); setText($('jobLeft'), left); $('jobLeft').classList.toggle('late', t.deadlineS < 0);
+    $('jobNav').classList.toggle('hidden', ts.length < 2); setText($('jobIdx'), `${i + 1}/${ts.length}`);
+    const b = $('btnJobAct');
+    if (t.action) {
+      b.classList.remove('hidden'); b.disabled = !t.action.enabled;
+      setLbl(b, `${t.action.label}${this.touch ? '' : ' (J)'}`);
+      b.title = t.action.enabled ? `${t.action.label} now` : t.action.why || '';
+      b.classList.toggle('attention', !!t.action.enabled);
+    } else b.classList.add('hidden');
+    const r = $('btnJobRoute'); const routed = this.app.route?.length && this.app.route.at(-1) && Math.abs(this.app.route.at(-1).lat - t.lat) < 1e-4 && Math.abs(this.app.route.at(-1).lon - t.lon) < 1e-4;
+    r.classList.toggle('on', !!routed); setLbl(r, routed ? 'On course' : 'Route');
   }
   toggleWeather() { const p = $('weatherPanel'); p.classList.toggle('hidden'); if (!p.classList.contains('hidden')) { this._wxAt = performance.now(); this.renderWeather(this.app.you?.weather || this.app.wx, this.app.you?.tide || this.app.tide); } }
   /** main.js calls this every HUD tick: only render while the panel is visible, at most once a second. */
@@ -705,6 +749,12 @@ export class Hud {
     else if (nb && !Number.isFinite(nb.lat) && Number.isFinite(nb.brg) && Number.isFinite(nb.distM)) all.push({ kind: 'berth', polar: { brg: nb.brg, d: nb.distM / GEO.SCALE }, color: '#f2b134', label: nb.name || 'berth' });
     for (const c of all) {
       const d = c.polar ? c.polar.d : unitsBetween(me.lat, me.lon, c.lat, c.lon);
+      if (c.kind === 'job' && d - (c.radiusU || 0) > rangeU * 0.94) { // out of range: an arrowhead on the rim points to it
+        const bj = ((bearing(me.lat, me.lon, c.lat, c.lon) + rot) * Math.PI) / 180, rr = R - 10;
+        const ex = Math.sin(bj) * rr, ey = -Math.cos(bj) * rr;
+        ctx.fillStyle = c.color; ctx.beginPath(); ctx.moveTo(ex + Math.sin(bj) * 7, ey - Math.cos(bj) * 7); ctx.lineTo(ex + Math.sin(bj + 2.4) * 6, ey - Math.cos(bj + 2.4) * 6); ctx.lineTo(ex + Math.sin(bj - 2.4) * 6, ey - Math.cos(bj - 2.4) * 6); ctx.closePath(); ctx.fill();
+        continue;
+      }
       if (d > rangeU * 1.02 && !(c.kind === 'storm' && d - (c.radiusU || 0) < rangeU)) continue;
       const brg = c.polar ? c.polar.brg : bearing(me.lat, me.lon, c.lat, c.lon);
       const b = ((brg + rot) * Math.PI) / 180;
@@ -719,6 +769,11 @@ export class Hud {
       else if (c.kind === 'berth') { ctx.lineWidth = 2; ctx.strokeRect(x - 4, y - 4, 8, 8); ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); ctx.stroke(); if (!small) { ctx.fillStyle = '#ffd98a'; ctx.fillText(c.label, x, y - 9); } }
       else if (c.kind === 'platform') { ctx.beginPath(); ctx.moveTo(x - 4, y + 4); ctx.lineTo(x, y - 5); ctx.lineTo(x + 4, y + 4); ctx.closePath(); ctx.stroke(); }
       else if (c.kind === 'rescue') { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.stroke(); }
+      else if (c.kind === 'job') {
+        if (c.radiusU) { ctx.beginPath(); ctx.arc(x, y, Math.max(5, c.radiusU * k), 0, Math.PI * 2); ctx.setLineDash([2, 3]); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]); }
+        ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
+        if (!small) { ctx.fillStyle = c.color; ctx.fillText(c.label, x, y - 11); }
+      }
       else if (c.kind === 'ai') {
         const hh = ((c.hdg ?? 0) + rot) * (Math.PI / 180);
         ctx.beginPath(); ctx.moveTo(x + Math.sin(hh) * 5, y - Math.cos(hh) * 5); ctx.lineTo(x + Math.sin(hh + 2.5) * 4, y - Math.cos(hh + 2.5) * 4); ctx.lineTo(x + Math.sin(hh - 2.5) * 4, y - Math.cos(hh - 2.5) * 4); ctx.closePath(); ctx.fill();

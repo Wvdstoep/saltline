@@ -37,7 +37,7 @@
       <details class="keys">
         <summary>Controls &amp; how it works</summary>
         <p><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> rudder · <kbd>Space</kbd> all stop · <kbd>T</kbd> moor / harbour · <kbd>G</kbd> go ashore · <kbd>M</kbd> chart · <kbd>P</kbd> autopilot ·
-        <kbd>.</kbd>/<kbd>,</kbd> time warp · <kbd>I</kbd> walk your ship · <kbd>Tab</kbd> ships nearby · <kbd>F</kbd> fish · <kbd>K</kbd> damage-control kit · <kbd>C</kbd> camera · <kbd>Enter</kbd> chat · <kbd>H</kbd> help.</p>
+        <kbd>.</kbd>/<kbd>,</kbd> time warp · <kbd>I</kbd> walk your ship · <kbd>Tab</kbd> ships nearby · <kbd>F</kbd> fish · <kbd>J</kbd> contract action (tow line, crane) · <kbd>N</kbd> tugs · <kbd>K</kbd> damage-control kit · <kbd>C</kbd> camera · <kbd>Y</kbd> horn · <kbd>U</kbd> sound · <kbd>Enter</kbd> chat · <kbd>H</kbd> help.</p>
         <p>The world is the real Earth at 1:1 and the clock is the real clock. Plan a route on the chart and use <b>time warp</b> on open water to get there faster,
         come alongside a berth under 2 kn and moor (T), then <b>go ashore</b> and walk the real harbour to the harbourmaster, shipyard, chandler, market and bar.</p>
       </details>
@@ -79,6 +79,12 @@
       <button id="warpDown" title="Slower (,)" aria-label="Slower time warp"><span class="si" data-icon="rewind"></span></button>
       <span class="warpLevel"><small>Warp</small><b id="warpLevel">1×</b></span>
       <button id="warpUp" title="Faster (.)" aria-label="Faster time warp"><span class="si" data-icon="ffwd"></span></button>
+    </div>
+    <div id="jobLine" class="glass ctxCard hidden" aria-live="polite">
+      <div class="jobHead"><span class="si jobIc" id="jobIc" data-icon="contract"></span><b id="jobTitle"></b><span id="jobPay" class="jobPay"></span></div>
+      <div class="jobStep"><span id="jobStep"></span></div>
+      <div class="jobFoot"><span id="jobWhere" class="jobWhere"></span><span id="jobLeft" class="jobLeft"></span>
+        <span class="jobBtns"><span id="jobNav" class="jobNav hidden"><button id="jobPrev" class="iconBtn" aria-label="Previous contract"><span class="si" data-icon="chevronLeft"></span></button><b id="jobIdx">1/1</b><button id="jobNext" class="iconBtn" aria-label="Next contract"><span class="si" data-icon="chevronRight"></span></button></span><button id="btnJobRoute" title="Lay a course to this target"><span class="si" data-icon="route"></span><span class="lbl">Route</span></button><button id="btnJobAct" class="primary hidden"><span class="lbl">Act</span></button></span></div>
     </div>
     <div id="berthLine" class="glass ctxCard hidden">
       <div class="berthInfo"><span class="si" data-icon="pier"></span><span id="berthText"></span></div>
@@ -164,7 +170,7 @@
     <button id="btnWalkMore" class="menuBtn touchOnly"><span class="si" data-icon="stairs"></span><span class="lbl">Walk ship</span></button>
     <button id="btnChatMore" class="menuBtn touchOnly"><span class="si" data-icon="chat"></span><span class="lbl">Chat</span></button>
     <button id="btnTow" class="menuBtn danger"><span class="si" data-icon="tow"></span><span class="lbl">Call tow</span></button>
-    <button id="btnSound" class="menuBtn" title="Sound on/off (N) · horn: Y"><span class="si" data-icon="volume"></span><span class="lbl">Sound on (N)</span></button>
+    <button id="btnSound" class="menuBtn" title="Sound on/off (U) · horn: Y"><span class="si" data-icon="volume"></span><span class="lbl">Sound on (U)</span></button>
     <button id="btnHelp" class="menuBtn"><span class="si" data-icon="help"></span><span class="lbl">Help (H)</span></button>
   </div>
 
@@ -274,6 +280,7 @@
         <article class="card"><h3><span class="si" data-icon="globe"></span>Real time, real world</h3><p>The map is the Earth at 1:1 and the clock is the real UTC clock. Weather comes from live observations where available, tides rise and fall twice a day, and AIS traffic sails the real shipping lanes. The crew keeps sailing a set voyage while you are offline.</p></article>
         <article class="card"><h3><span class="si" data-icon="ffwd"></span>Time warp</h3><p>On open water, away from harbours and other skippers, step the warp up with <kbd>.</kbd> (down with <kbd>,</kbd>) or the ◀◀ ▶▶ control: 5×, 20×, 100× and — with a planned route — 400×. Fuel, wear and wages scale with it. The warp drops back to 1× near land, harbours, storms, other ships or the coast guard.</p></article>
         <article class="card"><h3><span class="si" data-icon="fuel"></span>Survive</h3><p>Fuel burns with throttle³, load and headwind — bunker at harbour fuel docks (the instruments show your range). Hull condition decays under way; below 30 % steering goes sluggish and leaks start; at 0 % you sink and the nearest lifeboat station comes for you. Repairs and a regular service at the yard, or a damage-control kit (K) at sea.</p></article>
+        <article class="card"><h3><span class="si" data-icon="contract"></span>Contracts</h3><p>Every contract you sign shows on the contract card at sea: the next step, distance and bearing, time left and the pay. A coloured light column marks the target in the world, the radar and the chart mark it too, and <i>Route</i> lays a course over water and hands it to the autopilot. Tows: find the disabled ship, come within 300 m under 3 kn and pass the tow line (<kbd>J</kbd>); harbour tugs take her over 4 km off the destination port. Supply runs: hold station by the platform and start the crane (<kbd>J</kbd>). Fishing: nets out on the bank (<kbd>F</kbd>), trawl under 4 kn, land the catch. Freight and passengers: moor at the destination.</p></article>
         <article class="card"><h3><span class="si" data-icon="pier"></span>Berthing</h3><p>Come alongside a berth (within 60 m, under 2 kn) and press <kbd>T</kbd> to moor, or request tugs within 1.5 km. The berth card shows distance, bearing and depth; the radar marks the berth. Port dues, berth fees and pilotage are charged like in a real port.</p></article>
         <article class="card"><h3><span class="si" data-icon="walk"></span>Go ashore</h3><p>Moored, press <kbd>G</kbd> to walk the real harbour: the harbourmaster has the contracts and job boards, the shipyard sells hulls, the chandler repairs and services, the market trades commodities, and the bar … knows people. <kbd>E</kbd> or tap at a door, <kbd>G</kbd> to go back aboard.</p></article>
         <article class="card"><h3><span class="si" data-icon="coins"></span>Trade</h3><p>Freight, passenger, charter, fishing, supply and tow contracts; every harbour's board is on the chart and in <i>Job boards</i>. Markets have real stock levels (buying raises the price). The black-market contact pays five times the rate — with contraband aboard.</p></article>

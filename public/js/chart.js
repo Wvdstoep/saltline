@@ -280,6 +280,7 @@ export class Chart {
     if (this.layers.rescues) this.drawRescues();
     this.drawMe();
     if (this.layers.harbors) this.drawHarbors();
+    if (this.layers.jobs) this.drawActiveJobs();
     this.drawHover();
     this.drawScaleBar();
     this.drawAttribution();
@@ -521,6 +522,30 @@ export class Chart {
     if (this.layers.jobs && jobs && z >= 6) {
       ctx.strokeStyle = '#f2b134'; ctx.lineWidth = 1.5; ctx.font = '9px sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#ffd98a';
       for (const e of jobs.harbors) for (const j of e.jobs) if (j.at && Number.isFinite(j.at.lat)) { const p = this.project(j.at.lat, j.at.lon); if (!this.onScreen(p)) continue; ctx.beginPath(); ctx.moveTo(p.x, p.y - 5); ctx.lineTo(p.x + 5, p.y); ctx.lineTo(p.x, p.y + 5); ctx.lineTo(p.x - 5, p.y); ctx.closePath(); ctx.stroke(); if (z >= 8) ctx.fillText('tow', p.x + 7, p.y); }
+    }
+  }
+  /** The skipper's accepted contracts: where each one wants you next (jobs.js jobTargets, kept fresh by main.js). */
+  drawActiveJobs() {
+    const ctx = this.ctx, a = this.app, s = a.ship, ts = a.jobTargets || [];
+    if (!ts.length) return;
+    const me = s ? this.project(s.lat, s.lon) : null;
+    ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const stack = new Map(); // contracts sharing a target (two jobs to the same port) stack their labels
+    for (const t of ts) {
+      if (!Number.isFinite(t.lat)) continue;
+      const p = this.project(t.lat, t.lon);
+      const sk = `${Math.round(p.x / 6)},${Math.round(p.y / 6)}`, row = stack.get(sk) || 0; stack.set(sk, row + 1);
+      if (me && Math.abs(p.x - me.x) < this.scale / 2) { ctx.strokeStyle = t.color; ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5; ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.moveTo(me.x, me.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
+      if (!this.onScreen(p)) continue;
+      if (t.rangeM > 0) { const r = (t.rangeM / 1000 / 111.32) * this.scale / 360 * (1 / Math.cos((t.lat * Math.PI) / 180)); if (r > 6) { ctx.strokeStyle = t.color; ctx.globalAlpha = 0.6; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; } }
+      ctx.fillStyle = t.color; ctx.strokeStyle = '#04101c'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#04101c'; ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill();
+      const label = `${t.kind === 'casualty' ? 'Casualty' : t.towing ? `Tow → ${t.name}` : t.name} · ${t.type}`;
+      const tw = ctx.measureText(label).width + 8;
+      const ly = p.y + row * 17;
+      ctx.fillStyle = 'rgba(4,12,20,0.78)'; ctx.fillRect(p.x + 10, ly - 8, tw, 16);
+      ctx.fillStyle = t.color; ctx.fillText(label, p.x + 14, ly);
     }
   }
   drawHover() {

@@ -177,6 +177,25 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius
 #berthText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #berthLine .berthBtns { display: flex; gap: 6px; flex: none; }
 #berthLine button { min-height: 34px; font-size: 12.5px; padding: 0 12px; }
+/* contract card: the next step of the accepted jobs */
+#jobLine { --job: #f2b134; display: flex; flex-direction: column; gap: 4px; border-left: 3px solid var(--job); }
+#jobLine .jobHead { display: flex; align-items: center; gap: var(--s2); font-size: 13px; min-width: 0; }
+#jobLine .jobIc { color: var(--job); flex: none; }
+#jobTitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 650; }
+#jobLine .jobPay { font-family: var(--mono); color: var(--accent-2); font-size: 12.5px; flex: none; }
+#jobLine .jobStep { font-size: 12.5px; color: var(--fg-2); line-height: 1.35; }
+#jobLine .jobFoot { display: flex; align-items: center; gap: 4px var(--s3); flex-wrap: wrap; }
+#jobLine .jobWhere { font-family: var(--mono); font-size: 12.5px; color: var(--job); white-space: nowrap; }
+#jobLine .jobLeft { font-size: 12px; color: var(--muted); white-space: nowrap; }
+#jobLine .jobLeft.late { color: var(--red); }
+#jobLine .jobBtns { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+#jobLine button { min-height: 32px; font-size: 12.5px; padding: 0 10px; }
+#jobLine button.on { color: var(--green); border-color: rgba(79, 209, 139, 0.45); }
+#jobLine button.primary.attention { box-shadow: 0 0 0 0 rgba(242, 177, 52, 0.7); animation: jobPulse 1.4s ease-out infinite; }
+@keyframes jobPulse { 0% { box-shadow: 0 0 0 0 rgba(242, 177, 52, 0.7); } 100% { box-shadow: 0 0 0 10px rgba(242, 177, 52, 0); } }
+#jobLine .jobNav { display: inline-flex; align-items: center; gap: 2px; }
+#jobLine .jobNav b { font-family: var(--mono); font-size: 11.5px; color: var(--muted); min-width: 28px; text-align: center; }
+#jobLine .jobNav .iconBtn { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }
 #fishPanel .ctxHead { display: flex; align-items: center; gap: var(--s2); font-size: 13px; color: var(--cyan); margin-bottom: 4px; }
 #fishPanel .rows { display: flex; gap: var(--s4); }
 #fishPanel .rows div { display: flex; flex-direction: column; min-width: 0; }
@@ -714,6 +733,14 @@ body.touch #radarHU { position: absolute; top: 4px; right: 4px; width: var(--tap
 body.touch #ctxStack { display: contents; }
 body.touch #berthLine, body.touch #fishPanel { position: absolute; left: calc(var(--gut) + var(--sal)); right: calc(var(--gut) + var(--sar)); width: auto; top: calc(var(--top-h) + var(--sat) + 4px); }
 body.touch #berthLine { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+body.touch #jobLine { position: absolute; left: calc(var(--gut) + var(--sal)); right: calc(var(--gut) + var(--sar)); width: auto; top: calc(var(--top-h) + var(--sat) + 4px); padding: 6px 8px; gap: 3px; }
+body.touch #jobLine .jobStep { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; }
+body.touch #jobLine button { min-height: 38px; }
+body.touch #jobLine .jobNav .iconBtn { width: 38px; min-width: 38px; height: 38px; min-height: 38px; }
+body.touch.berthOn #jobLine { display: none; }
+body.touch.jobOn:not(.berthOn) #fishPanel { top: calc(var(--top-h) + var(--sat) + 146px); }
+body.touch.jobOn:not(.berthOn) #log, body.touch.jobOn:not(.berthOn) #alerts { top: calc(var(--top-h) + var(--sat) + 146px); }
+body.touch.jobOn.fishOn:not(.berthOn) #log, body.touch.jobOn.fishOn:not(.berthOn) #alerts { top: calc(var(--top-h) + var(--sat) + 236px); }
 body.touch #berthLine .berthInfo { flex: 1 1 100%; font-size: 12.5px; }
 body.touch #berthLine .berthBtns { flex: 1 1 100%; }
 body.touch #berthLine .berthBtns button { flex: 1; min-height: var(--tap); }

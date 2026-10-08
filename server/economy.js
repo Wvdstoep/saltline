@@ -42,12 +42,13 @@ function pickDestination(from, rnd, maxKm = 1e9) {
 // Jobs are in real time now: deadlines are generous multiples of the sailing time at 12 knots.
 function hoursFor(km, rnd) { return Math.max(4, km / 22 + 6 + rnd() * 12); }
 
-export function generateJob(from, simTime, rnd, forceType) {
+/** `env.towSpot(lat, lon, draft)` (optional) says whether a disabled vessel can lie there: open, deep water away from land. */
+export function generateJob(from, simTime, rnd, forceType, env = {}) {
   const roll = rnd();
   const type = forceType || (roll < 0.42 ? 'freight' : roll < 0.57 ? 'passengers' : roll < 0.7 ? 'fishing' : roll < 0.8 ? 'charter' : roll < 0.9 ? 'supply' : 'tow');
   if (type === 'fishing') {
     const grounds = FISHING_GROUNDS.map((g) => ({ g, d: distKm(from, g) })).filter((x) => x.d < 500).sort((a, b) => a.d - b.d);
-    if (!grounds.length) return generateJob(from, simTime, rnd, 'freight');
+    if (!grounds.length) return generateJob(from, simTime, rnd, 'freight', env);
     const g = grounds[Math.floor(rnd() * Math.min(3, grounds.length))].g;
     const qty = Math.round((20 + rnd() * 120) / 5) * 5;
     return {
@@ -58,7 +59,7 @@ export function generateJob(from, simTime, rnd, forceType) {
   }
   if (type === 'supply') {
     const plats = PLATFORMS.map((p) => ({ p, d: distKm(from, p) })).filter((x) => x.d < 450).sort((a, b) => a.d - b.d);
-    if (!plats.length) return generateJob(from, simTime, rnd, 'freight');
+    if (!plats.length) return generateJob(from, simTime, rnd, 'freight', env);
     const { p, d } = plats[Math.floor(rnd() * Math.min(3, plats.length))];
     const qty = [40, 80, 120, 200, 350][Math.floor(rnd() * 5)];
     const pay = Math.round((qty * d * PAY_PER_T_KM * 2.2 + 4000) * SIZE_MULT[from.size]);
@@ -70,15 +71,16 @@ export function generateJob(from, simTime, rnd, forceType) {
   }
   if (type === 'tow') {
     const dest = pickDestination(from, rnd, 400) || pickDestination(from, rnd);
-    if (!dest) return generateJob(from, simTime, rnd, 'freight');
-    // A disabled vessel somewhere offshore within 30–120 km of this harbour.
-    let at = null;
-    for (let i = 0; i < 12 && !at; i++) {
-      const cand = destination(from.lat, from.lon, rnd() * 360, 30000 + rnd() * 90000);
-      at = cand;
-    }
-    const d = distKm(from, at) + distKm(at, dest.h);
+    if (!dest) return generateJob(from, simTime, rnd, 'freight', env);
+    // A disabled vessel somewhere offshore within 30–120 km of this harbour, on open water deep enough to float her.
     const victim = ['trawler', 'coaster', 'sloop', 'myacht', 'ketch', 'cruiser'][Math.floor(rnd() * 6)];
+    let at = null;
+    for (let i = 0; i < 24 && !at; i++) {
+      const cand = destination(from.lat, from.lon, rnd() * 360, 30000 + rnd() * 90000);
+      if (!env.towSpot || env.towSpot(cand.lat, cand.lon, SHIP_CLASSES[victim].draft)) at = cand;
+    }
+    if (!at) return generateJob(from, simTime, rnd, 'freight', env);
+    const d = distKm(from, at) + distKm(at, dest.h);
     const pay = Math.round((d * 120 + 6000) * SIZE_MULT[from.size]);
     return {
       id: nextJobId(), type: 'tow', from: from.id, to: dest.h.id, at, victimCls: victim, pay, distKm: Math.round(d),
