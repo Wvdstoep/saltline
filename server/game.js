@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { GEO, SIM, SHIP_CLASSES, GOODS, INTERACT, LAW, LAYERS, FEES, WARP } from '../shared/constants.js';
 import { haversine, bearing, destination, unitsBetween, normDeg, angleDiff, wrapLon, clampLat } from '../shared/geo.js';
 import { fuelBurnPerSimHour, wearPerSimHour, currentAt, headwindFactor, stepShip } from '../shared/physics.js';
+import { THROTTLE_MIN } from '../shared/telegraph.js';
 import { tideAt } from '../shared/tide.js';
 import { HARBORS, FISHING_GROUNDS, PATROLS, PLATFORMS, harborById } from './harbors.js';
 import {
@@ -15,12 +16,14 @@ import {
   portDues, berthFeePerDay, pilotageFee, tugCostFor,
 } from './economy.js';
 import { DATA_DIR } from './world.js';
+import { pickGuideBerth, fittingBerthWithin, GUIDE } from './berthguide.js';
+import { planTugAssist, beginTugAssist, stepTugAssist, tickTugs, tugsPublic, assistExtra, tugBerthCandidates } from './tugassist.js'; // V5 item 4: water-only tug paths + visible tugs
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
 const START_HARBOR = 'rotterdam';
 const START_MONEY = 25000;
 const SERVICE_INTERVAL_S = FEES.SERVICE_INTERVAL_DAYS * 86400;
-const NEAR_BERTH_RANGE_U = 2500;      // you.nearBerth is reported within this of a berth
+const NEAR_BERTH_RANGE_U = GUIDE.RANGE_M; // you.nearBerth (berth guidance, server/berthguide.js) is reported within this of the berth
 const DOCK_SEARCH_RANGE_U = 6000;     // beyond this of the anchor there is no harbour to talk to
 const FISH_RATE_T_PER_H = 10;         // nets: t/h = class fishRate × ground richness × this (stern trawler on the Dogger Bank: 30 t/h)
 const LAND_PENETRATION_M = 0.5;       // onState rejects positions this far inside a quay/land
@@ -262,17 +265,25 @@ export class Game {
     return { lat: w.lat, lon: w.lon };
   }
   harborGeom(id) { if (!this.geom) return null; try { return this.geom.getHarborGeom(id) || null; } catch { return null; } }
-  // Nearest berth of the nearest harbour within NEAR_BERTH_RANGE_U, as shown in the HUD berth line.
+  // Berth guidance target (V5-PLAN item 2): the nearest berth of the nearest harbour that FITS the ship (free ones first,
+  // sticky so the leading line does not jump), within NEAR_BERTH_RANGE_U; else the nearest one with `why` it does not fit.
   nearBerthFor(p) {
-    if (!this.geom || p.docked) return null;
+    if (!this.geom || p.docked) { p.guideBerth = null; return null; }
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
-    if (!harbor || units > NEAR_BERTH_RANGE_U + 4000 || !this.harborGeom(harbor.id)) return null;
-    let nb = null;
-    try { nb = this.geom.nearestBerth(harbor.id, p.ship.lat, p.ship.lon); } catch { nb = null; }
-    if (!nb || !nb.berth || !(nb.distM <= NEAR_BERTH_RANGE_U)) return null;
-    const b = nb.berth;
-    return { id: b.id, name: b.name, harbor: harbor.id, harborName: harbor.name, distM: Math.round(nb.distM), brg: Math.round(nb.brg), hdg: Math.round(b.hdg), depth: b.depth, length: b.length, kind: b.kind, lat: b.lat, lon: b.lon };
+    const geom = harbor && units <= NEAR_BERTH_RANGE_U + 4000 ? this.harborGeom(harbor.id) : null;
+    if (!geom || !Array.isArray(geom.berths) || !geom.berths.length) return null;
+    const occupied = new Set();
+    for (const q of this.players.values()) if (q !== p && q.docked === harbor.id && q.berth?.id) occupied.add(q.berth.id);
+    let g = null;
+    try { g = pickGuideBerth({ berths: geom.berths, lat: p.ship.lat, lon: p.ship.lon, why: (b) => this.berthFits(p, b), occupied, prevId: p.guideBerth?.harbor === harbor.id ? p.guideBerth.id : null, spdKn: Math.abs(p.ship.spd || 0) }); } catch { g = null; }
+    if (!g || !(g.distM <= NEAR_BERTH_RANGE_U)) return null;
+    const b = g.berth;
+    if (g.fits) p.guideBerth = { harbor: harbor.id, id: b.id };
+    const water = Number.isFinite(b.depth) ? round1(b.depth + tideAt(b.lat, b.lon, this.simTime).height) : null;
+    return { id: b.id, name: b.name, harbor: harbor.id, harborName: harbor.name, distM: Math.round(g.distM), brg: Math.round(bearing(p.ship.lat, p.ship.lon, b.lat, b.lon)), hdg: Math.round(b.hdg), depth: b.depth, length: b.length, kind: b.kind, lat: b.lat, lon: b.lon,
+      fits: g.fits, why: g.why || null, water, contract: (p.jobs || []).some((j) => j.to === harbor.id) };
   }
+
   tideFor(lat, lon) {
     const t = tideAt(lat, lon, this.simTime);
     return { height: round2(t.height), rate: round2(t.rate), stream: { u: round2(t.stream.u), v: round2(t.stream.v) }, range: round2(t.range), phase: round2(t.phase), state: t.state, nextHigh: Math.round(t.nextHigh), nextLow: Math.round(t.nextLow) };
@@ -286,6 +297,7 @@ export class Game {
       convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.flooding >= 1 || !!p.rescue, towing: !!p.towing, offline: !p.online,
       towCls: p.towing ? (p.jobs.find((j) => j.id === p.towing)?.victimCls || 'trawler') : null, fishing: !!p.fishing,
       warp: this.warpOf(p),
+      tugs: tugsPublic(this, p),
     };
   }
   privateState(p) {
@@ -295,7 +307,7 @@ export class Game {
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
       weather: this.weatherPublic(p.ship.lat, p.ship.lon), tide: this.tideFor(p.ship.lat, p.ship.lon),
-      berth: p.berth || null, assist: p.assist ? { harbor: p.assist.harbor, berthId: p.assist.berthId, berthName: p.assist.berthName, until: p.assist.until, from: p.assist.from, to: p.assist.to } : null,
+      berth: p.berth || null, assist: p.assist ? { harbor: p.assist.harbor, berthId: p.assist.berthId, berthName: p.assist.berthName, until: p.assist.until, from: p.assist.from, to: p.assist.to, ...assistExtra(this, p) } : null,
       nearBerth: this.nearBerthFor(p), serviceDue: p.serviceDue, serviceMul: round2(serviceWearMul(p.serviceDue, this.simTime)),
       stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
       warp: this.warpOf(p), warpLimit: this.warpLimit(p),
@@ -429,8 +441,8 @@ export class Game {
     p.rejects = 0; p.moveBudget -= moved;
     const hdg = Number(m.hdg), spd = Number(m.spd), thr = Number(m.throttle), rud = Number(m.rudder);
     s.lat = clampLat(lat); s.lon = lon; s.hdg = Number.isFinite(hdg) ? normDeg(hdg) : s.hdg;
-    s.spd = clamp(Number.isFinite(spd) ? spd : 0, -C.maxKn * 0.4, C.maxKn * 1.1);
-    s.throttle = clamp(Number.isFinite(thr) ? thr : 0, -0.3, 1); s.rudder = clamp(Number.isFinite(rud) ? rud : 0, -1, 1);
+    s.spd = clamp(Number.isFinite(spd) ? spd : 0, -C.maxKn * 0.6, C.maxKn * 1.1); // astern top speed is ~half the ahead speed (telegraph)
+    s.throttle = clamp(Number.isFinite(thr) ? thr : 0, THROTTLE_MIN, 1); s.rudder = clamp(Number.isFinite(rud) ? rud : 0, -1, 1);
     p.stats.distanceKm += moved / 1000;
     // Land/shallow plausibility: tolerate brief shallows (client stops itself), teleport back if it persists.
     // Inside a built harbour patch the patch mask is the authority (coarse raster cells are 556 m); the tide adds to the depth.
@@ -545,8 +557,10 @@ export class Game {
       // (a) built harbour: come alongside a berth within 60 m at under 2 kn.
       let nb = null; try { nb = this.geom.nearestBerth(harbor.id, p.ship.lat, p.ship.lon); } catch { nb = null; }
       if (!nb || !nb.berth || nb.distM > INTERACT.BERTH_RANGE_U || Math.abs(p.ship.spd) > 2) return this.event(p, 'warn', `Come alongside a berth (within ${INTERACT.BERTH_RANGE_U} m, under 2 kn) or request tugs.`);
-      const why = this.berthFits(p, nb.berth); if (why) return this.event(p, 'warn', why);
-      berth = nb.berth;
+      const why = this.berthFits(p, nb.berth);
+      const alt = why ? fittingBerthWithin(geom.berths, p.ship.lat, p.ship.lon, INTERACT.BERTH_RANGE_U, (b) => this.berthFits(p, b)) : null; // the quay next to a pontoon
+      if (why && !alt) return this.event(p, 'warn', why);
+      berth = alt || nb.berth;
     } else {
       // (b) no geometry built yet: the legacy anchor rule.
       if (units > INTERACT.DOCK_RADIUS_U) return this.event(p, 'warn', 'No harbour within docking range.');
@@ -608,11 +622,20 @@ export class Game {
     const cost = tugCostFor(p.ship.cls);
     if (p.money < cost) return this.event(p, 'warn', `The tugs want ${fmt(cost)} cr up front. You have ${fmt(p.money)}.`);
     const geom = this.harborGeom(harbor.id);
-    let berth = null;
+    let berth = null, tugPlan = null;
     if (geom && (geom.berths || []).length) {
       const ok = geom.berths.filter((b) => !this.berthFits(p, b));
-      const pool = ok.length ? ok : geom.berths;
-      berth = pool.map((b) => ({ b, d: haversine(p.ship.lat, p.ship.lon, b.lat, b.lon) })).sort((a, c) => a.d - c.d)[0].b;
+      // tugs never put her on top of a ship lying there (or being brought in there) when a free fitting berth exists
+      const taken = new Set();
+      for (const q of this.players.values()) { if (q === p || !(q.online || q.assist)) continue; if (q.docked === harbor.id && q.berth?.id) taken.add(q.berth.id); if (q.assist?.harbor === harbor.id && q.assist.berthId) taken.add(q.assist.berthId); }
+      const free = ok.filter((b) => !taken.has(b.id));
+      const pool = free.length ? free : ok.length ? ok : geom.berths;
+      const guided = p.guideBerth?.harbor === harbor.id ? pool.find((b) => b.id === p.guideBerth.id) : null; // the berth the guidance card leads to
+      berth = guided || pool.map((b) => ({ b, d: haversine(p.ship.lat, p.ship.lon, b.lat, b.lon) })).sort((a, c) => a.d - c.d)[0].b;
+      // V5 item 4: a water-only path from here (server/tugassist.js); no path → refuse, nothing charged; no patch → legacy walk
+      tugPlan = planTugAssist(this, p, harbor, tugBerthCandidates(berth, pool, p.ship.lat, p.ship.lon));
+      if (tugPlan && !tugPlan.ok) return this.event(p, 'warn', tugPlan.msg);
+      if (tugPlan) berth = tugPlan.berth;
     }
     const anchor = this.harborAnchor(harbor);
     const to = berth ? { lat: berth.lat, lon: berth.lon, hdg: berth.hdg } : { lat: anchor.lat, lon: anchor.lon, hdg: p.ship.hdg };
@@ -620,11 +643,17 @@ export class Game {
     p.money -= cost; p.fishing = false; p.voyage = null;
     p.ship.throttle = 0; p.ship.rudder = 0;
     p.assist = { harbor: harbor.id, berthId: berth ? berth.id : null, berthName: berth ? berth.name : null, from: { lat: p.ship.lat, lon: p.ship.lon, hdg: p.ship.hdg }, to, start: now, until: now + FEES.TUG_SECONDS * 1000, cost };
+    if (tugPlan) {
+      const t = beginTugAssist(this, p, harbor, tugPlan); p.assist.opId = t.id; p.assist.until = t.until;
+      this.event(p, 'info', `${t.tugs === 1 ? 'A harbour tug is' : 'Two harbour tugs are'} on the way for ${fmt(cost)} cr. They will take you alongside ${berth.name} — about ${Math.max(1, Math.round((t.until - now) / 60000))} min.`);
+      return this.sendYou(p, { correction: true });
+    }
     this.event(p, 'info', `Two tugs made fast for ${fmt(cost)} cr. They will put you ${berth ? `alongside ${berth.name}` : 'in the harbour'} in ${FEES.TUG_SECONDS} s.`);
     this.sendYou(p, { correction: true });
   }
   // Tick: the server walks an assisted ship from `from` to the berth, then moors it exactly as dock() would.
-  stepAssist(p) {
+  stepAssist(p, dt = 0.1) {
+    if (p.assist?.opId && stepTugAssist(this, p, dt)) return; // planned path + visible tugs (server/tugassist.js)
     const a = p.assist, s = p.ship, now = Date.now();
     const dur = Math.max(1, a.until - a.start);
     const f = now >= a.until ? 1 : Math.max(0, Math.min(1, (now - a.start) / dur));
@@ -1013,6 +1042,10 @@ export class Game {
           if (c.timer <= 0) {
             if (Math.abs(p.ship.spd) <= LAW.HEAVE_TO_KN) {
               p.hail.state = 'inspecting'; c.state = 'inspect'; c.timer = 8; this.event(p, 'law', `${c.name} comes alongside. Boarding party inspecting.`);
+            } else if (!p.hail.extended && num(p.ship.throttle, 1) <= 0) {
+              // engine stopped or going astern: a ship takes minutes to lose way, so the cutter waits for her once
+              p.hail.extended = true; c.timer = LAW.HEAVE_TO_GRACE_S; p.hail.until = Date.now() + LAW.HEAVE_TO_GRACE_S * 1000;
+              this.event(p, 'law', `${c.name}: "We see you are stopping. You have ${LAW.HEAVE_TO_GRACE_S} seconds more to come below ${LAW.HEAVE_TO_KN} knots — go astern to brake."`);
             } else {
               this.bumpWanted(p, 1); p.hail.state = 'pursued'; c.state = 'pursue'; c.timer = LAW.PURSUIT_SECONDS;
               this.event(p, 'law', `You failed to heave to. ${c.name} is in pursuit at ${LAW.PURSUIT_KN} kn. Wanted level ${p.wanted}.`);
@@ -1068,6 +1101,7 @@ export class Game {
     this.updateWind(dt);
     this.updateStorms(dt);
     this.updateRescues(dt);
+    tickTugs(this, dt); // tugs sailing home after an assist
     this.requestWeather();
     for (const p of this.byId.values()) {
       // Time warp: drop back to real time the moment a condition stops holding (before anything else, so a docked,
@@ -1075,7 +1109,7 @@ export class Game {
       if (p.warp !== 1) this.checkWarp(p);
       if (p.rescue) continue;
       if (p.docked) continue;
-      if (p.assist) { this.stepAssist(p); continue; }
+      if (p.assist) { this.stepAssist(p, dt); continue; }
       if (!p.online) { if (p.voyage) this.simulateOffline(p, dt); else continue; }
       if (p.flooding >= 1) { this.sink(p); continue; }
       const s = p.ship, C = SHIP_CLASSES[s.cls];
@@ -1493,6 +1527,7 @@ export class Game {
   }
   expressPassage(p, lat, lon) {
     if (p.docked) return this.event(p, 'warn', 'Cast off first.');
+    if (p.assist) return this.event(p, 'info', 'The tugs have you. Hold on.'); // the tug assist owns the position (was charged, then undone)
     if (p.hail) return this.event(p, 'law', 'Not with the coast guard on the radio.');
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85) return;
     const distM = haversine(p.ship.lat, p.ship.lon, lat, lon);
@@ -1709,7 +1744,7 @@ export class Game {
   // ------------------------------------------------------------------ snapshots
   snapshot() {
     const players = [];
-    for (const p of this.byId.values()) if (p.online || (p.voyage && !p.docked)) players.push(this.publicState(p));
+    for (const p of this.byId.values()) if (p.online || (p.voyage && !p.docked) || p.assist) players.push(this.publicState(p)); // an assist runs on when its skipper drops out: others keep seeing her and her tugs
     return { t: 'snap', time: Date.now(), simTime: Math.round(this.simTime), wind: { dir: Math.round(this.wind.dir), spd: Math.round(this.wind.spd * 10) / 10, u: round3(this.wind.u), v: round3(this.wind.v) }, players, cutters: this.cutters.map(cutterPublic), storms: this.stormsPublic(), rescues: this.rescuesPublic() };
   }
   // The common part is serialised once; each socket gets it plus the AI ships within SIM.AI_RANGE_U of that player.

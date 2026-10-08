@@ -495,3 +495,19 @@ test('used-ship listings refresh every 6 h and carry specs; rescues and tows use
   g.rescues[0].eta = Date.now() - 1; g.updateRescues(0.1);
   assert.equal(p.docked, 'rotterdam'); assert.ok(Math.abs(p.ship.lat - anchor.lat) < 1e-9, 'landed at the anchor');
 });
+test('heave to: a ship stopping with the engine on STOP or astern gets one grace period before the pursuit', () => {
+  const g = mkGame(); const { p, ws } = join(g, 'Halt');
+  g.onAction(p, { action: 'undock' });
+  const c = g.cutters[0]; g.hail(c, p); p.ship.lat = c.lat; p.ship.lon = c.lon;
+  p.ship.spd = 8; p.ship.throttle = -0.6; c.timer = 0;
+  g.updateCutters(0.1);
+  assert.equal(c.state, 'hail', 'still waiting, not pursuing'); assert.equal(p.wanted, 0); assert.ok(p.hail.extended);
+  assert.ok(events(ws).some((t) => /seconds more/.test(t)));
+  p.ship.spd = 1; c.timer = 0; g.updateCutters(0.1);
+  assert.equal(c.state, 'inspect');
+  // a second time, or with the engine still ahead, there is no grace
+  const g2 = mkGame(); const b = join(g2, 'Run'); g2.onAction(b.p, { action: 'undock' });
+  const c2 = g2.cutters[0]; g2.hail(c2, b.p); b.p.ship.lat = c2.lat; b.p.ship.lon = c2.lon;
+  b.p.ship.spd = 8; b.p.ship.throttle = 0.5; c2.timer = 0; g2.updateCutters(0.1);
+  assert.equal(c2.state, 'pursue');
+});

@@ -38,10 +38,12 @@ Saltline is a multiplayer 3D open-world maritime survival / trade / navigation s
 
 ## 2. Ship physics (shared/physics.js — identical code on server and client)
 
-State: `lat, lon, hdg (deg), spd (kn), throttle (−0.3…1), rudder (−1…1)`.
+State: `lat, lon, hdg (deg), spd (kn), throttle (−0.6…1: the engine order telegraph, shared/telegraph.js; −0.6 = full astern), rudder (−1…1)`.
 * Throttle and rudder are *commands* that the actuators follow with lag (rudder lag grows as condition drops).
 * Target speed = `maxKn · throttle · (1 − 0.35·(1−cond) − 0.5·flooding − 0.15·loadFrac)`; speed follows with
-  first-order lag (τ = 25 s accelerating, 45 s decelerating).
+  first-order lag (τ = 25 s) while gathering way ahead; slowing, stopping and going astern are propeller thrust against hull
+  resistance with a per-class inertia (v0.5, shared/physics.js header): a coaster on STOP from full ahead drifts ~8 ship
+  lengths, full astern stops her in ~3.3 lengths / ~90 s; astern top speed ≈ ½ ahead, rudder weaker astern, propeller walk.
 * Yaw rate = `turnRate · rudder · f(spd)` (no steerage way below ~1 kn), multiplied by a steering penalty
   from condition (<40 % → sluggish, lag up to 4 s) and flooding.
 * Velocity = forward·spd + current + 2 % wind leeway. Position integrates in lat/lon using real metres.
@@ -187,6 +189,18 @@ trick as the region cut-out). `harbor.js` extrudes the vector features; the old 
 (`you.assist`; the client suspends its own simulation). Casting off spawns 20 m off the berth face. Harbours
 without built geometry fall back to the v0.2 radius rule. Fees: port dues (dock), pilotage for > 90 m hulls at
 mega/major ports, berth fee per started day (undock), yard `service` every 30 sailing days or wear climbs.
+
+**v0.5 tugs** (`server/tugpath.js`, `server/tugassist.js`, client `public/js/tugs.js`): the assist follows a water-only
+path — A* over the harbour patch with centre clearance ≥ half beam + 10 m and keel depth (heights + tide − draught − 0.5 m),
+string-pulled, corners rounded, bow/stern swept clear, ending with a run parallel to the quay and a sideways push onto
+the berth; no such path → refused, nothing charged (no built patch → the old straight walk). 1 tug under 60 m, 2 above
+(bow + stern on lines, pushing on the outboard side at the end) sail out from the nearest tug station and home again;
+~4 kn in the basins, ~1 kn over the last 150 m; the assist clock is fast-forwarded (`you.assist.rate`, ≤ 5×) to keep it
+under ~4 minutes. Tug positions: `you.assist.tugs` and `snap.players[].tugs` (`{id, lat, lon, hdg, spd, mode
+transit|tow|push, thrust, line: [fwd, stbd] | null, end, ff?}`; `ff` = fast-forward factor while the assist runs, so the
+client draws the wake for the real speed), also `you.assist.phase/phaseText`. The tugs sail home in real time; the tug
+assist prefers a free berth (no skipper lying at it or being brought to it); watchdogs make the tugs fast if they cannot
+reach their station alongside, and finish an assist that overruns 15 min at its berth.
 
 ## Environment
 * **Weather** — Open-Meteo forecast + marine endpoints per 0.5° cell, 20-minute TTL, concurrency-limited,

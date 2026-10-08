@@ -100,6 +100,7 @@ export const INTERACT = {
 export const LAW = {
   HAIL_RANGE_U: 3000,
   HAIL_SECONDS: 30,
+  HEAVE_TO_GRACE_S: 90,     // once, when the engine is on STOP or astern at the end of the hail (stopping takes minutes)
   HEAVE_TO_KN: 2,
   INSPECT_CHANCE: [0.15, 0.6, 0.85, 1.0],  // by wanted level
   PORT_INSPECT_CHANCE: 0.12,

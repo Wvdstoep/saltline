@@ -24,6 +24,8 @@ import { resolveShip } from './collision.js';
 import { Interior } from './interior.js';
 import { WeatherFX } from './weather.js';
 import { TouchHelm, isTouch } from './touch.js';
+import { Telegraph } from './telegraph.js';
+import { THROTTLE_MIN, rpmFraction } from '/shared/telegraph.js';
 
 const { buildShip, buildWreck } = ShipMod;
 const { buildHarbor, buildFishingMarker } = HarborMod;
@@ -70,6 +72,7 @@ class App {
     this.origin = { lat: 52, lon: 4 };
     this.net = new Net({ status: (s) => this.onStatus(s), message: (m) => this.onMessage(m) });
     this.hud = new Hud(this);
+    try { this.telegraph = new Telegraph(this); } catch (e) { console.warn('[telegraph] unavailable', e); this.telegraph = null; } // engine order telegraph (V5 item 3)
     this.you = null; this.world = { harbors: [], fishing: [], platforms: [] }; this.ship = null; this.simTime = 0; this.wind = { u: 0, v: 0, spd: 5, dir: 240 };
     this.wx = null; this.tide = null; this.tideLevel = 0; this.localWind = null; this.storms = []; this.night = 0; this.lightning = 0; this.fogFar = 15000;
     this.others = new Map(); this.cutters = new Map(); this.ai = new Map(); this.rescues = new Map(); this.wrecks = []; this.wreckMeshes = new Map();
@@ -91,6 +94,12 @@ class App {
     this.ashore = null;
     this.ashoreReady = import('./ashore.js').then((m) => { this.ashore = new m.Ashore(this); this.hud.syncModes?.(); return this.ashore; })
       .catch((e) => { console.warn('[ashore] unavailable', e); return null; });
+    // Berth guidance (V5-PLAN item 2, berthguide.js): berth outline + board + leading line + fairway lanes, and the HUD guidance card
+    this.berthGuide = null;
+    import('./berthguide.js').then((m) => { this.berthGuide = new m.BerthGuide(this); }).catch((e) => console.warn('[berthguide] unavailable', e));
+    // Harbour tugs (V5-PLAN item 4, tugs.js): every skipper's assist tugs from the snapshots, with towlines and prop wash
+    this.tugLayer = null;
+    import('./tugs.js').then((m) => { this.tugLayer = new m.TugLayer(this); }).catch((e) => console.warn('[tugs] unavailable', e));
     this.touchHelm = null;
     window.addEventListener('resize', () => this.resize()); this.resize();
     this.bindInput();
@@ -393,13 +402,15 @@ class App {
       view = 'interior';
       const I = this.interior, r = I.roomAt?.(I.pos.x, I.pos.z, I.y), id = String(r?.id || '');
       room = id.startsWith('cabin') ? 'cabin' : id === 'engine' ? 'engine' : (id === 'bridge' || id === 'wheelhouse') ? 'bridge' : (id === 'mess' || id === 'saloon' || id === 'galley') ? 'mess' : 'passage';
+      if (r?.kind && ['cabin', 'engine', 'bridge', 'mess'].includes(r.kind)) room = r.kind; // deck-plan rooms (shipplan.js) carry their kind
+      if (r?.open) { view = 'deck'; room = null; } // out on the open deck: wind and sea, not a room
       if (room === 'bridge') view = 'bridge';
       const moving = I.keys?.size > 0 || this.touchHelm?.stick?.active;
       if (moving && now - this.lastFootstep > (I.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep(room === 'engine' ? 'grating' : room === 'cabin' ? 'wood' : 'steel'); }
     } else if (this.hud.chartOpen?.()) view = 'chart';
     else if (this.cam.mode === 2) view = 'bridge';
     if (ashore && this.ashore?.keys?.size > 0 && now - this.lastFootstep > (this.ashore.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep('concrete'); }
-    st.view = view; st.room = room; st.shipCls = s.cls; st.throttle = s.throttle || 0; st.rpmFrac = Math.min(1, Math.abs(s.throttle || 0));
+    st.view = view; st.room = room; st.shipCls = s.cls; st.throttle = s.throttle || 0; st.rpmFrac = rpmFraction(s.throttle || 0);
     st.speedKn = Math.abs(s.spd || 0);
     const wspd = this.localWind?.spd ?? this.wind?.spd ?? 0, wdir = this.localWind?.dir ?? this.wind?.dir ?? 0;
     st.windSpd = wspd; st.windRelDeg = angleDiff(s.hdg, wdir);
@@ -522,8 +533,9 @@ class App {
       if (k === '.' || k === '>') { e.preventDefault(); return this.stepWarp(1); }
       if (k === ',' || k === '<') { e.preventDefault(); return this.stepWarp(-1); }
       if (this.you?.docked || this.you?.assist) return;
-      if (k === 'w' || k === 'arrowup') { e.preventDefault(); this.nudgeThrottle(0.1); }
-      if (k === 's' || k === 'arrowdown') { e.preventDefault(); this.nudgeThrottle(-0.1); }
+      // W/S step the engine order telegraph one order at a time (Shift: fine 5 % steps between the orders)
+      if (k === 'w' || k === 'arrowup') { e.preventDefault(); if (e.shiftKey || !this.telegraph) this.nudgeThrottle(e.shiftKey ? 0.05 : 0.1); else this.telegraph.step(1, e.repeat); }
+      if (k === 's' || k === 'arrowdown') { e.preventDefault(); if (e.shiftKey || !this.telegraph) this.nudgeThrottle(e.shiftKey ? -0.05 : -0.1); else this.telegraph.step(-1, e.repeat); }
       if (k === 'a' || k === 'arrowleft') { this.manualHelm(); this.input.left = true; this.autopilot = false; }
       if (k === 'd' || k === 'arrowright') { this.manualHelm(); this.input.right = true; this.autopilot = false; }
       if (k === ' ') { this.manualHelm(); this.input.rudderCmd = 0; this.input.throttleCmd = 0; this.touchHelm?.setThrottle?.(0); this.touchHelm?.setRudder?.(0); e.preventDefault(); }
@@ -591,7 +603,7 @@ class App {
   shipLength() { return SHIP_CLASSES[this.ship?.cls || this.you?.ship?.cls]?.length || this.myMesh?.userData.length || 60; }
   clampZoom(d) { const L = this.shipLength(); return THREE.MathUtils.clamp(d, camZoomMin(L), camZoomMax(L)); }
   cycleCamera() { if (!this.walking()) this.cam.mode = (this.cam.mode + 1) % 3; }
-  nudgeThrottle(d) { if (this.you?.docked || this.you?.assist) return; this.manualHelm(); this.input.throttleCmd = THREE.MathUtils.clamp(Math.round((this.input.throttleCmd + d) * 10) / 10, -0.3, 1); this.touchHelm?.setThrottle?.(this.input.throttleCmd); }
+  nudgeThrottle(d) { if (this.you?.docked || this.you?.assist) return; this.manualHelm(); this.input.throttleCmd = THREE.MathUtils.clamp(Math.round((this.input.throttleCmd + d) * 20) / 20, THROTTLE_MIN, 1); this.touchHelm?.setThrottle?.(this.input.throttleCmd); }
   releaseControls() { this.input.left = this.input.right = false; for (const id of ['tchPort', 'tchStbd']) document.getElementById(id)?.classList.remove('on'); }
   /** Touch devices: the TouchHelm sliders (C2) drive the same input state as the keys; the v0.2 hold buttons keep working too. */
   bindTouch() {
@@ -600,7 +612,7 @@ class App {
     try {
       const root = document.getElementById('touchHelm') || document.getElementById('hud') || document.body;
       this.touchHelm = new TouchHelm(root, {
-        onThrottle: (v) => { if (this.you?.docked || this.you?.assist) return; v = Number(v) || 0; if (Math.abs(v) > 1.5) v /= 100; this.manualHelm(); this.input.throttleCmd = THREE.MathUtils.clamp(v, -0.3, 1); },
+        onThrottle: (v) => { if (this.you?.docked || this.you?.assist) return; v = Number(v) || 0; if (Math.abs(v) > 1.5) v /= 100; this.manualHelm(); this.input.throttleCmd = THREE.MathUtils.clamp(v, THROTTLE_MIN, 1); },
         // `active` = a finger is on the slider. Without it the slider is only re-centring (or mirroring the autopilot):
         // that must never switch the autopilot off or count as manual helm.
         onRudder: (v, active) => {
@@ -622,8 +634,8 @@ class App {
       for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, off);
     };
     hold('tchPort', 'left'); hold('tchStbd', 'right');
-    document.getElementById('tchThrUp')?.addEventListener('click', () => this.nudgeThrottle(0.1));
-    document.getElementById('tchThrDn')?.addEventListener('click', () => this.nudgeThrottle(-0.1));
+    document.getElementById('tchThrUp')?.addEventListener('click', () => (this.telegraph ? this.telegraph.step(1) : this.nudgeThrottle(0.1)));
+    document.getElementById('tchThrDn')?.addEventListener('click', () => (this.telegraph ? this.telegraph.step(-1) : this.nudgeThrottle(-0.1)));
   }
   // T / the Dock button: dock when at sea; while docked they (re)open the harbour panel if it is closed (the server
   // answers 'dock' from a docked player with the harbour payload) and cast off when it is open. Cast off is explicit too.
@@ -770,7 +782,11 @@ class App {
     if (f > 1) {
       if (you.docked) { this.hud.event({ kind: 'warn', text: 'Time warp works at sea — cast off first.' }); return false; }
       if (f > WARP_MAX_NO_ROUTE && !this.route.length) { this.hud.event({ kind: 'warn', text: `Above ${WARP_MAX_NO_ROUTE}× the crew needs a route to follow — plot one on the chart (M) and sail it.` }); return false; }
-      if (f > WARP_MAX_NO_ROUTE) { this.autopilot = true; this.input.rudderHold = false; this.input.left = this.input.right = false; }
+      if (f > WARP_MAX_NO_ROUTE) {
+        this.autopilot = true; this.input.rudderHold = false; this.input.left = this.input.right = false;
+        // the crew sails the route ahead: an astern order would back the ship away from it at hundreds × real time
+        if (this.input.throttleCmd < 0) { this.input.throttleCmd = 0.7; this.touchHelm?.setThrottle?.(0.7); this.hud.event({ kind: 'info', text: 'The crew rings HALF AHEAD to sail the route.' }); }
+      }
     }
     const now = performance.now();
     const raisePending = !!this.warpReq && this.warpReq.f > f && now - this.warpReq.t < WARP_HOLD_MS; // asked higher, not answered yet
@@ -858,7 +874,7 @@ class App {
   autopilotStep(s, C) {
     const wp = this.route[0];
     const brg = bearing(s.lat, s.lon, wp.lat, wp.lon);
-    this.input.rudderCmd = THREE.MathUtils.clamp(angleDiff(s.hdg, brg) / 25, -1, 1);
+    this.input.rudderCmd = s.spd < -0.3 ? 0 : THREE.MathUtils.clamp(angleDiff(s.hdg, brg) / 25, -1, 1); // going astern the rudder works backwards: the autopilot holds it amidships
     const d = unitsBetween(s.lat, s.lon, wp.lat, wp.lon);
     const reach = this.route.length > 1 ? Math.max(300, C.length * 3) : Math.max(200, C.length * 2);
     if (d >= reach) return true;
@@ -890,7 +906,7 @@ class App {
     const now = performance.now();
     if (now - this.lastGrounding > 4000) { // always tell the player; only a real bump costs hull condition
       this.lastGrounding = now;
-      if (bump) { this.net.action('grounding'); this.sound?.event('grounding', Math.min(1, Math.abs(s.spd) / 6)); }
+      if (bump) { this.net.action('grounding'); this.sound?.event('grounding', Math.min(1, Math.abs(this.ship?.spd || 0) / 6)); }
       this.hud.alert('ground', 'AGROUND — reverse off (S)', ''); setTimeout(() => this.hud.clearAlert('ground'), 4000);
     }
   }
@@ -1086,6 +1102,8 @@ class App {
     }
     try { this.aisLayer.update(dt, now); } catch (e) { if (!this.aisWarned) { this.aisWarned = true; console.warn('[ais] layer update failed', e); } }
     try { this.jobLayer.update(dt); } catch (e) { if (!this.jobLayerWarned) { this.jobLayerWarned = true; console.warn('[jobs] layer update failed', e); } }
+    try { this.berthGuide?.update(dt, now); } catch (e) { if (!this.berthGuideWarned) { this.berthGuideWarned = true; console.warn('[berthguide] update failed', e); } }
+    try { this.tugLayer?.update(dt, now); } catch (e) { if (!this.tugLayerWarned) { this.tugLayerWarned = true; console.warn('[tugs] update failed', e); } }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
     // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views
     if (ashore) { this.camPrevTarget = null; try { this.ashore.update(dt); } catch (e) { console.warn('[ashore] update failed — back aboard', e); try { this.ashore.exit(); } catch {} this.afterAshoreChange(); } }
@@ -1108,11 +1126,18 @@ class App {
     for (const hb of this.world.harbors) { const a = this.harborAnchor(hb); const d = haversine(s.lat, s.lon, a.lat, a.lon); if (d < nd) { nd = d; nearest = hb; } }
     const hasGeom = nearest && this.geoms.has(nearest.id);
     if (!you.docked && !you.assist) {
-      if (you.nearBerth && you.nearBerth.distM <= INTERACT.BERTH_RANGE_U) this.hud.alert('dock', `${you.nearBerth.name || 'Berth'}: alongside — press T to moor (under 2 kn)`, 'warn');
+      if (you.nearBerth && you.nearBerth.distM <= INTERACT.BERTH_RANGE_U) { // the berth guidance card says it already (and has the Moor button)
+        if (this.berthGuide?.info) this.hud.clearAlert('dock');
+        else this.hud.alert('dock', `${you.nearBerth.name || 'Berth'}: alongside — ${this.hud.touch ? 'tap Moor' : 'press T'} to moor (under 2 kn)`, 'warn');
+      }
       else if (!hasGeom && nearest && nd / GEO.SCALE <= INTERACT.DOCK_RADIUS_U) this.hud.alert('dock', `${nearest.name}: in docking range — press T (under 3 kn)`, 'warn');
       else this.hud.clearAlert('dock');
     } else this.hud.clearAlert('dock');
-    if (you.assist) this.hud.alert('assist', `Tugs have you — berthing at ${you.assist.berthName || 'the berth'}…`, 'warn'); else this.hud.clearAlert('assist');
+    if (you.assist) {
+      const a = you.assist, left = Math.max(0, Math.round(((Number(a.until) || 0) - (Date.now() + (this.clockOffset || 0))) / 1000));
+      const eta = ` · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left${a.rate > 1.05 ? ` · fast-forward ×${Math.round(a.rate * 10) / 10}` : ''}`;
+      this.hud.alert('assist', a.phaseText ? `Tugs ${a.phaseText} · ${a.berthName || 'the berth'}${eta}` : `Tugs have you — berthing at ${a.berthName || 'the berth'}…`, 'warn');
+    } else this.hud.clearAlert('assist');
     let wp = null, eta = null;
     const v = Math.abs(s.spd) * GEO.KN_TO_MS * SIM.MOTION_SCALE;
     if (this.route.length) {

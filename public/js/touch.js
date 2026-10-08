@@ -1,13 +1,19 @@
-// Touch helm (docs/V3-CONTRACTS.md §7, V4 §2): a vertical throttle lever (−30 … 100 % with a detent at 0), a horizontal
+// Touch helm (docs/V3-CONTRACTS.md §7, V4 §2, V5 item 3): a vertical throttle lever that is the engine order telegraph
+// (full astern −60 % … full ahead 100 %, a firm detent at STOP, light detents on the nine orders, labelled zones), a horizontal
 // rudder slider that auto-centres on release with the same rate limits as the keys, round STOP / autopilot buttons and a
 // left-thumb virtual stick for walking (interior and ashore). Pointer events only, `touch-action: none` everywhere, no
 // dependencies. Round buttons call `onAction(name)`, else an `on<Name>()` handler, else `window.app.hud.action(name)`.
+
+import { ORDERS, STOP_INDEX, THROTTLE_MIN, orderIndex } from '/shared/telegraph.js';
 
 export function isTouch() {
   try { return (window.matchMedia && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1; } catch { return false; }
 }
 
-const THR_MIN = -0.3, THR_MAX = 1, THR_DETENT = 0.05;
+const THR_MIN = THROTTLE_MIN, THR_MAX = 1, THR_DETENT = 0.05, ORDER_DETENT = 0.04;
+const THR_PAD = 12; // px at each end of the lever track that still read full ahead / full astern (easy to hit, away from the edge)
+/** CSS length for a lever fraction f (0 = full astern … 1 = full ahead) measured from the bottom of the track. */
+const lever = (f, extra = '') => `calc(${THR_PAD}px + ${f.toFixed(4)} * (100% - ${2 * THR_PAD}px)${extra})`;
 const RUD_RATE = 1.4;      // rudder follows the finger at the keys' rate (units per second)
 const RUD_RECENTRE = 2.5;  // exponential recentre rate on release (same as main.js)
 const LABELS = { dock: 'Dock', chart: 'Chart', interior: 'Walk', camera: 'Cam', stop: 'STOP', auto: 'AP', ships: 'Ships', more: '…', ashore: 'Shore' };
@@ -42,9 +48,19 @@ export class TouchHelm {
     const mk = (cls, parent = r) => { const d = document.createElement('div'); d.className = cls; parent.appendChild(d); return d; };
     // throttle
     this.thr = mk('thThr'); this.thr.setAttribute('aria-label', 'Throttle');
-    this.thrTrack = mk('thTrack', this.thr); this.thrFill = mk('thFill', this.thrTrack); this.thrDetent = mk('thDetent', this.thrTrack); this.thrKnob = mk('thKnob', this.thrTrack);
+    this.thrTrack = mk('thTrack', this.thr);
+    // telegraph zones and order ticks (under the fill and the knob)
+    const f0 = (0 - THR_MIN) / (THR_MAX - THR_MIN);
+    const za = mk('thZone ahead', this.thrTrack); za.style.height = `calc(100% - (${lever(f0).slice(5, -1)}))`;
+    const zs = mk('thZone astern', this.thrTrack); zs.style.height = lever(f0);
+    ORDERS.forEach((o, i) => {
+      const t = mk(`thTick ${i === STOP_INDEX ? 'stop' : i > STOP_INDEX ? 'ahead' : 'astern'}`, this.thrTrack);
+      t.style.bottom = lever((o.thr - THR_MIN) / (THR_MAX - THR_MIN));
+      const l = document.createElement('span'); l.textContent = o.word; t.appendChild(l);
+    });
+    this.thrFill = mk('thFill', this.thrTrack); this.thrDetent = mk('thDetent', this.thrTrack); this.thrKnob = mk('thKnob', this.thrTrack);
     this.thrVal = mk('thVal', this.thr); this.thrVal.textContent = '0 %';
-    this.thrLbl = mk('thLbl', this.thr); this.thrLbl.textContent = 'THR';
+    this.thrLbl = mk('thLbl', this.thr); this.thrLbl.textContent = 'TELEGRAPH';
     // rudder
     this.rud = mk('thRud'); this.rud.setAttribute('aria-label', 'Rudder');
     this.rudTrack = mk('thTrack', this.rud); this.rudCentre = mk('thCentre', this.rudTrack); this.rudFill = mk('thFill', this.rudTrack); this.rudKnob = mk('thKnob', this.rudTrack);
@@ -63,7 +79,7 @@ export class TouchHelm {
   // ------------------------------------------------------------------ throttle lever
   bindThrottle() {
     const t = this.thrTrack;
-    const valueAt = (clientY) => { const r = t.getBoundingClientRect(); const f = 1 - clamp((clientY - r.top) / Math.max(1, r.height), 0, 1); return THR_MIN + f * (THR_MAX - THR_MIN); };
+    const valueAt = (clientY) => { const r = t.getBoundingClientRect(); const f = 1 - clamp((clientY - r.top - THR_PAD) / Math.max(1, r.height - 2 * THR_PAD), 0, 1); return THR_MIN + f * (THR_MAX - THR_MIN); };
     t.addEventListener('pointerdown', (e) => { e.preventDefault(); try { t.setPointerCapture(e.pointerId); } catch {} this.throttleActive = true; this.applyThrottle(valueAt(e.clientY)); });
     t.addEventListener('pointermove', (e) => { if (!this.throttleActive) return; e.preventDefault(); this.applyThrottle(valueAt(e.clientY)); });
     const end = () => { if (!this.throttleActive) return; this.throttleActive = false; this.applyThrottle(this.throttle, true); };
@@ -71,8 +87,11 @@ export class TouchHelm {
   }
   applyThrottle(v, release = false) {
     v = clamp(v, THR_MIN, THR_MAX);
-    if (Math.abs(v) < THR_DETENT) v = 0;                               // detent at 0 (stop)
-    v = Math.round(v * 20) / 20;                                        // 5 % steps, like the keys' 10 % but finer
+    if (Math.abs(v) < THR_DETENT) v = 0;                               // firm detent at STOP
+    else {
+      const o = ORDERS.find((x) => Math.abs(x.thr - v) <= ORDER_DETENT); // light detents on the telegraph orders
+      v = o ? o.thr : Math.round(v * 20) / 20;                          // between them: 5 % steps (fine control)
+    }
     const changed = v !== this.throttle;
     this.throttle = v; this.renderThrottle();
     if (changed || release) this.h.onThrottle?.(v);
@@ -81,12 +100,17 @@ export class TouchHelm {
   setThrottle(v) { if (this.throttleActive || !Number.isFinite(v)) return; const nv = clamp(v, THR_MIN, THR_MAX); if (Math.abs(nv - this.throttle) < 1e-3) return; this.throttle = nv; this.renderThrottle(); }
   renderThrottle() {
     const f = (this.throttle - THR_MIN) / (THR_MAX - THR_MIN), f0 = (0 - THR_MIN) / (THR_MAX - THR_MIN);
-    this.thrKnob.style.bottom = `calc(${(f * 100).toFixed(2)}% - 14px)`;
-    this.thrDetent.style.bottom = `${(f0 * 100).toFixed(2)}%`;
-    if (this.throttle >= 0) { this.thrFill.style.bottom = `${(f0 * 100).toFixed(2)}%`; this.thrFill.style.height = `${((f - f0) * 100).toFixed(2)}%`; this.thrFill.classList.remove('astern'); }
-    else { this.thrFill.style.bottom = `${(f * 100).toFixed(2)}%`; this.thrFill.style.height = `${((f0 - f) * 100).toFixed(2)}%`; this.thrFill.classList.add('astern'); }
-    this.thrVal.textContent = `${Math.round(this.throttle * 100)} %`;
-    this.thr.classList.toggle('astern', this.throttle < 0);
+    this.thrKnob.style.bottom = lever(f, ' - 14px');
+    this.thrDetent.style.bottom = lever(f0);
+    const span = (d) => `calc(${d.toFixed(4)} * (100% - ${2 * THR_PAD}px))`;
+    if (this.throttle >= 0) { this.thrFill.style.bottom = lever(f0); this.thrFill.style.height = span(f - f0); this.thrFill.classList.remove('astern'); }
+    else { this.thrFill.style.bottom = lever(f); this.thrFill.style.height = span(f0 - f); this.thrFill.classList.add('astern'); }
+    const oi = orderIndex(this.throttle), o = oi >= 0 ? ORDERS[oi] : null;
+    const word = o ? o.word : `${Math.round(this.throttle > 0 ? this.throttle * 100 : (this.throttle / THR_MIN) * 100)} %`;
+    const zone = oi === STOP_INDEX || Math.abs(this.throttle) < 0.005 ? '' : this.throttle > 0 ? 'AHEAD' : 'ASTERN';
+    this.thrVal.innerHTML = zone ? `${word}<small>${zone}</small>` : 'STOP<small>engines</small>';
+    this.thr.setAttribute('aria-valuetext', o ? o.name : `${word} ${zone.toLowerCase()}`);
+    this.thr.classList.toggle('astern', this.throttle < 0); this.thr.classList.toggle('ahead', this.throttle > 0);
   }
 
   // ------------------------------------------------------------------ rudder slider

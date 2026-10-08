@@ -1,0 +1,93 @@
+/* Engine order telegraph (public/js/telegraph.js, docs/V5-PLAN.md item 3). Loaded by the module itself. */
+
+/* ------------------------------------------------------------------ desktop widget (above the radar) */
+#telegraph { position: absolute; right: calc(var(--gut) + var(--sar)); bottom: calc(var(--gut) + var(--sab) + var(--radar-w) + 60px); width: 176px; padding: 8px 8px 7px; border-radius: var(--r3); user-select: none; -webkit-user-select: none; z-index: 2; }
+#telegraph .tgHead { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; margin: 0 2px 6px; }
+#telegraph .tgHead b { font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+#telegraph .tgHead .tgKeys { display: inline-flex; gap: 3px; white-space: nowrap; }
+#telegraph .tgHead kbd { font-size: 10px; padding: 1px 4px; }
+#telegraph .tgBody { position: relative; display: grid; grid-template-columns: 18px 1fr; gap: 0 4px; }
+#telegraph .tgZone { display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; transform: rotate(180deg); font: 700 9.5px/1 var(--font); letter-spacing: 0.16em; border-radius: 6px; }
+#telegraph .tgZone.ahead { grid-row: 1 / span 4; color: var(--green); background: var(--green-soft); }
+#telegraph .tgZone.stop { grid-row: 5; writing-mode: horizontal-tb; transform: none; background: transparent; }
+#telegraph .tgZone.astern { grid-row: 6 / span 4; color: var(--accent); background: var(--accent-soft); }
+#telegraph .tgRows { grid-column: 2; grid-row: 1 / span 9; display: grid; grid-template-rows: repeat(9, 21px); gap: 2px; position: relative; }
+#telegraph .tgRow { all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 9px; border-radius: 6px; font: 650 11.5px/1 var(--font); letter-spacing: 0.04em; color: var(--fg-2); cursor: pointer; border: 1px solid transparent; } /* no transitions: an order is lit at once, even on a slow device */
+#telegraph .tgRow:hover { background: rgba(255, 255, 255, 0.07); color: var(--fg); }
+#telegraph .tgRow:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#telegraph .tgRow small { font: 600 9.5px/1 var(--mono); color: var(--faint); letter-spacing: 0; }
+#telegraph .tgRow.stop { color: #ffd7d7; justify-content: center; letter-spacing: 0.18em; border-color: rgba(255, 107, 107, 0.35); }
+#telegraph .tgRow.on.ahead { background: var(--green); color: #04160c; border-color: transparent; }
+#telegraph .tgRow.on.astern { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+#telegraph .tgRow.on.stop { background: var(--red); color: #2a0606; border-color: transparent; }
+#telegraph .tgRow.on small { color: inherit; opacity: 0.75; }
+/* order rung, engine not there yet: the lit order pulses a white ring until the engine answers */
+#telegraph .tgRow.on.pending { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.9); animation: tgBlink 0.9s step-end infinite; }
+@keyframes tgBlink { 50% { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0); } }
+/* engine answer pointer (actual throttle) and fine-control command marker */
+#telegraph .tgNeedle { position: absolute; right: -9px; width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-right: 8px solid var(--fg); margin-top: -6px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); }
+#telegraph .tgCmd { position: absolute; left: 0; right: 0; height: 2px; margin-top: -1px; background: var(--cyan); border-radius: 2px; pointer-events: none; box-shadow: 0 0 6px rgba(90, 214, 255, 0.7); }
+#telegraph .tgFoot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 6px 2px 0; font: 600 11.5px/1.2 var(--mono); color: var(--fg-2); }
+#telegraph .tgFoot .tgDir { font: 750 11px/1 var(--font); letter-spacing: 0.08em; }
+#telegraph.astern .tgFoot .tgDir { color: var(--accent); }
+#telegraph.ahead .tgFoot .tgDir { color: var(--green); }
+#telegraph .tgHint { margin: 6px 2px 0; padding: 5px 7px; border-radius: 6px; font: 650 11.5px/1.3 var(--font); color: var(--accent-2); background: rgba(242, 177, 52, 0.12); border: 1px solid rgba(242, 177, 52, 0.35); }
+#telegraph .tgHint.hidden { display: none; }
+#telegraph.locked .tgRows { opacity: 0.55; pointer-events: none; }
+
+@media (max-width: 1240px) { #telegraph { width: 164px; } }
+@media (max-width: 960px) {
+  /* the action dock sits above the radar here: the telegraph moves to the bottom row, right of the instruments */
+  #telegraph { right: auto; left: calc(2 * var(--gut) + var(--tel-w) + var(--sal)); bottom: calc(var(--gut) + var(--sab)); }
+}
+@media (max-height: 640px) and (min-width: 961px) {
+  #telegraph .tgRows { grid-template-rows: repeat(9, 17px); }
+  #telegraph .tgRow { font-size: 10.5px; }
+}
+body.touch #telegraph { display: none !important; }
+body.interior:not(.tgHelm) #telegraph, body.ashore #telegraph { display: none !important; }
+body.interior.tgHelm #telegraph { display: block !important; }
+/* phones at the bridge helm (the touch lever is hidden below decks): the telegraph with finger-sized orders */
+body.touch.interior.tgHelm #telegraph { right: calc(var(--gut) + var(--sar)); left: auto; bottom: calc(var(--sab) + 236px); width: 160px; }
+body.touch #telegraph .tgRows { grid-template-rows: repeat(9, 26px); }
+body.touch #telegraph .tgRow { font-size: 12.5px; }
+@media (orientation: landscape) and (max-height: 520px) {
+  body.touch.interior.tgHelm #telegraph { bottom: calc(var(--sab) + 8px); }
+  body.touch #telegraph .tgRows { grid-template-rows: repeat(9, 22px); }
+}
+
+/* ------------------------------------------------------------------ transient order callout */
+#tgCallout { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%) scale(0.96); padding: 10px 22px; border-radius: 999px; font: 800 26px/1.1 var(--font); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.25s ease, transform 0.25s ease; background: rgba(7, 18, 30, 0.82); border: 2px solid var(--line-2); color: var(--fg); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); z-index: 6; }
+#tgCallout.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#tgCallout.ahead { border-color: var(--green); color: #c9ffe0; }
+#tgCallout.astern { border-color: var(--accent); color: var(--accent-2); }
+#tgCallout.stop { border-color: var(--red); color: #ffd7d7; }
+#tgCallout small { display: block; font: 650 12px/1.3 var(--font); letter-spacing: 0.04em; text-transform: none; color: var(--fg-2); text-align: center; margin-top: 2px; }
+body.touch #tgCallout { font-size: 20px; top: 34%; padding: 8px 16px; white-space: normal; text-align: center; width: max-content; max-width: calc(100vw - 32px); border-radius: var(--r3); }
+body.touch #tgCallout small { font-size: 11.5px; }
+
+/* ------------------------------------------------------------------ instrument strip: order + ASTERN */
+#telemetry .tgOrder { font-size: 13px !important; letter-spacing: 0.02em; }
+#telemetry .tgOrder.astern, #telemetry .cell.tgAstern b { color: var(--accent) !important; }
+#telemetry .cell.tgAstern label { color: var(--accent); font-weight: 800; }
+
+/* ------------------------------------------------------------------ touch lever: astern zone, order detents and labels */
+.touchHelm .thThr .thZone { position: absolute; left: 0; right: 0; pointer-events: none; }
+.touchHelm .thThr .thZone.ahead { top: 0; background: linear-gradient(180deg, rgba(79, 209, 139, 0.16), rgba(79, 209, 139, 0.05)); border-radius: 24px 24px 0 0; }
+.touchHelm .thThr .thZone.astern { bottom: 0; background: linear-gradient(0deg, rgba(242, 177, 52, 0.28), rgba(242, 177, 52, 0.08)); border-radius: 0 0 24px 24px; }
+.touchHelm .thThr .thTick { position: absolute; left: 0; right: 0; height: 0; pointer-events: none; }
+.touchHelm .thThr .thTick::before { content: ""; position: absolute; left: 3px; width: 7px; top: -1px; height: 2px; background: rgba(255, 255, 255, 0.45); }
+.touchHelm .thThr .thTick span { position: absolute; left: 11px; right: 2px; top: -6px; font: 750 8.5px/12px var(--font); letter-spacing: 0.02em; color: rgba(232, 241, 248, 0.82); text-align: left; white-space: nowrap; overflow: hidden; }
+.touchHelm .thThr .thTick.astern span { color: var(--accent-2); }
+.touchHelm .thThr .thTick.stop::before { left: 2px; width: 9px; background: var(--red); height: 3px; top: -1.5px; border-radius: 2px; }
+.touchHelm .thThr .thTick.stop span { color: #ff8f8f; font-weight: 850; letter-spacing: 0.06em; }
+.touchHelm .thThr .thDetent { display: none; }
+.touchHelm .thThr .thVal { text-align: center; line-height: 1.15; padding: 2px 5px; min-width: 52px; }
+.touchHelm .thThr .thVal small { display: block; font: 750 9px/1.1 var(--font); letter-spacing: 0.08em; color: var(--muted); }
+.touchHelm .thThr.astern .thVal small { color: var(--accent); }
+.touchHelm .thThr.ahead .thVal small { color: var(--green); }
+body.touch .touchHelm .thThr { height: 236px; }
+@media (orientation: landscape) and (max-height: 520px) {
+  body.touch .touchHelm .thThr { height: 168px; }
+  .touchHelm .thThr .thTick span { font-size: 7.5px; }
+}

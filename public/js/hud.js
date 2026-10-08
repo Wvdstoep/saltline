@@ -6,6 +6,7 @@
 import { fmtDMS, bearing, unitsBetween, haversine, fmtDistance } from '/shared/geo.js';
 import * as K from '/shared/constants.js';
 import { fuelBurnPerSimHour } from '/shared/physics.js';
+import { orderLabel, isAstern, THROTTLE_MIN } from '/shared/telegraph.js';
 import { Chart, fetchJobs, cachedJobs, collectAi, collectRescues, collectStorms, fmtDur, fmtClock } from './chart.js';
 import { isTouch, TouchHelm } from './touch.js';
 import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js';
@@ -272,7 +273,7 @@ export class Hud {
         sheet.insertBefore(b, sheet.firstChild);
       }
     }
-    for (const [id, t] of [['btnChart', 'Chart'], ['btnShips', 'Ships'], ['btnInterior', 'Walk'], ['btnCamera', 'Camera'], ['btnFish', 'Fish'], ['btnAuto', 'Autopilot'], ['btnHelp', 'Help'], ['btnWeather', 'Weather'], ['btnDeck', 'Back on deck'], ['btnAboard', 'Back aboard'], ['btnAshore', 'Ashore'], ['btnPatch', 'Kit'], ['btnCastOff', 'Cast off']]) setLbl(id, t);
+    for (const [id, t] of [['btnChart', 'Chart'], ['btnShips', 'Ships'], ['btnInterior', 'Walk'], ['btnCamera', 'Camera'], ['btnFish', 'Fish'], ['btnAuto', 'Autopilot'], ['btnHelp', 'Help'], ['btnWeather', 'Weather'], ['btnDeck', 'Stop walking'], ['btnAboard', 'Back aboard'], ['btnAshore', 'Ashore'], ['btnPatch', 'Kit'], ['btnCastOff', 'Cast off']]) setLbl(id, t);
   }
   /** Use main.js's TouchHelm when it exists (one helm, one DOM); otherwise build our own. */
   adoptHelm() {
@@ -554,7 +555,7 @@ export class Hud {
     $('tDepth').parentElement.style.color = info.depth != null && info.depth < info.draft + 3 ? 'var(--red)' : '';
     setText($('tCur'), info.current ? `${pad3(info.current.set)}° ${info.current.drift.toFixed(1)} kn` : '—');
     const thrCmd = this.app.input?.throttleCmd ?? ship.throttleCmd ?? ship.throttle;
-    setText($('tThr'), Math.round(thrCmd * 100) + '%'); setText($('tRud'), ship.rudder > 0.05 ? `S${Math.round(ship.rudder * 35)}°` : ship.rudder < -0.05 ? `P${Math.round(-ship.rudder * 35)}°` : '0°');
+    setText($('tThr'), orderLabel(thrCmd, { short: true })); $('tThr').classList.add('tgOrder'); $('tThr').classList.toggle('astern', isAstern(thrCmd)); setText($('tRud'), ship.rudder > 0.05 ? `S${Math.round(ship.rudder * 35)}°` : ship.rudder < -0.05 ? `P${Math.round(-ship.rudder * 35)}°` : '0°');
     if (you) {
       const range = this.rangeNm(you);
       setText($('tFuel'), `${you.fuel.toFixed(C.fuelCap < 10 ? 2 : 1)} t`); $('tFuel').style.color = you.fuel < C.fuelCap * 0.1 ? 'var(--red)' : '';
@@ -573,7 +574,7 @@ export class Hud {
     setText($('tWp'), info.wp ? `${info.wp.dist} ${pad3(info.wp.brg)}°${info.autopilot ? ' AP' : ''}` : 'none');
     setText($('tEta'), info.wp ? info.wp.eta : '—');
     setText($('tJobs'), String(info.jobs)); setText($('tStatus'), info.status);
-    const thr = ship.throttle; $('barThr').style.width = Math.abs(Math.max(-0.3, thr)) * 100 + '%'; $('barThr').style.background = thr < 0 ? 'var(--accent)' : 'var(--green)';
+    const thr = ship.throttle; $('barThr').style.width = Math.min(1, thr < 0 ? thr / THROTTLE_MIN : thr) * 100 + '%'; $('barThr').style.background = thr < 0 ? 'var(--accent)' : 'var(--green)';
     $('barRud').style.left = ship.rudder >= 0 ? '50%' : 50 + ship.rudder * 50 + '%'; $('barRud').style.width = Math.abs(ship.rudder) * 50 + '%';
     $('btnAuto')?.classList.toggle('on', !!info.autopilot);
     const h = this.helm;
@@ -675,12 +676,13 @@ export class Hud {
     const el = $('berthLine'); if (!el) return;
     const you = this.app.you, s = this.app.ship;
     const txt = $('berthText'), moor = $('btnMoor'), tugs = $('btnTugs');
-    const show = (on) => { el.classList.toggle('hidden', !on); document.body.classList.toggle('berthOn', !!on); };
+    // guide: the berth the guidance card (berthguide.js renderCard: distance / steer / depth / advice / mini plan) leads to
+    const show = (on, guide = null) => { el.classList.toggle('hidden', !on); document.body.classList.toggle('berthOn', !!on); this.app.berthGuide?.renderCard?.(el, guide); };
     if (this.ashoreOn) { show(false); return; }
     if (assist) { show(true); setText(txt, `Tugs bringing you alongside ${assist.berthName || (assist.berthId ? 'berth ' + String(assist.berthId).split('-b')[1] : 'the berth')}…`); moor.classList.add('hidden'); tugs.classList.add('hidden'); return; }
     if (berth || you?.docked) { show(false); return; }
-    if (!nearBerth) { show(false); return; }
-    show(true);
+    if (!nearBerth || this.app.berthGuide?.wants?.(nearBerth) === false) { show(false); return; } // sailing past a harbour: no card
+    show(true, nearBerth);
     const spd = s ? Math.abs(s.spd) : 99;
     const inRange = nearBerth.distM <= (INTERACT.BERTH_RANGE_U || 60) && spd <= 2, tugRange = nearBerth.distM <= (INTERACT.TUG_RANGE_U || 1500) && spd <= 6;
     setText(txt, `${nearBerth.name || nearBerth.id} · ${nearBerth.distM >= 1000 ? (nearBerth.distM / 1000).toFixed(1) + ' km' : Math.round(nearBerth.distM) + ' m'} · ${pad3(nearBerth.brg ?? 0)}° · depth ${Number.isFinite(nearBerth.depth) ? nearBerth.depth.toFixed(0) + ' m' : '—'}${Number.isFinite(nearBerth.length) ? ` · ${Math.round(nearBerth.length)} m quay` : ''}`);

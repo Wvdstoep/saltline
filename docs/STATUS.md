@@ -1,6 +1,16 @@
-# Build status (updated 2026-10-08 07:15 UTC)
+# Build status (updated 2026-10-08 13:10 UTC)
 
 ## Live on the server
+- **v0.5 wave 1** (2026-10-08):
+  - engine order telegraph with astern (nine orders; W/S, the touch lever with click-stops, a brass dial on the bridge;
+    realistic engine reversal, astern about half speed, propeller walk; the coast guard waits once for a ship that is
+    stopping with the engine on STOP or astern);
+  - berth guidance (glowing berth outline sized to your ship, a water-only leading line, fairway lanes within 5 km,
+    a guidance card with a mini harbour plan, depth vs draught and advice);
+  - tugs that plan a water-only path, visible tug boats with lines that come out, take you alongside and go home
+    (also seen by other skippers);
+  - walking the ship: stairs and doorways that work, a bridge, mess, cabins, an engine room with a live console and
+    the open deck for all 17 classes.
 - **v0.4.1 contracts** — every job type works end to end and is guided in the world:
   - fishing catches add up (the 10 Hz server tick rounded each few-gram step back to zero, even at 400×); nets fish
     under 4 kn at twice the old rate (stern trawler on the Dogger Bank: 30 t/h);

@@ -10,6 +10,7 @@
 <meta name="description" content="Multiplayer 3D maritime survival, trade and navigation on the real globe, in real time.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230b2a4a'/%3E%3Cpath d='M6 20h20l-3 5H9z' fill='%23e8e8e8'/%3E%3Cpath d='M15 6v14h8z' fill='%23f2b134'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/berthguide.css">
 <script type="importmap">{ "imports": { "three": "/vendor/three.module.min.js" } }</script>
 </head>
 <body>
@@ -36,7 +37,7 @@
       <ul class="features" id="featureList"></ul>
       <details class="keys">
         <summary>Controls &amp; how it works</summary>
-        <p><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> rudder · <kbd>Space</kbd> all stop · <kbd>T</kbd> moor / harbour · <kbd>G</kbd> go ashore · <kbd>M</kbd> chart · <kbd>P</kbd> autopilot ·
+        <p><kbd>W</kbd>/<kbd>S</kbd> engine telegraph (past STOP = astern) · <kbd>A</kbd>/<kbd>D</kbd> rudder · <kbd>Space</kbd> all stop · <kbd>T</kbd> moor / harbour · <kbd>G</kbd> go ashore · <kbd>M</kbd> chart · <kbd>P</kbd> autopilot ·
         <kbd>.</kbd>/<kbd>,</kbd> time warp · <kbd>I</kbd> walk your ship · <kbd>Tab</kbd> ships nearby · <kbd>F</kbd> fish · <kbd>J</kbd> contract action (tow line, crane) · <kbd>N</kbd> tugs · <kbd>K</kbd> damage-control kit · <kbd>C</kbd> camera · <kbd>Y</kbd> horn · <kbd>U</kbd> sound · <kbd>Enter</kbd> chat · <kbd>H</kbd> help.</p>
         <p>The world is the real Earth at 1:1 and the clock is the real clock. Plan a route on the chart and use <b>time warp</b> on open water to get there faster,
         come alongside a berth under 2 kn and moor (T), then <b>go ashore</b> and walk the real harbour to the harbourmaster, shipyard, chandler, market and bar.</p>
@@ -184,7 +185,7 @@
 
   <!-- Interior (walking the ship) -->
   <div id="interiorHud" class="hidden">
-    <div class="hudRow" id="interiorRow"><button id="btnDeck" class="glassBtn"><span class="si" data-icon="stairs"></span><span class="lbl">Back on deck (I)</span></button></div>
+    <div class="hudRow" id="interiorRow"><button id="btnDeck" class="glassBtn"><span class="si" data-icon="stairs"></span><span class="lbl">Stop walking (I)</span></button></div>
     <div id="interiorHint" class="hintLine">WASD to walk · E / tap to use · Esc releases the mouse</div>
   </div>
   <!-- Ashore (walking the harbour) -->
