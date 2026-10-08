@@ -3,6 +3,8 @@
 import { GOODS, SHIP_CLASSES, FEES } from '../shared/constants.js';
 import { haversine, destination } from '../shared/geo.js';
 import { HARBORS, FISHING_GROUNDS, PLATFORMS, harborById } from './harbors.js';
+import { RATES } from '../shared/rates.js';
+import { JOBTIME, refClassFor, budgetFor } from '../shared/jobtime.js'; // V6 item 5: contract hours rated for a reference ship
 
 export const PAY_PER_T_KM = 0.08;
 export const SMUGGLE_MULT = 5;
@@ -39,8 +41,18 @@ function pickDestination(from, rnd, maxKm = 1e9) {
   return cands[cands.length - 1];
 }
 
-// Jobs are in real time now: deadlines are generous multiples of the sailing time at 12 knots.
-function hoursFor(km, rnd) { return Math.max(4, km / 22 + 6 + rnd() * 12); }
+// V6 item 5 (docs/V6-QUICK-CONTRACTS.md §5.3–§5.4): a contract carries a budget of SHIP hours rated for a reference ship
+// with 40–80 % margin (feasible by construction), the distances it was rated on, and stays on the board for 24 h.
+const r1 = (v) => Math.round(v * 10) / 10;
+function seaKmFor(env, from, to, gcKm) { let km = null; try { km = env && env.seaKm ? env.seaKm(from.id, to.id) : null; } catch { km = null; } return Number.isFinite(km) && km > 0 ? r1(km) : r1(gcKm * RATES.DETOUR); }
+function rateJob(job, simTime, rnd) {
+  const cls = refClassFor(job, rnd);
+  const margin = JOBTIME.MARGIN_MIN + rnd() * (JOBTIME.MARGIN_MAX - JOBTIME.MARGIN_MIN);
+  job.hours = budgetFor(job, cls, margin);
+  job.ref = { cls, margin: Math.round(margin * 100) / 100 };
+  job.postedAt = simTime; job.expiresAt = simTime + JOBTIME.BOARD_TTL_H * 3600;
+  return job;
+}
 
 /** `env.towSpot(lat, lon, draft)` (optional) says whether a disabled vessel can lie there: open, deep water away from land. */
 export function generateJob(from, simTime, rnd, forceType, env = {}) {
@@ -49,13 +61,14 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
   if (type === 'fishing') {
     const grounds = FISHING_GROUNDS.map((g) => ({ g, d: distKm(from, g) })).filter((x) => x.d < 500).sort((a, b) => a.d - b.d);
     if (!grounds.length) return generateJob(from, simTime, rnd, 'freight', env);
-    const g = grounds[Math.floor(rnd() * Math.min(3, grounds.length))].g;
+    const { g, d: gd } = grounds[Math.floor(rnd() * Math.min(3, grounds.length))];
     const qty = Math.round((20 + rnd() * 120) / 5) * 5;
-    return {
+    return rateJob({
       id: nextJobId(), type: 'fishing', from: from.id, to: from.id, ground: g.id, groundName: g.name, good: 'fish', qty,
-      pay: Math.round(qty * 950 * SIZE_MULT[from.size]), deadline: simTime + 3600 * (18 + rnd() * 30), contraband: false,
+      pay: Math.round(qty * 950 * SIZE_MULT[from.size]), contraband: false,
+      groundKm: r1(Math.max(0, gd - g.radiusKm) * RATES.DETOUR), richness: g.richness,
       title: `Catch ${qty} t of fish on the ${g.name} and land it here`,
-    };
+    }, simTime, rnd);
   }
   if (type === 'supply') {
     const plats = PLATFORMS.map((p) => ({ p, d: distKm(from, p) })).filter((x) => x.d < 450).sort((a, b) => a.d - b.d);
@@ -63,11 +76,11 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
     const { p, d } = plats[Math.floor(rnd() * Math.min(3, plats.length))];
     const qty = [40, 80, 120, 200, 350][Math.floor(rnd() * 5)];
     const pay = Math.round((qty * d * PAY_PER_T_KM * 2.2 + 4000) * SIZE_MULT[from.size]);
-    return {
+    return rateJob({
       id: nextJobId(), type: 'supply', from: from.id, to: from.id, platform: p.id, platformName: p.name, at: { lat: p.lat, lon: p.lon }, good: 'supplies', qty, pay, distKm: Math.round(d),
-      deadline: simTime + 3600 * hoursFor(d, rnd), contraband: false, loaded: null,
+      platformKm: r1(d * RATES.DETOUR), contraband: false, loaded: null,
       title: `Supply run: ${qty} t of offshore supplies to ${p.name}`,
-    };
+    }, simTime, rnd);
   }
   if (type === 'tow') {
     const dest = pickDestination(from, rnd, 400) || pickDestination(from, rnd);
@@ -80,67 +93,70 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
       if (!env.towSpot || env.towSpot(cand.lat, cand.lon, SHIP_CLASSES[victim].draft)) at = cand;
     }
     if (!at) return generateJob(from, simTime, rnd, 'freight', env);
-    const d = distKm(from, at) + distKm(at, dest.h);
+    const dOut = distKm(from, at), dIn = distKm(at, dest.h), d = dOut + dIn;
     const pay = Math.round((d * 120 + 6000) * SIZE_MULT[from.size]);
-    return {
+    return rateJob({
       id: nextJobId(), type: 'tow', from: from.id, to: dest.h.id, at, victimCls: victim, pay, distKm: Math.round(d),
-      deadline: simTime + 3600 * hoursFor(d, rnd), contraband: false,
+      towKm: { toCasualty: r1(dOut * RATES.DETOUR), toDest: r1(dIn * RATES.DETOUR) }, contraband: false,
       title: `Tow a disabled ${SHIP_CLASSES[victim].name.toLowerCase()} at ${at.lat.toFixed(2)}°, ${at.lon.toFixed(2)}° to ${dest.h.name}`,
-    };
+    }, simTime, rnd);
   }
   const dest = pickDestination(from, rnd);
   if (!dest) return null;
   if (type === 'passengers') {
     const pax = Math.round(4 + rnd() * rnd() * 396);
     const pay = Math.round(pax * (25 + dest.d * 0.35) * SIZE_MULT[from.size]);
-    return {
+    return rateJob({
       id: nextJobId(), type: 'passengers', from: from.id, to: dest.h.id, pax, pay, distKm: Math.round(dest.d),
-      deadline: simTime + 3600 * hoursFor(dest.d, rnd), contraband: false,
+      seaKm: seaKmFor(env, from, dest.h, dest.d), contraband: false,
       title: `Ferry ${pax} passengers to ${dest.h.name}`,
-    };
+    }, simTime, rnd);
   }
   if (type === 'charter') {
     const pax = 2 + Math.floor(rnd() * 10);
     const pay = Math.round((pax * (260 + dest.d * 1.6) + 1500) * SIZE_MULT[from.size]);
-    return {
+    return rateJob({
       id: nextJobId(), type: 'charter', from: from.id, to: dest.h.id, pax, pay, distKm: Math.round(dest.d), needsCat: ['motor yacht', 'sailing yacht', 'passenger'],
-      deadline: simTime + 3600 * hoursFor(dest.d, rnd) * 1.5, contraband: false,
+      seaKm: seaKmFor(env, from, dest.h, dest.d), contraband: false,
       title: `Private charter: ${pax} guests to ${dest.h.name} (yacht or ferry)`,
-    };
+    }, simTime, rnd);
   }
   const good = LEGAL_GOODS[Math.floor(rnd() * LEGAL_GOODS.length)];
   const sizes = [120, 250, 400, 600, 900, 1100, 1800, 2500, 3600, 8000, 20000];
   const qty = sizes[Math.floor(rnd() * rnd() * sizes.length)];
   const pay = Math.round(qty * dest.d * PAY_PER_T_KM * (1 + 0.15 * rnd()) * SIZE_MULT[from.size] + 800);
-  return {
+  return rateJob({
     id: nextJobId(), type: 'freight', from: from.id, to: dest.h.id, good, qty, pay, distKm: Math.round(dest.d),
-    deadline: simTime + 3600 * hoursFor(dest.d, rnd), contraband: false,
+    seaKm: seaKmFor(env, from, dest.h, dest.d), contraband: false,
     title: `Freight ${qty} t of ${GOODS[good].name} to ${dest.h.name}`,
-  };
+  }, simTime, rnd);
 }
 
-export function generateSmugglingJob(from, simTime, rnd) {
+export function generateSmugglingJob(from, simTime, rnd, env = {}) {
   const dest = pickDestination(from, rnd);
   if (!dest) return null;
   const good = CONTRABAND[Math.floor(rnd() * CONTRABAND.length)];
   const qty = [40, 80, 150, 250, 400][Math.floor(rnd() * 5)];
   const pay = Math.round(qty * dest.d * PAY_PER_T_KM * SMUGGLE_MULT * (1 + 0.3 * rnd()) + 15000);
-  return {
+  return rateJob({
     id: nextJobId(), type: 'smuggling', from: from.id, to: dest.h.id, good, qty, pay, distKm: Math.round(dest.d),
-    deadline: simTime + 3600 * hoursFor(dest.d, rnd), contraband: true,
+    seaKm: seaKmFor(env, from, dest.h, dest.d), contraband: true,
     title: `Run ${qty} t of ${GOODS[good].name} to ${dest.h.name}. No questions.`,
-  };
+  }, simTime, rnd);
 }
 
 export function jobCountFor(harbor) { return SIZE_JOBS[harbor.size] || 3; }
 
-/** Public view of a job for the chart's job boards (GET /api/jobs). */
+/** Public view of a job for the chart's job boards (GET /api/jobs): the §5.3 board fields (ship-hour budget, posting
+ *  window, reference ship, the distances it was rated on) so every client can estimate it for its own ship. */
 export function publicJob(j) {
   const to = harborById(j.to);
   const perUnit = j.qty > 0 ? j.qty : j.pax > 0 ? j.pax : 0;
   return {
     id: j.id, type: j.type, title: j.title, from: j.from, to: j.to, toName: to ? to.name : j.to, pay: j.pay,
-    payPerT: perUnit ? Math.round(j.pay / perUnit) : null, distKm: j.distKm ?? null, deadline: j.deadline, needsCat: j.needsCat || null,
+    payPerT: perUnit ? Math.round(j.pay / perUnit) : null, distKm: j.distKm ?? null, needsCat: j.needsCat || null,
+    hours: j.hours ?? null, postedAt: j.postedAt ?? null, expiresAt: j.expiresAt ?? null, ref: j.ref || null,
+    seaKm: j.seaKm ?? null, groundKm: j.groundKm ?? null, richness: j.richness ?? null, platformKm: j.platformKm ?? null, towKm: j.towKm || null,
     good: j.good || null, qty: j.qty || null, pax: j.pax || null, at: j.at || null, platformName: j.platformName || null, groundName: j.groundName || null,
   };
 }
@@ -333,3 +349,21 @@ export function cargoValue(cargo, filter) {
   return cargo.filter(filter || (() => true)).reduce((s, c) => s + c.qty * GOODS[c.good].base, 0);
 }
 export function shipCapacity(cls) { return (SHIP_CLASSES[cls] || SHIP_CLASSES.coaster).capacity; }
+
+// ------------------------------------------------------------------------------------------ trade quotes
+// docs/V6-QUICK-CONTRACTS.md §3.3: what a trade of `qty` t costs or pays. Defaults = the v0.4 rule (one price per good,
+// the whole action at the pre-trade price). Wave 2 sets SPREAD 0.01 and IMPACT true (docs/V5-WAVE2-DESIGN.md §3.10).
+export const TRADE = { SPREAD: 0, IMPACT: false, STEPS: 8 };
+/** side 'buy' | 'sell'. Returns { unit (integer cr/t), total (integer cr) }. With IMPACT the unit price is the mean of the
+ *  price at STEPS points spread over the stock change the trade causes (buying lowers the stock, selling raises it). */
+export function tradeQuote(harbor, st, good, qty, side) {
+  const q = Math.max(0, Number(qty) || 0), s0 = st.stock?.[good] ?? 0, t = st.target?.[good] ?? 1, dir = side === 'buy' ? -1 : 1;
+  let mid = priceOf(harbor, good, s0, t);
+  if (TRADE.IMPACT && q > 0) {
+    let sum = 0;
+    for (let k = 0; k < TRADE.STEPS; k++) sum += priceOf(harbor, good, Math.max(0, s0 + dir * q * (k + 0.5) / TRADE.STEPS), t);
+    mid = sum / TRADE.STEPS;
+  }
+  const unit = Math.max(1, Math.round(mid * (side === 'buy' ? 1 + TRADE.SPREAD : 1 - TRADE.SPREAD)));
+  return { unit, total: Math.round(unit * q) };
+}

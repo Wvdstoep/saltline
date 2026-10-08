@@ -1,0 +1,29 @@
+/* V6 item 6 — time warp up to 5× inside harbours (docs/V6-QUICK-CONTRACTS.md §2.5). Injected by hud.js updateWarp
+   (link id whCss). The warp control now also shows while moored and under tugs. */
+
+/* inside a harbour zone: amber rim, the small label reads "Harbour" */
+#warpCtl.harbour { border-color: rgba(242, 177, 52, 0.55); }
+#warpCtl.harbour .warpLevel small { color: var(--accent-2); }
+
+/* phones: style.css hides the control while moored (body.touch.docked #warpCtl { display: none }); bring it back and,
+   with the touch helm sliders hidden alongside the quay, sit it low on the left — just above the collapsed instrument
+   strip (#telemetry, ~81 px tall at bar + 8 px), which would otherwise cover it and take its taps */
+body.touch.docked #warpCtl:not(.hidden) { display: flex; }
+body.touch.docked #warpCtl { bottom: calc(var(--bar) + var(--sab) + 98px); }
+
+/* desktop: keep the (longer) harbour banner texts clear of the event list on the left (#log, min(420px, 46vw)) — the
+   banner wraps onto a second line instead of sliding under the toasts and losing its start */
+body:not(.touch) #warpBanner { max-width: max(320px, calc(100vw - 2 * (var(--gut) + min(420px, 46vw) + 12px))); white-space: normal; text-align: center; line-height: 1.3; }
+body:not(.touch) #warpBannerText { overflow: visible; }
+
+/* phones: the warp banner, the contract card, the berth guidance card and the fishing panel all sit at the top
+   (style.css: top-h + 4 px). While warping — now also next to the berths — the cards move below the banner (≤ 2 lines)
+   and the event toasts below the cards. */
+body.touch.warpOn #berthLine, body.touch.warpOn #jobLine, body.touch.warpOn #fishPanel { top: calc(var(--top-h) + var(--sat) + 58px); }
+body.touch.warpOn #warpBannerText { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+body.touch.warpOn.berthOn #log, body.touch.warpOn.berthOn #alerts { top: calc(var(--top-h) + var(--sat) + 186px); }
+body.touch.warpOn.jobOn:not(.berthOn) #log, body.touch.warpOn.jobOn:not(.berthOn) #alerts { top: calc(var(--top-h) + var(--sat) + 200px); }
+body.touch.warpOn.fishOn:not(.berthOn) #log, body.touch.warpOn.fishOn:not(.berthOn) #alerts { top: calc(var(--top-h) + var(--sat) + 150px); }
+body.touch.warpOn.jobOn.fishOn:not(.berthOn) #fishPanel { top: calc(var(--top-h) + var(--sat) + 200px); }
+body.touch.warpOn.jobOn.fishOn:not(.berthOn) #log, body.touch.warpOn.jobOn.fishOn:not(.berthOn) #alerts { top: calc(var(--top-h) + var(--sat) + 290px); }
+body.touch.warpOn.berthOn #fishPanel { top: calc(var(--top-h) + var(--sat) + 190px); }

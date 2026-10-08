@@ -1,0 +1,24 @@
+/* V6 item 5 — the ship's clock and feasible contracts (docs/V6-QUICK-CONTRACTS.md §5.7). Injected by hud.js updateTop
+   (link id tmCss). */
+
+/* the ship's clock stat next to the world clock while warping (desktop) */
+.shipClockStat { border-color: rgba(242, 177, 52, 0.45); background: rgba(40, 28, 6, 0.55); }
+.shipClockStat .si { color: var(--accent); }
+.shipClockStat small { color: var(--accent-2); }
+.shipClockStat b { color: var(--accent-2); font-variant-numeric: tabular-nums; }
+.shipClockStat.done { opacity: 0.7; }
+.shipClockStat.hidden { display: none !important; }
+/* phones: the clock stat itself shows ship time while warping */
+.clockStat.shipMode .si, .clockStat.shipMode small, .clockStat.shipMode b { color: var(--accent-2); }
+.clockStat.shipMode b { font-variant-numeric: tabular-nums; }
+
+/* contract cards: the estimate with your ship, and contracts your ship cannot make in time */
+.jobCard .estLine { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; line-height: 1.35; color: #b8f5d2; }
+.jobCard .estLine .ic { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+.jobCard .estLine.slow { color: var(--accent-2); }
+.jobCard .estLine span { min-width: 0; overflow-wrap: anywhere; }
+.jobCard.tooSlow { opacity: 0.55; filter: grayscale(0.6); transition: opacity 0.15s, filter 0.15s; }
+.jobCard.tooSlow:hover, .jobCard.tooSlow:focus-within { opacity: 0.9; filter: grayscale(0.2); }
+.elig.slow { background: var(--accent-soft); color: var(--accent-2); align-items: flex-start; line-height: 1.35; }
+.elig.slow .ic { flex: none; margin-top: 1px; }
+.jobCard .estLine .estReal { white-space: nowrap; opacity: 0.85; }

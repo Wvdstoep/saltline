@@ -8,3 +8,5 @@ data/state.json
 data/state.json.tmp
 data/tiles/
 node_modules/
+data/market-history.json
+data/market-history.json.tmp

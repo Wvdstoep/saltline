@@ -104,3 +104,7 @@ export function tideAt(lat, lon, tSec) {
     nextHigh: findTurn(true), nextLow: findTurn(false), region: r.name,
   };
 }
+
+/** Mean low water springs below mean sea level (m, ≤ 0) of the tide model's region: −1.33 × M2 amplitude (M2 + S2).
+ *  The route planner (server/searoute.js v2) plans keel clearance against this. docs/V6-QUICK-CONTRACTS.md §4.3. */
+export function lowWaterAt(lat, lon) { return -1.33 * regionOf(Number(lat) || 0, Number(lon) || 0).m2; }

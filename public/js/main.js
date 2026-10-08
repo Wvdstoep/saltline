@@ -26,6 +26,7 @@ import { WeatherFX } from './weather.js';
 import { TouchHelm, isTouch } from './touch.js';
 import { Telegraph } from './telegraph.js';
 import { THROTTLE_MIN, rpmFraction } from '/shared/telegraph.js';
+import { Autopilot } from './autopilot.js'; // v6 chart-aware autopilot (docs/V6-QUICK-CONTRACTS.md §4.6)
 
 const { buildShip, buildWreck } = ShipMod;
 const { buildHarbor, buildFishingMarker } = HarborMod;
@@ -88,6 +89,7 @@ class App {
     this.lastTerrainUpdate = 0; this.lastRadar = 0; this.lastTelemetry = 0; this.lastSails = 0; this.ready = false;
     this.interior = new Interior(this);
     this.jobLayer = new JobLayer(this); this.jobTargets = [];
+    this.routeMeta = null; this.pilot = new Autopilot(this); // planned route (route planner v2) + the pilot that sails it
     this.aisLayer = new AisLayer(this); // live AIS: real ships at real size
     // Going ashore (docs/V4-CONTRACTS.md §3): `app.ashore = new Ashore(this)`. Loaded as its own module so a problem in the
     // on-foot layer can never take the helm down with it; `ashoreReady` resolves to the instance (or null).
@@ -97,6 +99,8 @@ class App {
     // Berth guidance (V5-PLAN item 2, berthguide.js): berth outline + board + leading line + fairway lanes, and the HUD guidance card
     this.berthGuide = null;
     import('./berthguide.js').then((m) => { this.berthGuide = new m.BerthGuide(this); }).catch((e) => console.warn('[berthguide] unavailable', e));
+    // World market (V6 item 7, market.js): every harbour's prices, the trade finder and the chart's price layer
+    import('./market.js').then((m) => { this.market = new m.WorldMarket(this); }).catch((e) => console.warn('[market] unavailable', e));
     // Harbour tugs (V5-PLAN item 4, tugs.js): every skipper's assist tugs from the snapshots, with towlines and prop wash
     this.tugLayer = null;
     import('./tugs.js').then((m) => { this.tugLayer = new m.TugLayer(this); }).catch((e) => console.warn('[tugs] unavailable', e));
@@ -177,6 +181,7 @@ class App {
   onYou(you, first, correction) {
     const prev = this.you;
     this.you = you;
+    this.shipClock = { t: Number(you.shipTime) || 0, rate: Number(you.shipRate) || 1, at: performance.now(), warpRun: you.warpRun || null }; // V6 item 5
     const s = you.ship;
     const serverWarp = WARP_LEVELS.includes(Number(you.warp)) ? Number(you.warp) : 1;
     // Under warp the local ship runs ahead of the server's copy by (latency + upload interval) × speed × warp: only a
@@ -214,6 +219,11 @@ class App {
       const key = [you.money, you.fuel, you.cond, you.flooding, you.kits, you.ship.cls, JSON.stringify(you.cargo), JSON.stringify(you.jobs), you.convoy?.members?.length ?? 0, you.serviceDue ?? 0, you.berth?.id ?? ''].join('|');
       if (key !== this.lastHarborKey || this.hud.harborDirty) { this.lastHarborKey = key; this.hud.renderHarborTabs(); }
     }
+  }
+  /** V6 item 5: the ship's clock (s), smooth between the 1 Hz `you` — it runs at the warp factor (under tugs: the op's rate). */
+  shipTimeNow() {
+    const c = this.shipClock; if (!c || !(c.t > 0)) return this.simTime || Date.now() / 1000;
+    return c.t + ((performance.now() - c.at) / 1000) * (this.you?.assist ? c.rate : (this.warp || 1));
   }
   applyWeather(w) {
     this.wx = w;
@@ -521,6 +531,7 @@ class App {
       if (k === 'tab') { e.preventDefault(); return this.hud.toggleShips(); }
       if (k === 'h') return document.getElementById('helpWrap')?.classList.toggle('hidden');
       if (k === 'r' && this.hud.chartOpen()) { this.hud.chartMode = this.hud.chartMode === 'region' ? 'world' : 'region'; this.hud.drawChart(); return; }
+      if (k === 'l') return this.market?.toggle();
       if (this.ashore?.active) return; // ashore: the ship's controls are aboard
       if (k === 't') return this.toggleDock();
       if (k === 'j') return this.jobAction();
@@ -674,14 +685,9 @@ class App {
     const s = this.ship; if (!s || !t || !Number.isFinite(t.lat)) return;
     let to = { lat: t.lat, lon: t.lon };
     if (t.kind === 'ground' && t.distM > t.rangeM) to = destination(t.lat, t.lon, bearing(t.lat, t.lon, s.lat, s.lon), Math.max(0, t.rangeM - 2000)); // the near edge of the bank
-    const harbor = t.kind === 'harbor' ? t.job.to : '';
-    let pts = [[to.lat, to.lon]];
-    try {
-      const r = await fetch(`/api/route?from=${s.lat.toFixed(5)},${s.lon.toFixed(5)}&to=${to.lat.toFixed(5)},${to.lon.toFixed(5)}${harbor ? `&harbor=${encodeURIComponent(harbor)}` : ''}`);
-      if (r.ok) { const j = await r.json(); if (Array.isArray(j.points) && j.points.length) pts = j.points; }
-    } catch { /* offline: straight line */ }
-    if (this.you?.docked) { this.setRoute(pts); return; }
-    this.autopilot = true; this.setRoute(pts); // the crew steers it; any helm input takes over again
+    const harbor = t.kind === 'harbor' ? t.job.to : null;
+    // route planner v2 for this hull's draught; the crew steers it at sea (any helm input takes over again)
+    return this.pilot.planTo({ lat: to.lat, lon: to.lon, harbor, label: t.name || 'contract', engage: !this.you?.docked });
   }
   requestTugs() {
     const you = this.you; if (!you || you.docked || you.assist) return;
@@ -705,6 +711,7 @@ class App {
     if (a?.active) { a.exit(); this.afterAshoreChange(); return true; }
     const you = this.you;
     if (!you?.docked) { this.hud.event({ kind: 'warn', text: 'Moor at a berth first, then go ashore.' }); return false; }
+    if (this.warp > 1) this.setWarp(1, 'Going ashore — time warp off.'); // V6 item 6: walking the quay must not burn contract hours 5×
     if (!a) {
       // the module is still loading (or failed): try once more when it arrives
       return this.ashoreReady.then((inst) => {
@@ -736,24 +743,26 @@ class App {
   }
   /** Relative wind angle in degrees (0 = on the bow, 90 = from starboard). */
   windRel() { const w = this.localWind || this.wind; const from = Number.isFinite(w?.dir) ? w.dir : normDeg((Math.atan2(-(w?.u || 0), -(w?.v || 0)) * 180) / Math.PI); return normDeg(from - (this.ship?.hdg || 0)); }
-  toggleAutopilot() {
-    if (!this.route.length) { this.hud.event({ kind: 'warn', text: 'Set a waypoint or a route on the chart (M) first.' }); return; }
-    this.autopilot = !this.autopilot;
-    if (this.autopilot) this.input.rudderHold = false;
-    else if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(WARP_MAX_NO_ROUTE, `Autopilot off — time warp back to ${WARP_MAX_NO_ROUTE}× (higher levels sail the route).`);
-  }
+  toggleAutopilot() { return this.pilot.engage(!this.autopilot); }
   /** Route API used by the chart: ordered waypoints the autopilot follows. */
-  setRoute(points) {
-    const pts = (points || []).map((p) => ({ lat: Number(Array.isArray(p) ? p[0] : p.lat), lon: Number(Array.isArray(p) ? p[1] : p.lon) })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  setRoute(points, opts = {}) {
+    // planned points keep their `mark` (approach / tss / patch_exit / canal), `name` and user-waypoint index `wp`
+    const pts = (points || []).map((p) => {
+      const q = { lat: Number(Array.isArray(p) ? p[0] : p.lat), lon: Number(Array.isArray(p) ? p[1] : p.lon) };
+      if (p && !Array.isArray(p)) { if (p.mark) q.mark = p.mark; if (p.name) q.name = p.name; if (Number.isInteger(p.wp)) q.wp = p.wp; }
+      return q;
+    }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
     this.route = pts;
+    if (!opts.planned) { this.routeMeta = null; this.pilot?.clear(); } // a raw route: no plan behind it
     if (!pts.length) { this.autopilot = false; if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(WARP_MAX_NO_ROUTE, `Route cleared — time warp back to ${WARP_MAX_NO_ROUTE}×.`); return; }
     const total = this.routeLength();
     if (this.warp > WARP_MAX_NO_ROUTE) this.autopilot = true; // above 20× the crew sails the (new) route
     const from = this.ship || pts[0];
+    if (opts.planned) return; // the pilot tells the skipper about a planned route itself
     this.hud.event({ kind: 'info', text: `Route set: ${pts.length} waypoint${pts.length > 1 ? 's' : ''}, ${fmtDistance(total)}, first leg bearing ${Math.round(bearing(from.lat, from.lon, pts[0].lat, pts[0].lon))}°. ${this.autopilot ? 'Autopilot steering.' : 'Press P for autopilot, . / , for time warp.'}` });
   }
   clearRoute() {
-    this.route = []; this.autopilot = false; this.hud.chart?.clearRoute?.(true);
+    this.route = []; this.autopilot = false; this.pilot?.clear(); this.routeMeta = null; this.hud.chart?.clearRoute?.(true);
     if (this.warp > WARP_MAX_NO_ROUTE) this.setWarp(WARP_MAX_NO_ROUTE, `Route cleared — time warp back to ${WARP_MAX_NO_ROUTE}×.`);
   }
 
@@ -762,10 +771,12 @@ class App {
   /** One level up (+1) or down (-1): keys . and , (the HUD's ◀◀ ▶▶ call setWarp directly). */
   stepWarp(dir) {
     const you = this.you; if (!you) return false;
-    if (dir > 0 && you.docked) { this.hud.event({ kind: 'warn', text: 'Time warp works at sea — cast off first.' }); return false; }
     const L = this.warpLevels();
     // a raise still waiting for the server's answer counts, so two quick presses step two levels
     const req = this.warpReq, base = req && req.f > this.warp && performance.now() - req.t < 1500 ? req.f : this.warp;
+    // V6 item 6: inside a harbour zone (moored, tugs, approach, built patch) 5× is the top
+    const hMax = Number(this.world?.warp?.HARBOR_MAX ?? WARP?.HARBOR_MAX) || 5;
+    if (dir > 0 && you.warpLimit?.harbour && base >= hMax) { this.hud.event({ kind: 'warn', text: `Inside harbours time warp is limited to ${hMax}×.` }); return false; }
     let i = L.indexOf(base); if (i < 0) i = L.reduce((bi, v, k) => (Math.abs(v - base) < Math.abs(L[bi] - base) ? k : bi), 0);
     const next = L[Math.max(0, Math.min(L.length - 1, i + (dir > 0 ? 1 : -1)))];
     return next === base ? false : this.setWarp(next);
@@ -780,7 +791,8 @@ class App {
     if (!L.includes(f)) return false;
     const you = this.you; if (!you) return false;
     if (f > 1) {
-      if (you.docked) { this.hud.event({ kind: 'warn', text: 'Time warp works at sea — cast off first.' }); return false; }
+      const hMax = Number(this.world?.warp?.HARBOR_MAX ?? WARP?.HARBOR_MAX) || 5;
+      if (f > hMax && you.warpLimit?.harbour) { this.hud.event({ kind: 'warn', text: `Inside harbours time warp is limited to ${hMax}×.` }); return false; }
       if (f > WARP_MAX_NO_ROUTE && !this.route.length) { this.hud.event({ kind: 'warn', text: `Above ${WARP_MAX_NO_ROUTE}× the crew needs a route to follow — plot one on the chart (M) and sail it.` }); return false; }
       if (f > WARP_MAX_NO_ROUTE) {
         this.autopilot = true; this.input.rudderHold = false; this.input.left = this.input.right = false;
@@ -802,7 +814,7 @@ class App {
   }
   /** Mirror the server's level (`you.warp`): a drop is followed at once; a raise only once we have not just lowered it ourselves. */
   syncWarp(serverWarp, you) {
-    let w = you?.docked || you?.assist || you?.rescue ? 1 : serverWarp;
+    let w = you?.rescue ? 1 : serverWarp; // V6 item 6: docked and assisted ships may be warped (≤ 5×)
     const hold = this.warpHold;
     if (hold) { if (w <= hold.f || performance.now() > hold.until) this.warpHold = null; else w = Math.min(w, hold.f); }
     if (w !== this.warp) this.applyWarp(w);
@@ -872,6 +884,7 @@ class App {
    * is finished (autopilot off; time warp back to real time so the ship does not run on past the destination warped).
    */
   autopilotStep(s, C) {
+    if (this.pilot) return this.pilot.step(s, C); // v6: route planner v2 + harbour speed bands + berth hand-over (autopilot.js)
     const wp = this.route[0];
     const brg = bearing(s.lat, s.lon, wp.lat, wp.lon);
     this.input.rudderCmd = s.spd < -0.3 ? 0 : THREE.MathUtils.clamp(angleDiff(s.hdg, brg) / 25, -1, 1); // going astern the rudder works backwards: the autopilot holds it amidships
@@ -1119,6 +1132,7 @@ class App {
   }
   updateHud(now) {
     const s = this.ship, you = this.you, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
+    try { this.pilot?.update(now); } catch (e) { if (!this.pilotWarned) { this.pilotWarned = true; console.warn('[autopilot] update failed', e); } }
     const h = this.terrain.heightAt(s.lat, s.lon);
     const cur = currentAt(s.lat, s.lon, this.simTime);
     if (this.tide?.stream) { cur.u += this.tide.stream.u || 0; cur.v += this.tide.stream.v || 0; }

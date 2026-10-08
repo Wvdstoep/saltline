@@ -470,13 +470,14 @@ test('old state files load with v0.3 defaults; new harbour and player fields sur
   const r = g3.players.get('t1'); assert.equal(r.assist, null); assert.equal(r.docked, 'rotterdam'); assert.equal(r.berth.id, 'rotterdam-b1'); assert.equal(r.ship.lat, b1.lat);
   fs.rmSync(dir, { recursive: true, force: true });
 });
-test('public job boards carry pay per tonne, destination names, deadlines and harbour positions', () => {
+test('public job boards carry pay per tonne, destination names, ship-hour budgets and harbour positions', () => {
   const g = mkGame(); const jobs = g.publicJobs();
   const r = jobs.harbors.find((h) => h.id === 'rotterdam');
   assert.ok(r.harbor.lat === ROT.lat && r.harbor.name === ROT.name && r.harbor.size === 'mega' && r.lat === ROT.lat && r.name === ROT.name);
   assert.ok(r.jobs.length >= 3 && r.fuel > 0 && r.trend);
   for (const j of r.jobs) {
-    for (const k of ['pay', 'payPerT', 'type', 'distKm', 'to', 'toName', 'deadline', 'needsCat', 'good', 'qty', 'pax', 'title']) assert.ok(k in j, `${j.type} has ${k}`);
+    for (const k of ['pay', 'payPerT', 'type', 'distKm', 'to', 'toName', 'hours', 'expiresAt', 'needsCat', 'good', 'qty', 'pax', 'title']) assert.ok(k in j, `${j.type} has ${k}`);
+    assert.ok(!('deadline' in j), 'V6 item 5: ship-hour budgets replace world-clock deadlines');
     assert.equal(j.toName, harborById(j.to).name);
     if (j.qty) assert.equal(j.payPerT, Math.round(j.pay / j.qty)); else if (j.pax) assert.equal(j.payPerT, Math.round(j.pay / j.pax));
   }

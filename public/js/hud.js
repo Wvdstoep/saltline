@@ -11,6 +11,7 @@ import { Chart, fetchJobs, cachedJobs, collectAi, collectRescues, collectStorms,
 import { isTouch, TouchHelm } from './touch.js';
 import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js';
 import { jobWhere, fmtLeft, JOB_COLOR } from './jobs.js';
+import { estimateJob, hardReason, fmtShipH, JOBTIME } from '/shared/jobtime.js'; // V6 item 5: contract hours on the ship's clock
 
 const { GOODS, SHIP_CLASSES, GEO, SIM, INTERACT } = K;
 const $ = (id) => document.getElementById(id);
@@ -353,9 +354,9 @@ export class Hud {
     el.textContent = s === 'replaced' ? 'offline — logged in elsewhere' : 'offline — reconnecting';
   }
   showWelcome(show) { $('welcome').classList.toggle('hidden', !show); $('hud').classList.toggle('hidden', show); if (!show) this.syncModes(); }
-  anyOverlayOpen() { return ['chartWrap', 'harborWrap', 'shipsWrap', 'helpWrap'].some((id) => !$(id).classList.contains('hidden')); }
+  anyOverlayOpen() { return ['chartWrap', 'harborWrap', 'shipsWrap', 'helpWrap', 'marketWrap'].some((id) => $(id) && !$(id).classList.contains('hidden')); }
   transientOpen() {
-    return ['chartWrap', 'shipsWrap', 'helpWrap', 'compareWrap', 'aisCardWrap'].some((id) => !$(id)?.classList.contains('hidden')) || !!$('moreSheet')?.classList.contains('open')
+    return ['chartWrap', 'shipsWrap', 'helpWrap', 'compareWrap', 'aisCardWrap', 'marketWrap'].some((id) => $(id) && !$(id).classList.contains('hidden')) || !!$('moreSheet')?.classList.contains('open')
       || (this.touch && !$('weatherPanel')?.classList.contains('hidden'));
   }
   /** Live AIS vessel card: `html` from AisLayer.info() (already escaped), or null to close. */
@@ -367,7 +368,7 @@ export class Hud {
   closeOverlays() {
     $('aisCardWrap')?.classList.add('hidden');
     this.chart.close();
-    for (const id of ['shipsWrap', 'helpWrap', 'compareWrap']) $(id)?.classList.add('hidden');
+    for (const id of ['shipsWrap', 'helpWrap', 'compareWrap', 'marketWrap']) $(id)?.classList.add('hidden');
     this.closeMore();
     if (this.touch) $('weatherPanel')?.classList.add('hidden');
   }
@@ -446,7 +447,6 @@ export class Hud {
   currentWarp() { const w = Number(this.app.warp ?? this.app.you?.warp ?? 1); return w > 0 ? w : 1; }
   stepWarp(dir) {
     const a = this.app, you = a.you; if (!you) return;
-    if (you.docked) return this.event({ kind: 'warn', text: 'Time warp works at sea — cast off first.' });
     const L = this.warpLevels(), cur = this.currentWarp();
     let i = L.indexOf(cur); if (i < 0) i = L.reduce((bi, v, k) => (Math.abs(v - cur) < Math.abs(L[bi] - cur) ? k : bi), 0);
     const next = L[Math.max(0, Math.min(L.length - 1, i + dir))];
@@ -460,24 +460,37 @@ export class Hud {
   }
   updateWarp(you) {
     const a = this.app, ctl = $('warpCtl'), banner = $('warpBanner'); if (!ctl) return;
-    const show = !!you && !you.docked && !you.rescue && !this.interiorOn && !this.ashoreOn;
+    // V6 item 6 (docs/V6-QUICK-CONTRACTS.md §2.5): the control also shows moored and under tugs (≤ 5× in harbours);
+    // css/warpharbour.css brings it back on phones while moored and gives the harbour look
+    if (!this._whCss) { this._whCss = true; if (!document.getElementById('whCss')) { const l = document.createElement('link'); l.id = 'whCss'; l.rel = 'stylesheet'; l.href = 'css/warpharbour.css'; document.head.appendChild(l); } }
+    const show = !!you && !you.rescue && !this.interiorOn && !this.ashoreOn;
     ctl.classList.toggle('hidden', !show);
     const w = this.currentWarp(), L = this.warpLevels();
+    const lim = you?.warpLimit || null, hb = lim?.harbour || null;
     setText($('warpLevel'), `${w}×`);
+    setText(ctl.querySelector('.warpLevel small'), hb ? 'Harbour' : 'Warp');
     ctl.classList.toggle('active', w > 1);
-    const blocked = !!(you?.hail || you?.assist || you?.fuelEmpty || you?.rescue);
+    ctl.classList.toggle('harbour', !!hb);
+    const blocked = !!(you?.hail || you?.rescue || (you?.fuelEmpty && !you?.docked && !you?.assist));
     $('warpDown').disabled = w <= L[0];
-    $('warpUp').disabled = w >= L[L.length - 1] || blocked;
-    $('warpUp').title = blocked ? 'Not now (hailed, under tow, out of fuel or adrift)' : 'Faster (.) — open water only, away from harbours and other ships';
+    $('warpUp').disabled = w >= L[L.length - 1] || blocked || !!(lim && w >= lim.max);
+    $('warpUp').title = lim?.reason || 'Faster (.)';
     const on = show && w > 1;
     banner.classList.toggle('hidden', !on);
     document.body.classList.toggle('warpOn', on);
     if (!on) return;
-    const s = a.ship, v = s ? Math.abs(s.spd) * GEO.KN_TO_MS : 0;
-    const dist = this.routeRemainingM();
-    let txt = `Time warp ${w}×`;
-    if (dist > 0 && v > 0.3) { const real = dist / v; txt += ` — ETA ${fmtDurS(real)} real → ${fmtDurS(real / w)}`; }
-    else txt += ` — 1 min here is ${fmtDurS(60 * w)} at sea`;
+    let txt;
+    if (you.docked) txt = `Moored at ${w}× — the ship's clock (and contract hours) run ${w}×; the tide and the harbour stay real time.`;
+    else if (you.assist) {
+      const left = Math.max(0, Math.round(((Number(you.assist.until) || 0) - Date.now()) / 1000));
+      txt = `Tugs at ${w}× — the tow runs ${w}× faster · ${Math.floor(left / 60)}:${pad2(left % 60)} to go`;
+    } else {
+      const s = a.ship, v = s ? Math.abs(s.spd) * GEO.KN_TO_MS : 0;
+      const dist = this.routeRemainingM();
+      txt = hb ? `Harbour ${w}× — berth guidance, tugs and collisions work as normal` : `Time warp ${w}×`;
+      if (dist > 0 && v > 0.3) { const real = dist / v; txt += ` — ETA ${fmtDurS(real)} real → ${fmtDurS(real / w)}`; }
+      else if (!hb) txt += ` — 1 min here is ${fmtDurS(60 * w)} at sea`;
+    }
     setText($('warpBannerText'), txt);
   }
 
@@ -503,7 +516,32 @@ export class Hud {
     $('hbWanted').style.color = you.wanted ? 'var(--red)' : '';
     $('hbWanted').closest('.stat')?.classList.toggle('wantedOn', !!you.wanted);
     const simTime = snap?.simTime ?? a.simTime;
-    if (simTime > 1e9) { const d = new Date(simTime * 1000); setText($('hbDate'), `${DAYS[d.getUTCDay()]} ${pad2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]}`); setText($('hbClock'), `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`); }
+    // V6 item 5: the ship's clock. While warping (and 15 s after) a "Ship · 20×  +6 h 20 m" stat sits next to the world
+    // clock (phones: the clock stat itself switches to ship time); the offset counts from where warp began.
+    const shipNow = a.shipTimeNow ? a.shipTimeNow() : 0, nowMs = performance.now(), run = a.shipClock?.warpRun;
+    if (a.warp > 1 && shipNow > 0) {
+      if (!this._shipRun || this._shipRun.until) this._shipRun = { start: run?.shipStart ?? shipNow, until: 0, warp: a.warp };
+      if (run && Number.isFinite(run.shipStart) && run.shipStart <= shipNow) this._shipRun.start = run.shipStart;
+      this._shipRun.warp = a.warp; this._shipRun.off = Math.max(0, shipNow - this._shipRun.start);
+    } else if (this._shipRun && !this._shipRun.until) this._shipRun.until = nowMs + 15000;
+    const sr = this._shipRun && (!this._shipRun.until || nowMs < this._shipRun.until) ? this._shipRun : null;
+    if (!sr && this._shipRun?.until) this._shipRun = null;
+    if (!this._tmCss) { this._tmCss = true; if (!document.getElementById('tmCss')) { const l = document.createElement('link'); l.id = 'tmCss'; l.rel = 'stylesheet'; l.href = 'css/timemodel.css'; document.head.appendChild(l); } }
+    const clk = document.querySelector('.clockStat');
+    let shipStat = $('hbShip');
+    if (!shipStat && clk) {
+      shipStat = document.createElement('div'); shipStat.id = 'hbShip'; shipStat.className = 'stat shipClockStat hidden';
+      shipStat.innerHTML = `<span class="si">${ic('clock')}</span><span class="sv"><small id="hbShipLbl">Ship</small><b id="hbShipVal">—</b></span>`;
+      clk.after(shipStat);
+    }
+    const offTxt = (sec, phone) => { const m = Math.floor(sec / 60), h = Math.floor(m / 60); return phone ? `ship +${h}:${pad2(m % 60)}` : `+${h} h ${pad2(m % 60)} m`; }; // phones hide the small label: say it in the value
+    const phone = !!this.touch;
+    if (sr) {
+      const lbl = `Ship · ${sr.until ? '1×' : `${sr.warp}×`}`, tip = `Your ship's clock: ${offTxt(sr.off, false).slice(1)} of ship time since you started warping. Contract hours count on it; the tide and the world clock run in real time.`;
+      if (phone) { setText($('hbDate'), lbl); setText($('hbClock'), offTxt(sr.off, true)); clk?.classList.add('shipMode'); if (clk && clk.title !== tip) clk.title = tip; shipStat?.classList.add('hidden'); }
+      else if (shipStat) { shipStat.classList.remove('hidden'); setText($('hbShipLbl'), lbl); setText($('hbShipVal'), offTxt(sr.off, false)); if (shipStat.title !== tip) shipStat.title = tip; shipStat.classList.toggle('done', !!sr.until); clk?.classList.remove('shipMode'); }
+    } else { shipStat?.classList.add('hidden'); if (clk?.classList.contains('shipMode')) { clk.classList.remove('shipMode'); clk.title = 'Real UTC date and time'; } }
+    if (simTime > 1e9 && !(sr && phone)) { const d = new Date(simTime * 1000); setText($('hbDate'), `${DAYS[d.getUTCDay()]} ${pad2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]}`); setText($('hbClock'), `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`); }
     const wind = snap?.wind;
     if (wind && Number.isFinite(+wind.spd)) {
       setText($('hbWind'), this.touch ? `${(+wind.spd).toFixed(0)} m/s` : `${pad3(wind.dir ?? 0)}° ${(+wind.spd).toFixed(0)} m/s`);
@@ -620,7 +658,7 @@ export class Hud {
     setText($('jobPay'), `${fmt(t.job.pay)} cr`);
     setText($('jobStep'), t.step);
     setText($('jobWhere'), jobWhere(t));
-    const left = fmtLeft(t.deadlineS); setText($('jobLeft'), left); $('jobLeft').classList.toggle('late', t.deadlineS < 0);
+    const leftS = t.leftS ?? t.deadlineS; const left = fmtLeft(leftS, this.app.warp || 1); setText($('jobLeft'), left); $('jobLeft').classList.toggle('late', leftS < 0); // V6 item 5: ship time
     $('jobNav').classList.toggle('hidden', ts.length < 2); setText($('jobIdx'), `${i + 1}/${ts.length}`);
     const b = $('btnJobAct');
     if (t.action) {
@@ -690,23 +728,43 @@ export class Hud {
     setText(moor, this.touch ? 'Moor' : 'Moor (T)');
     tugs.classList.remove('hidden'); tugs.disabled = !tugRange || !!you?.hail; setText(tugs, `Tugs · ${fmt(tugCost)} cr`); tugs.title = tugRange ? 'Tugs take you alongside in 45 s' : 'Within 1.5 km of the harbour, under 6 kn';
   }
+  /**
+   * The voyage line (AUTOPILOT, docs/V6-QUICK-CONTRACTS.md §4.6): the points being plotted on the chart, else the ship's
+   * route — for a planned route also the draught it was planned for and its warnings
+   * (`2 wp · 184 nm · ETA 19 h 10 min · planned for 5.5 m · ⚠ 1 tidal leg`). Set voyage sends the whole route.
+   */
   showVoyage(route, etaSec, expressCost) {
     const el = $('voyageLine'); if (!el) return;
-    const a = this.app, pts = route || [];
+    const a = this.app;
+    const editing = (this.chart?.route?.length || 0) > 0;
+    const pts = editing ? this.chart.getRoute() : a.route?.length ? a.route : route || [];
     if (!pts.length) { el.classList.add('hidden'); el.innerHTML = ''; this._voyKey = ''; return; }
     el.classList.remove('hidden');
     const last = pts[pts.length - 1];
+    const st = this.chart?.routeStats ? this.chart.routeStats(pts) : null;
     const s = a.ship; let nm = 0, prev = s ? { lat: s.lat, lon: s.lon } : null;
     for (const p of pts) { if (prev) nm += haversine(prev.lat, prev.lon, p.lat, p.lon) / NM; prev = p; }
-    const cost = Number.isFinite(expressCost) && expressCost > 0 ? expressCost : Math.round(nm * SIM.EXPRESS_CR_PER_NM);
-    const key = `${pts.length}|${nm.toFixed(1)}|${Math.round((etaSec || 0) / 60)}|${a.autopilot ? 1 : 0}|${cost}`;
+    const eta = st ? st.etaSec : etaSec;
+    const cost = Math.round(nm * SIM.EXPRESS_CR_PER_NM);
+    const meta = !editing ? a.routeMeta : null;
+    const tidal = (meta?.warnings || []).filter((w) => w.kind === 'no_draught_route').length;
+    const otherW = (meta?.warnings || []).length - tidal;
+    const key = `${editing ? 'e' : 'r'}|${pts.length}|${nm.toFixed(1)}|${Math.round((eta || 0) / 60)}|${a.autopilot ? 1 : 0}|${meta ? meta.plannedAt : 0}`;
     if (key === this._voyKey) return;
     this._voyKey = key;
-    el.innerHTML = `<span class="vsum">${ic('route')}<span>${pts.length} wp · ${nm.toFixed(1)} nm · ETA ${esc(fmtDur(etaSec))}</span>${a.autopilot ? '<span class="chip good">autopilot</span>' : ''}</span>
-      <button id="voySail" class="primary">${ic('play')}<span class="lbl">Sail route</span></button><button id="voyExpress">${ic('ffwd')}<span class="lbl">Express ${fmt(cost)} cr</span></button><button id="voySet" title="The crew keeps sailing to the last waypoint while you are offline">${ic('clock')}<span class="lbl">Set voyage</span></button>`;
-    $('voySail').onclick = () => this.chart.sailRoute();
+    const plan = editing ? '<span class="chip">straight · Sail route plans it</span>'
+      : meta ? `<span class="chip good" title="Planned over water at least ${esc(String(Math.round((meta.draft + (meta.ukcM || 0)) * 10) / 10))} m deep at low water">planned for ${esc(String(meta.draft))} m</span>${tidal ? `<span class="chip warn" title="${esc((meta.warnings || []).filter((w) => w.kind === 'no_draught_route').map((w) => w.text).join(' · '))}">⚠ ${tidal} tidal leg${tidal > 1 ? 's' : ''}</span>` : ''}${otherW ? `<span class="chip warn" title="${esc((meta.warnings || []).filter((w) => w.kind !== 'no_draught_route').map((w) => w.text).join(' · '))}">⚠ ${otherW}</span>` : ''}`
+      : '<span class="chip">straight</span>';
+    el.innerHTML = `<span class="vsum">${ic('route')}<span>${pts.length} wp · ${nm.toFixed(1)} nm · ETA ${esc(fmtDur(eta))}</span>${plan}${a.autopilot ? '<span class="chip good">autopilot</span>' : ''}</span>
+      <button id="voySail" class="primary">${ic('play')}<span class="lbl">${!editing && a.autopilot ? 'Sailing' : 'Sail route'}</span></button><button id="voyExpress">${ic('ffwd')}<span class="lbl">Express ${fmt(cost)} cr</span></button><button id="voySet" title="The crew keeps sailing this route while you are offline">${ic('clock')}<span class="lbl">Set voyage</span></button>`;
+    $('voySail').onclick = () => { if (editing || !a.pilot) this.chart.sailRoute(); else if (!a.autopilot) a.pilot.engage(true); };
     $('voyExpress').onclick = () => { if (a.you?.docked) return this.event({ kind: 'warn', text: 'Cast off first — express passages start at sea.' }); if (confirm(`Express passage to the last waypoint: ${fmt(cost)} cr plus the fuel and wear of the leg. Go?`)) a.net.action('express', { lat: last.lat, lon: last.lon }); };
-    $('voySet').onclick = () => { a.net.action('set_voyage', { lat: last.lat, lon: last.lon, throttle: 0.7 }); this.event({ kind: 'info', text: 'Voyage set: the crew keeps sailing to the last waypoint while you are away.' }); };
+    $('voySet').onclick = () => {
+      const order = Number.isFinite(a.pilot?.order) && a.autopilot ? a.pilot.order : a.input?.throttleCmd;
+      const throttle = order > 0.05 ? Math.round(order * 100) / 100 : 0.7;
+      const r = pts.slice(0, 250).map((p) => [Math.round(p.lat * 1e5) / 1e5, Math.round(p.lon * 1e5) / 1e5]);
+      a.net.action('set_voyage', { route: r, throttle, ...(meta?.dest?.harbor ? { harbor: meta.dest.harbor } : {}) });
+    };
   }
   showInterior(on) {
     this.interiorOn = !!on;
@@ -843,17 +901,28 @@ export class Hud {
     if (this._stale.has(t) || t === 'boards') this.renderTab(t);
     const nav = $('harborNav')?.querySelector('button.on'); if (nav && this.touch) nav.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }
-  deadline(j) { const dl = (j.deadline - (this.app.simTime || Date.now() / 1000)); return dl < 0 ? 'expired' : dl < 48 * 3600 ? `${Math.floor(dl / 3600)} h` : `${Math.floor(dl / 86400)} d`; }
-  deadlineSec(j) { return j.deadline - (this.app.simTime || Date.now() / 1000); }
+  // V6 item 5: a board offer shows its budget of ship hours ('26 h'); an accepted contract the ship time left ('21 h 10 min').
+  deadline(j) {
+    if (Number.isFinite(j.dueShip)) { const s = this.deadlineSec(j); if (s < 0) return 'overdue'; const m = Math.floor(s / 60), h = Math.floor(m / 60); return h < 1 ? `${Math.max(1, m)} min` : h < 48 ? `${h} h ${pad2(m % 60)} min` : `${Math.floor(h / 24)} d ${h % 24} h`; } // never round up: 68 h is 2 d 20 h, not '3 days'
+    if (Number.isFinite(j.hours)) return fmtShipH(j.hours);
+    const dl = (j.deadline - (this.app.simTime || Date.now() / 1000)); return dl < 0 ? 'expired' : dl < 48 * 3600 ? `${Math.floor(dl / 3600)} h` : `${Math.floor(dl / 86400)} d`;
+  }
+  deadlineSec(j) {
+    if (Number.isFinite(j.dueShip)) return j.dueShip - (this.app.shipTimeNow ? this.app.shipTimeNow() : this.app.simTime || Date.now() / 1000);
+    if (Number.isFinite(j.hours)) return j.hours * 3600;
+    return j.deadline - (this.app.simTime || Date.now() / 1000);
+  }
+  /** The time estimate for a contract with the current ship (shared/jobtime.js): ok / too slow, label, why. */
+  jobEst(j, you, C, mass) {
+    const paxUsed = (you.jobs || []).filter((x) => x.pax).reduce((s, x) => s + x.pax, 0);
+    const richness = j.richness ?? this.app.world?.fishing?.find((g) => g.id === j.ground)?.richness;
+    return estimateJob(richness != null ? { ...j, richness } : j, { cls: you.ship.cls, holdFreeT: C.capacity - mass, paxFree: C.pax - paxUsed, warp: JOBTIME.SHOW_WARP });
+  }
   payPerT(j) { return j.qty ? fmt(j.pay / j.qty) : j.pax ? fmt(j.pay / j.pax) + '/pax' : '—'; }
   /** Why the current ship cannot take a contract, or null. */
   whyNot(j, you, C, mass) {
-    if (j.needsCat && !j.needsCat.includes(C.cat)) return `needs ${j.needsCat.includes('passenger') ? 'a yacht or ferry' : 'a yacht'}`;
-    if (j.type === 'passengers' || j.type === 'charter') { const used = you.jobs.filter((x) => x.pax).reduce((s, x) => s + x.pax, 0); if (used + (j.pax || 0) > C.pax) return `needs ${j.pax} berths (${Math.max(0, C.pax - used)} free)`; return null; }
-    if (j.type === 'fishing') { if (!(C.fishRate > 0)) return 'this hull cannot fish'; if (j.qty > C.capacity) return `hold too small for ${j.qty} t`; return null; }
-    if (j.type === 'tow') return null;
-    if (j.qty && mass + j.qty > C.capacity) return `needs ${fmt(j.qty)} t of hold (${fmt(Math.max(0, C.capacity - mass))} t free)`;
-    return null;
+    const used = (you.jobs || []).filter((x) => x.pax).reduce((s, x) => s + x.pax, 0);
+    return hardReason(j, { cls: C.id || you.ship.cls, holdFreeT: C.capacity - mass, paxFree: C.pax - used }); // V6 item 5: shared/jobtime.js, same texts
   }
   hname(id) { return this.app.world?.harbors?.find((x) => x.id === id)?.name || id || '—'; }
   renderHarborTabs() {
@@ -976,26 +1045,34 @@ export class Hud {
     const [a, b] = this.routeOf(j, fromHarbor);
     const dl = this.deadlineSec(j);
     const per = j.qty ? `${fmt(j.pay / j.qty)} cr/t` : j.pax ? `${fmt(j.pay / j.pax)} cr/pax` : '';
-    return `<article class="card jobCard t-${esc(type)}">
-      <div class="jobTop"><span class="jobType">${ic(JOB_ICON[type] || 'contract')}${esc(JOB_LABEL[type] || type)}</span><span class="chip ${dl < 0 ? 'bad' : dl < 12 * 3600 ? 'warn' : 'ghost'}">${ic('clock')}${this.deadline(j)}</span></div>
+    // V6 item 5: the budget is ship hours; the estimate says what it takes with YOUR ship; too slow → greyed, "Accept anyway"
+    const est = this.jobEst(j, you, C, mass), slow = !why && !est.ok;
+    const refName = j.ref?.cls && SHIP_CLASSES[j.ref.cls] ? SHIP_CLASSES[j.ref.cls].name.toLowerCase() : '';
+    const budget = Number.isFinite(j.hours) ? `${j.hours} h of ship time` : 'Time allowed';
+    const chipTip = `${budget}: counted on your ship's clock — time warp saves you real waiting, it does not shorten the contract.`;
+    const eligTxt = why || (slow ? `${est.why.charAt(0).toUpperCase()}${est.why.slice(1)}${refName ? ` · rated for a ${refName}` : ''}` : 'Fits your ship and its time');
+    return `<article class="card jobCard t-${esc(type)}${slow ? ' tooSlow' : ''}">
+      <div class="jobTop"><span class="jobType">${ic(JOB_ICON[type] || 'contract')}${esc(JOB_LABEL[type] || type)}</span><span class="chip ${dl < 0 ? 'bad' : slow ? 'warn' : 'ghost'}" title="${esc(chipTip)}">${ic('clock')}${this.deadline(j)}</span></div>
       <h4>${esc(j.title || `${JOB_LABEL[j.type] || j.type} to ${b}`)}</h4>
       <div class="route">${ic('pin')}<b>${esc(a)}</b>${ic('arrowRight')}<b>${esc(b)}</b>${j.distKm ? `<span class="muted">· ${fmt(j.distKm)} km</span>` : ''}</div>
+      ${est.label && !why ? `<div class="estLine ${est.ok ? 'ok' : 'slow'}" title="${esc(`Ship hours with your ${C.name.toLowerCase()} at service speed; the contract allows ${budget.replace(' of ship time', '')}.`)}">${ic('clock')}<span>${esc(est.label.split(' (≈')[0])}${est.label.includes(' (≈') ? ` <span class="estReal">(≈${esc(est.label.split(' (≈')[1])}</span>` : ''}</span></div>` : ''}
       <div class="muted small">${esc(this.cargoOf(j))}${j.needsCat ? ' · needs a yacht or ferry' : ''}</div>
       <div class="payRow"><span class="pay">${fmt(j.pay)}<small>cr</small></span><span class="perT">${per}</span></div>
-      <div class="elig ${why ? 'bad' : 'ok'}">${ic(why ? 'x' : 'check')}${esc(why || 'Fits your ship')}</div>
-      <div class="actions"><button class="${why ? '' : 'primary'}" data-act="accept" data-job="${esc(j.id)}" ${why ? `disabled title="${esc(why)}"` : ''}>Accept</button></div>
+      <div class="elig ${why ? 'bad' : slow ? 'slow' : 'ok'}">${ic(why ? 'x' : slow ? 'clock' : 'check')}${esc(eligTxt)}</div>
+      <div class="actions"><button class="${why || slow ? '' : 'primary'}" data-act="accept" data-job="${esc(j.id)}"${slow ? ` data-slow="1" data-need="${esc(fmtShipH(est.needH))}" data-budget="${esc(String(est.budgetH))}"` : ''} ${why ? `disabled title="${esc(why)}"` : ''}>${slow ? 'Accept anyway' : 'Accept'}</button></div>
     </article>`;
   }
   tabJobs(h, you, C) {
     const mass = you.cargo.reduce((s, c) => s + c.qty, 0);
     const mine = you.jobs || [];
     const paxUsed = mine.filter((x) => x.pax).reduce((s, x) => s + x.pax, 0);
-    const jobs = [...(h.jobs || [])].sort((x, y) => (this.whyNot(x, you, C, mass) ? 1 : 0) - (this.whyNot(y, you, C, mass) ? 1 : 0) || y.pay - x.pay);
+    const rank = (j) => (this.whyNot(j, you, C, mass) ? 2 : this.jobEst(j, you, C, mass).ok ? 0 : 1); // fits, too slow, cannot
+    const jobs = [...(h.jobs || [])].sort((x, y) => rank(x) - rank(y) || y.pay - x.pay);
     return `<div class="secHead"><div><h2>${ic('contract')}Contracts</h2><p>Deliveries complete automatically when you moor at the destination. Hold ${fmtT(mass)} / ${fmtT(C.capacity)} · ${Math.max(0, C.pax - paxUsed)} of ${C.pax} berths free.</p></div>
         <div class="tools"><span class="chip">${jobs.length} on the board</span></div></div>
       ${jobs.length ? `<div class="cards">${jobs.map((j) => this.jobCard(j, h, you, C, mass, false)).join('')}</div>` : `<div class="empty">${ic('contract')}<span>The board is empty right now — new contracts are posted every hour.</span></div>`}
       <h3 class="subHead">${ic('list')}Your contracts${mine.length ? ` · ${fmt(mine.reduce((s, j) => s + j.pay, 0))} cr outstanding` : ''}</h3>
-      ${mine.length ? `<div class="mineList">${mine.map((j) => { const st = this.mineStatus(j, you); return `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · ${this.deadline(j)} left${st.text ? ` · <span class="${st.ready ? 'up' : 'down'}">${esc(st.text)}</span>` : ''}</small></div><span class="p">${fmt(j.pay)} cr</span>${st.here ? `<button class="small primary" data-act="deliver" data-job="${esc(j.id)}">Deliver</button>` : ''}<button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`; }).join('')}</div>`
+      ${mine.length ? `<div class="mineList">${mine.map((j) => { const st = this.mineStatus(j, you); return `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · <span class="${this.deadlineSec(j) < 0 ? 'down' : ''}" title="Counted on your ship's clock">${this.deadline(j)}${this.deadlineSec(j) < 0 ? ' — half pay' : ' left (ship time)'}</span>${st.text ? ` · <span class="${st.ready ? 'up' : 'down'}">${esc(st.text)}</span>` : ''}</small></div><span class="p">${fmt(j.pay)} cr</span>${st.here ? `<button class="small primary" data-act="deliver" data-job="${esc(j.id)}">Deliver</button>` : ''}<button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`; }).join('')}</div>`
         : `<div class="empty">${ic('crate')}<span>No contracts aboard. Take one above, or look at every harbour's board in <i>Job boards</i>.</span></div>`}`;
   }
 
@@ -1026,13 +1103,16 @@ export class Hud {
         return `<div class="boardCard${open ? ' open' : ''}"><div class="boardHead" data-act="boardToggle" data-id="${esc(e.id)}" role="button" tabindex="0" aria-expanded="${open}">
             <span class="goodIcon">${ic('anchor')}</span><div class="bh"><b>${esc(short(h.name))}</b><small>${me ? `${fmtDistance(d)} · ${pad3(bearing(me.lat, me.lon, h.lat, h.lon))}°` : ''} · fuel ${fmt(e.fuel)} cr/t · best ${fmt(best)} cr</small></div>
             <span class="cnt">${e.jobs.length}</span><button class="small" data-act="chartAt" data-lat="${h.lat}" data-lon="${h.lon}" title="Show on the chart">${ic('chart')}<span class="lbl">Chart</span></button><span class="chev">${ic('chevronDown')}</span></div>
-          <div class="boardJobs">${e.jobs.map((j) => { const why = this.whyNot(j, you, C, mass); const [ra, rb] = this.routeOf(j, h); const type = j.type; return `<div class="miniJob">${ic(JOB_ICON[type] || 'contract')}<div class="t"><div>${esc(j.title || `${JOB_LABEL[type]} to ${rb}`)}</div><small>${esc(ra)} → ${esc(rb)}${j.distKm ? ` · ${fmt(j.distKm)} km` : ''} · ${this.deadline(j)}${why ? ` · <span class="down">${esc(why)}</span>` : ''}</small></div><div class="p">${fmt(j.pay)} cr<small>${this.payPerT(j)}${j.qty ? '/t' : ''}</small></div></div>`; }).join('')}</div></div>`;
+          <div class="boardJobs">${e.jobs.map((j) => { const why = this.whyNot(j, you, C, mass); const [ra, rb] = this.routeOf(j, h); const type = j.type; return `<div class="miniJob">${ic(JOB_ICON[type] || 'contract')}<div class="t"><div>${esc(j.title || `${JOB_LABEL[type]} to ${rb}`)}</div><small>${esc(ra)} → ${esc(rb)}${j.distKm ? ` · ${fmt(j.distKm)} km` : ''} · ${this.deadline(j)}${why ? ` · <span class="down">${esc(why)}</span>` : (() => { const est = this.jobEst(j, you, C, mass); return est.ok ? ` · <span class="up" title="${esc(est.label)}">ok</span>` : ` · <span class="down" title="${esc(`${est.why}. ${est.label}`)}">too slow</span>`; })()}</small></div><div class="p">${fmt(j.pay)} cr<small>${this.payPerT(j)}${j.qty ? '/t' : ''}</small></div></div>`; }).join('')}</div></div>`;
       }).join('')}</div>`;
   }
 
   // -------- market
   tabMarket(h, you, C) {
     const econ = h.econ || null;
+    // V6 item 7: the World market's trade plan shows on that good's card at the buying and at the selling harbour
+    const tp = this.app.tradePlan;
+    const planChip = (g) => !tp || tp.good !== g || (tp.from !== h.id && tp.to !== h.id) ? '' : `<div class="mkPlanChip">${ic('contract')}<span>${tp.from === h.id ? `Planned: buy ${fmtT(tp.qty)} ${esc((GOODS[g]?.name || g).toLowerCase())}` : `Planned: sell here ≈ ${fmt(tp.sellArrive)} cr/t`}</span><button data-act="worldMarket" data-sub="unplan" aria-label="Clear the trade plan" title="Clear the plan">${ic('close')}</button></div>`;
     const mass = you.cargo.reduce((s, c) => s + c.qty, 0), free = Math.max(0, C.capacity - mass);
     const cards = Object.entries(h.market || {}).map(([g, p]) => {
       const G = GOODS[g] || { name: g };
@@ -1052,9 +1132,11 @@ export class Hud {
         <div class="tradeNote" data-cost="${esc(g)}"></div>
         <div class="tradeBtns"><button class="primary" data-act="buy" data-good="${esc(g)}">Buy</button><button data-act="sell" data-good="${esc(g)}" ${have ? '' : 'disabled'}>Sell</button></div>
         ${impact ? `<div class="muted small">${impact}</div>` : ''}
+        ${planChip(g)}
       </article>`;
     });
-    return `<div class="secHead"><div><h2>${ic('market')}Market</h2><p>Prices follow supply and demand: buying draws down the stock and raises the price, selling lowers it; stocks drift back toward normal over hours. Contract cargo cannot be sold. Hold free: ${fmtT(free)}.</p></div></div>
+    return `<div class="secHead"><div><h2>${ic('market')}Market</h2><p>Prices follow supply and demand: buying draws down the stock and raises the price, selling lowers it; stocks drift back toward normal over hours. Contract cargo cannot be sold. Hold free: ${fmtT(free)}.</p></div>
+        <div class="inline"><button class="mkWorldBtn" data-act="worldMarket" data-sub="trades" data-h="${esc(h.id)}" title="Best trades from here for your ship">${ic('route')}<span class="lbl">Trades from here</span></button><button class="mkWorldBtn" data-act="worldMarket" title="Every harbour's prices (L)">${ic('globe')}<span class="lbl">World market</span></button></div></div>
       <div class="cards">${cards.join('')}</div>`;
   }
 
@@ -1247,7 +1329,14 @@ export class Hud {
     const qtyInput = (g) => root.querySelector(`input[data-qty="${CSS.escape(g)}"]`);
     switch (act) {
       case 'tab': return this.showTab(el.dataset.tab);
-      case 'accept': return net.action('accept_job', { jobId: el.dataset.job });
+      case 'worldMarket': // V6 item 7: the World market sheet; data-sub="unplan" clears the trade plan chip
+        if (el.dataset.sub === 'unplan') { if (a.market) a.market.clearPlan(); else { a.tradePlan = null; this.renderHarborTabs(); } return; }
+        if (el.dataset.sub === 'trades') return a.market?.tradesFrom(el.dataset.h);
+        return a.market?.open('prices');
+      case 'accept':
+        // V6 item 5: a contract your ship cannot make in time is still yours to take — after one honest question
+        if (el.dataset.slow && !confirm(`Your ship needs ~${el.dataset.need}, the contract allows ${el.dataset.budget} h of ship time. Late delivery pays half. Accept anyway?`)) return;
+        return net.action('accept_job', { jobId: el.dataset.job });
       case 'deliver': net.action('deliver_jobs'); return;
       case 'abandon': if (confirm('Abandon this contract? Cargo is returned or dumped and a 10 % fee is charged.')) net.action('abandon_job', { jobId: el.dataset.job }); return;
       case 'fuel': return net.action('buy_fuel', { tonnes: +el.dataset.t });

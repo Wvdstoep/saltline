@@ -1,0 +1,134 @@
+/* World market sheet + chart layer (docs/V6-QUICK-CONTRACTS.md §3.5). Loaded by public/js/market.js. */
+#marketWrap { z-index: 22; }
+#marketWrap .sheetIcon .ic { width: 24px; height: 24px; }
+#mkNav .si .ic { width: 20px; height: 20px; }
+#mkBody > .tab { max-width: 1240px; margin: 0 auto; }
+.mkControls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.mkChips { display: flex; gap: 6px; flex-wrap: wrap; }
+.mkChip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); color: var(--fg-2); font-size: 13px; }
+.mkChip .ic { width: 16px; height: 16px; }
+.mkChip.on { background: var(--accent-soft); border-color: rgba(242, 177, 52, 0.5); color: var(--accent-2); }
+.mkTools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.mkSearch { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; min-height: 38px; border-radius: var(--r2); border: 1px solid var(--line); background: rgba(255, 255, 255, 0.04); flex: 1 1 200px; max-width: 320px; }
+.mkSearch .ic { width: 16px; height: 16px; color: var(--muted); }
+.mkSearch input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--fg); font: inherit; outline: none; }
+.mkSeg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r2); overflow: hidden; }
+.mkSeg button { min-height: 36px; padding: 0 12px; border: 0; border-radius: 0; background: transparent; color: var(--fg-2); font-size: 13px; }
+.mkSeg button.on { background: var(--cyan-soft); color: var(--cyan); }
+.mkSortSel { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-2); }
+.mkSortSel select { min-height: 36px; max-width: 230px; background: rgba(255, 255, 255, 0.06); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r2); padding: 0 8px; font: inherit; }
+.mkSortSel select option { background: #0b1d2e; }
+.mkDir { min-height: 36px; width: 36px; padding: 0; justify-content: center; }
+.mkDir .ic { width: 16px; height: 16px; }
+.mkNote { margin: 0; font-size: 12.5px; }
+.mkEmpty { padding: 24px 0; text-align: center; }
+.mkHint { display: flex; gap: 8px; align-items: center; margin: 0; padding: 8px 12px; border-radius: var(--r2); background: var(--cyan-soft); color: var(--fg); font-size: 13px; }
+.mkHint .ic { width: 16px; height: 16px; flex: none; }
+.mkHint.warn { background: var(--accent-soft); color: var(--accent-2); }
+.mkHint.bad { background: var(--red-soft); color: #ffb3b3; }
+.mkAct { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 10px; font-size: 12.5px; }
+.mkAct .ic { width: 15px; height: 15px; }
+
+/* desktop table */
+.mkTable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mkTable th { position: sticky; top: calc(-1 * var(--s5)); z-index: 1; background: #0a1c2d; text-align: left; font-weight: 650; color: var(--fg-2); padding: 8px; border-bottom: 1px solid var(--line-2); white-space: nowrap; }
+.mkTable th[data-mk] { cursor: pointer; user-select: none; }
+.mkTable th[data-mk]:hover, .mkTable th.sorted { color: var(--accent-2); }
+.mkTable th small { font-weight: 400; color: var(--muted); }
+.mkTable td { padding: 6px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); vertical-align: middle; }
+.mkTable tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.mkTable tr.here td { background: rgba(79, 209, 139, 0.06); }
+.mkTable .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mkTable td.num b { font-size: 14px; }
+.mkG { white-space: nowrap; }
+.mkG .ic { width: 15px; height: 15px; vertical-align: -3px; margin-right: 5px; color: var(--fg-2); }
+.mkActs { white-space: nowrap; text-align: right; }
+.mkActs .mkAct + .mkAct { margin-left: 4px; }
+.mkStock { display: flex; flex-direction: column; gap: 3px; min-width: 110px; }
+.mkStock small { color: var(--fg-2); white-space: nowrap; }
+.mkStock b.bad { color: #ff9c9c; } .mkStock b.warn { color: var(--accent-2); } .mkStock b.good { color: var(--green); }
+.mkSparkCell { width: 76px; min-width: 76px; height: 22px; }
+.mkSpark { display: block; }
+.mkSpark polyline { fill: none; stroke: #8fb0c8; stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+
+/* phone cards */
+.mkRows.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 8px; }
+.mkCard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mkCard.here { border-color: rgba(79, 209, 139, 0.5); }
+.mkCardTop { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mkGood { flex: none; width: 34px; height: 34px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.06); }
+.mkGood .ic { width: 20px; height: 20px; }
+.mkCardName { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mkCardName b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mkCardName small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mkPrice { text-align: right; display: flex; flex-direction: column; }
+.mkPrice b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.mkPrice small { color: var(--muted); font-size: 11px; }
+.mkCardMid { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mkCardMid .mkStock { flex: 1; min-width: 0; }
+.mkCardActs { display: flex; gap: 6px; }
+.mkCardActs .mkAct { flex: 1; justify-content: center; min-height: 38px; }
+
+/* trade routes */
+.mkTrades { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 10px; }
+.mkTrade { display: flex; flex-direction: column; gap: 8px; }
+.mkTradeTop { display: flex; align-items: flex-start; gap: 10px; }
+.mkTradeTop > div:nth-child(2) { flex: 1; min-width: 0; }
+.mkTradeTop small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.mkNet { text-align: right; display: flex; flex-direction: column; }
+.mkNet b { color: var(--green); font-size: 17px; white-space: nowrap; }
+.mkNet small { color: var(--fg-2); font-size: 11.5px; white-space: nowrap; }
+.mkFacts { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--fg-2); }
+.mkFacts span { display: inline-flex; align-items: center; gap: 5px; }
+.mkFacts .ic { width: 15px; height: 15px; }
+.mkFacts small { color: var(--muted); }
+.mkCosts summary { cursor: pointer; font-size: 12.5px; color: var(--fg-2); }
+.mkCosts table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.mkCosts td { padding: 3px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.mkCosts .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mkCosts tr.tot td { font-weight: 700; border-bottom: 0; }
+.mkTradeActs { display: flex; justify-content: flex-end; }
+.mkTradeActs .primary { gap: 6px; }
+.mkTradeActs .ic { width: 16px; height: 16px; }
+.mkPlan { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: var(--r2); background: var(--accent-soft); color: var(--accent-2); font-size: 13px; }
+.mkPlan > .ic { width: 16px; height: 16px; flex: none; }
+.mkPlan span { flex: 1; min-width: 0; }
+.mkPlan .iconBtn { width: 32px; min-width: 32px; height: 32px; }
+.mkPlan .iconBtn .ic { width: 14px; height: 14px; }
+.mkPlanChip { display: flex; align-items: center; gap: 6px; margin: 6px 0; padding: 4px 4px 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-2); font-size: 12px; font-weight: 600; }
+.mkPlanChip span { flex: 1; }
+.mkPlanChip button { width: 26px; min-width: 26px; height: 26px; min-height: 26px; padding: 0; justify-content: center; border-radius: 50%; }
+.mkPlanChip .ic { width: 12px; height: 12px; }
+
+/* chart legend + popup */
+#mkLegend { position: absolute; left: calc(var(--s3) + var(--sal)); bottom: var(--s3); z-index: 4; padding: 8px 10px; width: 236px; max-width: calc(100% - 2 * var(--s3)); font-size: 12px; background: var(--glass-strong); border-radius: var(--r2); }
+#mkLegend.hidden { display: none; }
+.mkLgTop { display: flex; gap: 6px; align-items: center; }
+.mkLgTop select { flex: 1; min-width: 0; min-height: 32px; background: rgba(255, 255, 255, 0.06); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r1); font: inherit; }
+.mkLgTop select option { background: #0b1d2e; }
+.mkLgTop .iconBtn { width: 32px; min-width: 32px; height: 32px; }
+.mkLgTop .iconBtn .ic { width: 14px; height: 14px; }
+.mkLgMed { margin: 6px 0 4px; color: var(--fg-2); }
+.mkLgBar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #2a9d8f 0%, #9aa3ab 28%, #f4a261 64%, #e76f51 100%); }
+.mkLgEnds { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.mkPop { margin-top: 6px; }
+.mkPop table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 6px; }
+.mkPop th { text-align: left; color: var(--fg-2); font-weight: 650; }
+.mkPop td, .mkPop th { padding: 2px 4px; }
+.mkPop .num { text-align: right; font-variant-numeric: tabular-nums; }
+.mkPop tr.sel td { color: var(--accent-2); font-weight: 650; }
+.secHead .mkWorldBtn { gap: 6px; flex: none; }
+.secHead .mkWorldBtn .ic { width: 16px; height: 16px; }
+
+@media (max-width: 720px) {
+  .mkSearch { max-width: none; flex-basis: 100%; }
+  .mkChips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -4px; padding: 0 4px 2px; }
+  .mkChips::-webkit-scrollbar { display: none; }
+  .mkChip { flex: none; }
+  .mkTradeTop { flex-wrap: wrap; }
+  .mkNet { text-align: left; width: 100%; flex-direction: row; gap: 8px; align-items: baseline; }
+}
+body.touch .mkChips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+body.touch .mkChips::-webkit-scrollbar { display: none; }
+body.touch .mkChip { flex: none; }
+@media (max-height: 500px) { #mkLegend { width: 200px; padding: 6px 8px; } .mkLgMed { margin: 3px 0; } }

@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import { SHIP_CLASSES, GOODS, INTERACT } from '/shared/constants.js';
 import { haversine, bearing, destination, normDeg } from '/shared/geo.js';
 import { buildShip, makeLabel } from './ship.js';
+import { catchRate } from '/shared/rates.js';
+import { fmtRealHM } from '/shared/jobtime.js';
 
 const D2R = Math.PI / 180;
 export const JOB_COLOR = { freight: '#5ad6ff', passengers: '#4fd18b', charter: '#b892ff', fishing: '#4fc3f7', supply: '#ffb35c', tow: '#ff7043', smuggling: '#c792ea' };
@@ -36,15 +38,18 @@ export function caughtFish(you) { return (you?.cargo || []).filter((c) => c.good
 /**
  * One entry per accepted contract: what to do next and where. Fields: job, type, color, kind ('harbor' | 'casualty' |
  * 'platform' | 'ground'), lat, lon, name, title, step (one line), distM, brg, rangeM (ring radius, or 0), action (null or
- * { id, label, enabled, why }), towing, deadlineS (seconds left on the world clock, may be negative).
+ * { id, label, enabled, why }), towing, leftS (V6 item 5: seconds of SHIP time left — dueShip − app.shipTimeNow(), may be
+ * negative; deadlineS is the same number, kept for older callers).
  */
 export function jobTargets(app) {
   const you = app.you, s = app.ship; if (!you || !s) return [];
   const out = [];
   const harbors = app.world?.harbors || [];
   const spd = Math.abs(s.spd || 0);
+  const shipNow = app.shipTimeNow ? app.shipTimeNow() : (app.simTime || Date.now() / 1000);
   for (const j of you.jobs || []) {
-    const t = { job: j, type: j.type, color: JOB_COLOR[j.type] || '#f2b134', kind: 'harbor', lat: NaN, lon: NaN, name: '', title: jobShortTitle(j, harbors), step: '', rangeM: 0, action: null, towing: false, deadlineS: (j.deadline || 0) - (app.simTime || Date.now() / 1000) };
+    const leftS = Number.isFinite(j.dueShip) ? j.dueShip - shipNow : Number.isFinite(j.deadline) ? j.deadline - (app.simTime || Date.now() / 1000) : NaN;
+    const t = { job: j, type: j.type, color: JOB_COLOR[j.type] || '#f2b134', kind: 'harbor', lat: NaN, lon: NaN, name: '', title: jobShortTitle(j, harbors), step: '', rangeM: 0, action: null, towing: false, leftS, deadlineS: leftS };
     const toH = harbors.find((h) => h.id === j.to);
     const toHarbor = () => { if (!toH) return false; const a = app.harborAnchor ? app.harborAnchor(toH) : toH; t.kind = 'harbor'; t.lat = a.lat; t.lon = a.lon; t.name = shortName(toH.name); return true; };
     if (j.type === 'tow') {
@@ -73,8 +78,9 @@ export function jobTargets(app) {
         t.kind = 'ground'; t.lat = g.lat; t.lon = g.lon; t.name = shortName(g.name); t.rangeM = g.radiusKm * 1000;
         const inside = haversine(s.lat, s.lon, g.lat, g.lon) <= t.rangeM;
         const left = Math.max(0, j.qty - have);
+        const rate = you.fishInfo?.rate || catchRate(s.cls || you.ship?.cls, g.richness); // t per SHIP hour (V6 item 5)
         t.step = you.fishing
-          ? `Fishing ${fmtT(have)} of ${fmtT(j.qty)}${you.fishInfo?.rate ? ` · ${you.fishInfo.rate} t/h — about ${fmtHours(left / you.fishInfo.rate)} at 1×` : ''}${you.fishInfo?.tooFast ? ' · too fast for the nets' : ''}`
+          ? `Fishing ${fmtT(have)} of ${fmtT(j.qty)}${rate > 0 ? ` · ${(Math.round(rate * 10) / 10).toLocaleString('en-US')} t/h — about ${fmtHours(left / rate)} at 1×` : ''}${you.fishInfo?.tooFast ? ' · too fast for the nets' : ''}`
           : inside ? `On the ${t.name}: nets out (F) and trawl under ${INTERACT.FISH_MAX_KN || 4} kn — ${fmtT(have)} of ${fmtT(j.qty)}` : `Sail to the ${t.name} and fish ${fmtT(j.qty)} (${fmtT(have)} aboard)`;
         if (inside && !you.fishing) t.action = { id: 'fish', label: 'Nets out', enabled: spd < (INTERACT.FISH_MAX_KN || 4), why: spd < (INTERACT.FISH_MAX_KN || 4) ? '' : `slow below ${INTERACT.FISH_MAX_KN || 4} kn` };
         else if (inside && you.fishing) t.action = { id: 'fish_off', label: 'Haul nets', enabled: true, why: '' };
@@ -101,7 +107,14 @@ export function jobTargets(app) {
   return out;
 }
 export function fmtHours(h) { if (!Number.isFinite(h) || h <= 0) return '—'; if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`; if (h < 48) return `${h.toFixed(h < 10 ? 1 : 0)} h`; return `${Math.round(h / 24)} days`; }
-export function fmtLeft(sec) { if (!Number.isFinite(sec)) return '—'; if (sec < 0) return 'overdue — half pay'; const min = Math.floor(sec / 60), h = Math.floor(min / 60); return h < 1 ? `${Math.max(1, min)} min left` : h < 48 ? `${h} h ${String(min % 60).padStart(2, '0')} min left` : `${Math.round(h / 24)} days left`; }
+/** Ship time left on a contract: '21 h 10 min left', and while warped '21 h 10 min left · ≈ 1 h 4 m at 20×'. */
+export function fmtLeft(sec, warp = 1) {
+  if (!Number.isFinite(sec)) return '—';
+  if (sec < 0) return 'overdue — half pay';
+  const min = Math.floor(sec / 60), h = Math.floor(min / 60);
+  const txt = h < 1 ? `${Math.max(1, min)} min left` : h < 48 ? `${h} h ${String(min % 60).padStart(2, '0')} min left` : `${Math.floor(h / 24)} d ${h % 24} h left`; // never round up (68 h ≠ '3 days')
+  return warp > 1 ? `${txt} · ≈ ${fmtRealHM(sec / 3600 / warp)} at ${warp}×` : txt;
+}
 /** Distance and bearing to the target ('' on a fishing bank you are already on). */
 export function jobWhere(t) {
   if (!Number.isFinite(t.distM)) return '';

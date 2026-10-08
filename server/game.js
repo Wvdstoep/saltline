@@ -18,6 +18,9 @@ import {
 import { DATA_DIR } from './world.js';
 import { pickGuideBerth, fittingBerthWithin, GUIDE } from './berthguide.js';
 import { planTugAssist, beginTugAssist, stepTugAssist, tickTugs, tugsPublic, assistExtra, tugBerthCandidates } from './tugassist.js'; // V5 item 4: water-only tug paths + visible tugs
+import { tugOp } from './tugassist.js';                       // V6 item 5: the tug op's time compression runs the ship's clock
+import { catchRate } from '../shared/rates.js';                // V6 item 5: one catch-rate formula for the tick and the contract estimates
+import { estimateJob, fmtShipH } from '../shared/jobtime.js';            // V6 item 5: contract hours on the ship's clock
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
 const START_HARBOR = 'rotterdam';
@@ -25,7 +28,6 @@ const START_MONEY = 25000;
 const SERVICE_INTERVAL_S = FEES.SERVICE_INTERVAL_DAYS * 86400;
 const NEAR_BERTH_RANGE_U = GUIDE.RANGE_M; // you.nearBerth (berth guidance, server/berthguide.js) is reported within this of the berth
 const DOCK_SEARCH_RANGE_U = 6000;     // beyond this of the anchor there is no harbour to talk to
-const FISH_RATE_T_PER_H = 10;         // nets: t/h = class fishRate × ground richness × this (stern trawler on the Dogger Bank: 30 t/h)
 const LAND_PENETRATION_M = 0.5;       // onState rejects positions this far inside a quay/land
 
 function rndFn() { return Math.random(); }
@@ -42,6 +44,7 @@ export class Game {
     this.weather = opts.weather || null;       // WeatherService: sample(lat, lon) / request(lat, lon)
     this.traffic = opts.traffic || null;       // Traffic: near(lat, lon, rangeM) / all()
     this.geom = opts.harborgeom || null;       // harborgeom module namespace
+    this.routeTable = opts.routeTable || null; // V6: harbour-to-harbour sea km (MARKET's RouteTable); contract budgets read it
     this.lastEcon = 0;                         // Date.now() of the last market drift
     this.lastWxRequest = 0;                    // Date.now() of the last weather request sweep
     this.wxAsked = new Map();                  // "lat,lon" cell -> Date.now() of the last lazy request (throttle)
@@ -108,6 +111,12 @@ export class Game {
     for (const k of ['delivered', 'earned', 'sunk', 'inspected', 'fined', 'caught', 'boarded', 'pirated', 'distanceKm', 'collisions']) if (!Number.isFinite(p.stats[k])) p.stats[k] = 0;
     if (!p.lastValid) p.lastValid = { lat: p.ship.lat, lon: p.ship.lon };
     if (p.docked && !(p.dockedAt > 0)) p.dockedAt = this.simTime;
+    // V6 item 5: the ship's clock (seconds, runs at the warp factor). It starts at the world clock and does not run while
+    // the server is down; accepted contracts move from world-clock deadlines to ship-time due dates.
+    if (!Number.isFinite(p.shipTime)) p.shipTime = this.simTime;
+    p.warpRun = null;
+    if (!Array.isArray(p.jobs)) p.jobs = [];
+    for (const j of p.jobs) if (j && !Number.isFinite(j.dueShip)) this.migrateAcceptedJob(p, j);
     // A tug assist interrupted by a restart completes now: the berth is the only position guaranteed to be water.
     if (p.assist) {
       const h = harborById(p.assist.harbor), geom = h && this.geom && this.geom.getHarborGeom(h.id);
@@ -138,12 +147,15 @@ export class Game {
       // Old state files carry a flat price table only: give them stock/target and derive the prices from it.
       if (!st.stock || !st.target) Object.assign(st, initEconomy(h, this.rnd));
       refreshPrices(h, st);
+      // V6 item 5: board offers from before ship-hour budgets (no `hours`) are withdrawn; the regen refills the board.
+      st.jobs = (st.jobs || []).filter((j) => j && Number.isFinite(j.hours));
+      if (st.contact && Array.isArray(st.contact.jobs)) st.contact.jobs = st.contact.jobs.filter((j) => j && Number.isFinite(j.hours));
       this.regenHarbor(h, st, true);
     }
     this.lastEcon = Date.now();
   }
   regenHarbor(h, st, force) {
-    st.jobs = (st.jobs || []).filter((j) => j && j.deadline > this.simTime && (j.type !== 'tow' || this.ensureTowSpot(j)));
+    st.jobs = (st.jobs || []).filter((j) => j && (j.expiresAt ?? j.deadline) > this.simTime && (j.type !== 'tow' || this.ensureTowSpot(j))); // offers leave the board after 24 h
     const n = jobCountFor(h);
     // Second-hand hulls turn over every 6 h (1–4 listings by harbour size).
     if (!st.used || !st.used.length || !(st.usedAt > 0) || this.simTime - st.usedAt > ECON.USED_REFRESH_H * 3600) { st.used = generateUsedShips(h, this.rnd); st.usedAt = this.simTime; }
@@ -153,13 +165,19 @@ export class Game {
       // Black-market contact: 70% present per regen, 1-3 runs.
       if (this.rnd() < 0.7) {
         const k = 1 + Math.floor(this.rnd() * 3);
-        st.contact = { name: contactName(this.rnd), jobs: Array.from({ length: k }, () => generateSmugglingJob(h, this.simTime, this.rnd)).filter(Boolean) };
+        st.contact = { name: contactName(this.rnd), jobs: Array.from({ length: k }, () => generateSmugglingJob(h, this.simTime, this.rnd, this.jobEnv())).filter(Boolean) };
       } else st.contact = null;
       st.lastRegen = this.simTime;
     }
     refreshPrices(h, st);
   }
-  jobEnv() { return this._jobEnv || (this._jobEnv = { towSpot: (lat, lon, draft) => this.towSpotOk(lat, lon, draft) }); }
+  jobEnv() {
+    return this._jobEnv || (this._jobEnv = {
+      towSpot: (lat, lon, draft) => this.towSpotOk(lat, lon, draft),
+      // V6 item 5: planned sea km between two harbours when the route table knows it (else the generator uses gc × 1.25)
+      seaKm: (a, b) => { try { const km = this.routeTable?.seaKm?.(a, b); return Number.isFinite(km) && km > 0 ? km : null; } catch { return null; } },
+    });
+  }
   // Can a disabled vessel lie here? Open water at least draft + 6 m deep, deep water 1.5 km all round (no lee shore
   // to drift onto, no channel bank), 6 km clear of any harbour, outside every built harbour patch.
   towSpotOk(lat, lon, draft = 4) {
@@ -221,6 +239,7 @@ export class Game {
         stats: { delivered: 0, earned: 0, sunk: 0, inspected: 0, fined: 0, caught: 0, boarded: 0, pirated: 0, distanceKm: 0, collisions: 0 },
         lastValid: { lat: spawn.lat, lon: spawn.lon }, shallowSince: 0, log: [],
         warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1,
+        shipTime: this.simTime, warpRun: null, // V6 item 5: the ship's clock starts at the world clock
       };
       this.players.set(p.token, p); this.byId.set(p.id, p);
       this.log(`[game] new player ${p.name} (${p.id})`);
@@ -311,6 +330,8 @@ export class Game {
       nearBerth: this.nearBerthFor(p), serviceDue: p.serviceDue, serviceMul: round2(serviceWearMul(p.serviceDue, this.simTime)),
       stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
       warp: this.warpOf(p), warpLimit: this.warpLimit(p),
+      shipTime: round1(p.shipTime), shipRate: this.shipRate(p), // V6 item 5: the ship's clock (s) and how fast it runs now
+      warpRun: p.warpRun ? { shipStart: round1(p.warpRun.shipStart), worldStart: round1(p.warpRun.worldStart) } : null,
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
     };
   }
@@ -522,9 +543,9 @@ export class Game {
     for (const h of HARBORS) { const a = this.harborAnchor(h); const d = unitsBetween(lat, lon, a.lat, a.lon); if (d < bd) { bd = d; best = h; } }
     return { harbor: best, units: bd };
   }
-  // Common "ship is now in harbour" state: used by docking, tows, impounds, resets and rescues.
+  // Common "ship is now in harbour" state: used by docking, tows, impounds, resets and rescues. Warp is kept (V6 item 6:
+  // up to 5× moored); the teleports (tow, impound, forced reset, rescue landing) drop it themselves.
   setDocked(p, harborId, berth) {
-    this.dropWarp(p, 'In harbour.', false); // every caller sends `you` afterwards
     p.docked = harborId; p.dockedAt = this.simTime; p.berth = berth || null; p.assist = null;
     p.ship.spd = 0; p.ship.throttle = 0; p.ship.rudder = 0; p.fishing = false;
   }
@@ -652,8 +673,14 @@ export class Game {
     this.sendYou(p, { correction: true });
   }
   // Tick: the server walks an assisted ship from `from` to the berth, then moors it exactly as dock() would.
+  // Harbour warp (V6 item 6): the assist runs w× faster; the HUD countdown (`assist.until`) shows the real time left.
   stepAssist(p, dt = 0.1) {
-    if (p.assist?.opId && stepTugAssist(this, p, dt)) return; // planned path + visible tugs (server/tugassist.js)
+    const w = this.warpOf(p);
+    if (p.assist?.opId && stepTugAssist(this, p, dt * w)) { // planned path + visible tugs (server/tugassist.js), w× faster
+      if (p.assist && w > 1) { const now = Date.now(); p.assist.until = now + Math.max(0, p.assist.until - now) / w; }
+      return;
+    }
+    if (w > 1 && p.assist) { const extra = dt * 1000 * (w - 1); p.assist.start -= extra; p.assist.until -= extra; } // legacy walk: progress w× faster
     const a = p.assist, s = p.ship, now = Date.now();
     const dur = Math.max(1, a.until - a.start);
     const f = now >= a.until ? 1 : Math.max(0, Math.min(1, (now - a.start) / dur));
@@ -784,8 +811,17 @@ export class Game {
       p.cargo.push({ good: job.good, qty: job.qty, contraband: !!job.contraband, jobId: job.id });
     }
     if (fromContact) st.contact.jobs = st.contact.jobs.filter((j) => j.id !== jobId); else st.jobs = st.jobs.filter((j) => j.id !== jobId);
-    p.jobs.push({ ...job, acceptedAt: this.simTime });
-    this.event(p, fromContact ? 'shady' : 'info', `${fromContact ? 'Deal.' : 'Contract signed:'} ${job.title} — ${fmt(job.pay)} cr.`);
+    // V6 item 5: the contract's hours count on the ship's clock from now (a legacy offer: the hours left to its deadline).
+    if (!Number.isFinite(p.shipTime)) p.shipTime = this.simTime;
+    const hours = Number.isFinite(job.hours) && job.hours > 0 ? job.hours : Number.isFinite(job.deadline) ? Math.max(1, Math.round((job.deadline - this.simTime) / 36) / 100) : 24;
+    const mine = { ...job, hours, acceptedAt: this.simTime, acceptedShip: p.shipTime, dueShip: p.shipTime + hours * 3600 };
+    delete mine.deadline;
+    p.jobs.push(mine);
+    const held = cargoMass(p.cargo) - (job.type === 'fishing' || job.type === 'tow' || job.type === 'passengers' || job.type === 'charter' ? 0 : job.qty || 0);
+    const est = estimateJob({ ...mine, richness: mine.richness ?? FISHING_GROUNDS.find((g) => g.id === mine.ground)?.richness },
+      { cls: p.ship.cls, holdFreeT: C.capacity - held, paxFree: C.pax - p.jobs.filter((j) => j.pax && j !== mine).reduce((s, j) => s + j.pax, 0), budgetH: hours });
+    this.event(p, fromContact ? 'shady' : 'info', `${fromContact ? 'Deal.' : 'Contract signed:'} ${job.title} — ${fmt(job.pay)} cr, ${fmtShipH(hours)} of ship time.`);
+    if (!est.ok && !est.hard) this.event(p, 'warn', `Tight: ${est.why}. Late delivery pays half.`);
     const hint = job.type === 'tow' ? `The casualty is marked by an orange light column at sea. Come within ${INTERACT.TOW_RANGE_U} m under 3 kn and pass the tow line (J); harbour tugs take her over ${km1(INTERACT.TOW_HANDOVER_M)} km off ${harborById(job.to)?.name || 'the port'}.`
       : job.type === 'supply' ? `${job.platformName} is marked at sea. Hold station within ${INTERACT.PLATFORM_RANGE_U} m under 3 kn and start the crane transfer (J).`
       : job.type === 'fishing' ? `Sail to the ${job.groundName}, put the nets out (F) and trawl under ${INTERACT.FISH_MAX_KN} kn; land the catch here.`
@@ -852,7 +888,8 @@ export class Game {
   // Pay a finished contract (late = half pay; a port short of the good pays a demand bonus and restocks) and drop it.
   payJob(p, j, frac, harbor) {
     let pay = Math.round(j.pay * frac);
-    const late = this.simTime > j.deadline;
+    if (!Number.isFinite(j.dueShip)) this.migrateAcceptedJob(p, j);
+    const late = p.shipTime > (j.dueShip ?? Infinity); // V6 item 5: due on the ship's clock
     if (late) pay = Math.round(pay * 0.5);
     if (frac < 1) this.event(p, 'warn', `Short delivery: only ${Math.round(frac * 100)} % of the contracted quantity.`);
     // Demand bonus: a port short of the good pays extra, and the delivery replenishes its stock.
@@ -866,6 +903,46 @@ export class Game {
     p.money += pay; p.stats.delivered++; p.stats.earned += pay;
     p.jobs = p.jobs.filter((x) => x.id !== j.id);
     this.event(p, j.contraband ? 'shady' : 'info', `${late ? 'Late delivery (half pay)' : 'Delivered'}: ${j.title} — +${fmt(pay)} cr${bonus ? ` (incl. ${fmt(bonus)} demand bonus)` : ''}.`);
+  }
+
+  // ------------------------------------------------------------------ V6 item 5: the ship's clock (docs/V6-QUICK-CONTRACTS.md §5.2)
+  // How fast this ship's clock runs against the world clock: the warp factor at sea and moored (≤ 5× in harbours), times
+  // the tug op's time compression under tugs; 1 in the life raft and while offline (offline voyages are real time).
+  shipRate(p) {
+    if (p.rescue || p.flooding >= 1) return 1;
+    if (p.assist) { const op = tugOp(this, p.id); const r = op && Number.isFinite(op.rate) && op.rate >= 1 ? op.rate : 1; return this.warpOf(p) * r; }
+    if (!p.online) return 1;
+    return this.warpOf(p);
+  }
+  // Every tick for every player: advance the clock (full float64 precision, the same factor that scales fuel, wear,
+  // wages and the catch), keep warpRun (where the clock stood when warp began), raise the due-date events once.
+  advanceShipClock(p, dt) {
+    if (!Number.isFinite(p.shipTime)) p.shipTime = this.simTime;
+    const step = dt * SIM.CLOCK_SCALE * this.shipRate(p);
+    if (this.warpOf(p) > 1) { if (!p.warpRun) p.warpRun = { shipStart: p.shipTime, worldStart: this.simTime }; }
+    else if (p.warpRun) p.warpRun = null;
+    if (step > 0) p.shipTime += step;
+    for (const j of p.jobs || []) {
+      if (!j) continue;
+      if (!Number.isFinite(j.dueShip)) this.migrateAcceptedJob(p, j);
+      const left = j.dueShip - p.shipTime;
+      if (left < 0) { if (!j.expiredWarned) { j.expiredWarned = true; this.event(p, 'warn', `Deadline passed: ${j.title} (half pay on delivery).`); } }
+      else if (left < 7200 && !j.twoHourWarned && !j.expiredWarned) { j.twoHourWarned = true; this.event(p, 'warn', `2 h of ship time left: ${j.title}.`); }
+    }
+  }
+  // An accepted contract from before ship time: its world-clock deadline becomes a due date on the ship's clock (the time
+  // left carries over; already late stays late), its budget the hours it was given; neither field → 24 h from now.
+  migrateAcceptedJob(p, j) {
+    if (!Number.isFinite(p.shipTime)) p.shipTime = this.simTime;
+    if (Number.isFinite(j.deadline)) {
+      j.dueShip = p.shipTime + (j.deadline - this.simTime);
+      if (!(Number.isFinite(j.hours) && j.hours > 0)) j.hours = Math.max(1, Math.round((j.deadline - (Number.isFinite(j.acceptedAt) ? j.acceptedAt : this.simTime)) / 3600));
+    } else {
+      if (!(Number.isFinite(j.hours) && j.hours > 0)) j.hours = 24;
+      j.dueShip = p.shipTime + j.hours * 3600;
+    }
+    if (!Number.isFinite(j.acceptedShip)) j.acceptedShip = p.shipTime;
+    delete j.deadline;
   }
   // Supply/demand: buying takes from the harbour stock (price rises), selling adds to it (price falls).
   tradeGoods(p, good, qty, buying) {
@@ -953,10 +1030,12 @@ export class Game {
   tow(p) {
     if (p.docked) return;
     if (p.hail) return this.event(p, 'law', 'No tug will come while the coast guard is hailing you.');
+    this.dropWarp(p, 'In harbour.', false); // a teleport: back to real time (finishDock sends `you`)
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     const cost = Math.min(p.money, 3000 + Math.round(units * 2));
+    const towH = Math.min(48, units / (8 * GEO.KN_TO_MS) / 3600); p.shipTime = (Number.isFinite(p.shipTime) ? p.shipTime : this.simTime) + towH * 3600; // V6 item 5: the hours under tow pass on the ship's clock
     p.money -= cost; p.hail = null; p.assist = null; this.setDocked(p, harbor.id, null);
-    this.event(p, 'warn', `Towed to ${harbor.name} for ${fmt(cost)} cr.`);
+    this.event(p, 'warn', `Towed to ${harbor.name} for ${fmt(cost)} cr (${towH.toFixed(1)} h under tow).`);
     this.finishDock(p, harbor); // an arrival like any other: contracts for this port are delivered
   }
   grounding(p) {
@@ -995,7 +1074,7 @@ export class Game {
   impound(p, by, fine) {
     const { harbor } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     p.stats.fined += p.money; p.money = 0; this.bumpWanted(p, 1);
-    p.hail = null; this.setDocked(p, harbor.id, null);
+    p.hail = null; this.dropWarp(p, 'In harbour.', false); this.setDocked(p, harbor.id, null);
     this.convoyLeave(p, true);
     this.event(p, 'law', `${by}: you cannot pay the ${fmt(fine)} cr fine. Ship impounded and towed to ${harbor.name}; all credits seized. Wanted level ${p.wanted}. One more and the ship is forfeit.`);
     this.sendYou(p); this.sendHarbor(p);
@@ -1003,7 +1082,7 @@ export class Game {
   forcedReset(p, why) {
     const { harbor } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     p.ship.cls = 'coaster'; p.cond = 40; p.flooding = 0; p.fuel = 20; p.cargo = []; p.jobs = []; p.money = 500; p.wanted = 0; p.kits = 0;
-    p.hail = null; p.towing = null; p.voyage = null; p.serviceDue = this.simTime + SERVICE_INTERVAL_S / 3; this.setDocked(p, harbor.id, null);
+    p.hail = null; p.towing = null; p.voyage = null; p.serviceDue = this.simTime + SERVICE_INTERVAL_S / 3; this.dropWarp(p, 'In harbour.', false); this.setDocked(p, harbor.id, null);
     this.convoyLeave(p, true);
     this.event(p, 'law', `${why} You start over at ${harbor.name} with a rust-bucket coaster and 500 cr.`);
     this.sendYou(p); this.sendHarbor(p);
@@ -1107,6 +1186,7 @@ export class Game {
       // Time warp: drop back to real time the moment a condition stops holding (before anything else, so a docked,
       // assisted or rescued player is caught too).
       if (p.warp !== 1) this.checkWarp(p);
+      this.advanceShipClock(p, dt); // V6 item 5: every player's ship clock (docked, offline and rescued too), and the due-date events
       if (p.rescue) continue;
       if (p.docked) continue;
       if (p.assist) { this.stepAssist(p, dt); continue; }
@@ -1148,7 +1228,7 @@ export class Game {
         if (!g) { p.fishing = false; this.event(p, 'info', 'Left the fishing ground; nets hauled in.'); this.sendYou(p); }
         else if (Math.abs(s.spd) < INTERACT.FISH_MAX_KN) {
           const free = C.capacity - cargoMass(p.cargo);
-          const rate = C.fishRate * g.richness * FISH_RATE_T_PER_H * (wx.storm > 0.5 ? 0.4 : 1);
+          const rate = catchRate(s.cls, g.richness) * (wx.storm > 0.5 ? 0.4 : 1);
           const add = Math.max(0, Math.min(free, rate * hrs));
           // keep full precision: at 10 ticks a second each step is a few grams, rounding it every tick lost all of it
           const caught = ((p.fishInfo && p.fishInfo.caughtRaw) || 0) + add;
@@ -1166,7 +1246,6 @@ export class Game {
       if (p.towing) this.checkTowHandover(p);
       for (const j of p.jobs) if (j.type === 'tow' && !j.spotOk && !j.pickedUp) this.ensureTowSpot(j);
       if (p.wanted > 0 && this.simTime - p.wantedAt > LAW.WANTED_DECAY_SIM_HOURS * 3600) { p.wanted--; p.wantedAt = this.simTime; this.event(p, 'law', `Wanted level dropped to ${p.wanted}.`); }
-      for (const j of p.jobs) if (!j.expiredWarned && this.simTime > j.deadline) { j.expiredWarned = true; this.event(p, 'warn', `Deadline passed: ${j.title} (half pay on delivery).`); }
     }
     this.updateCutters(dt);
     // Job boards regen lazily on dock; markets drift every minute; wrecks expire.
@@ -1374,13 +1453,17 @@ export class Game {
     if (why) { this.event(p, 'warn', `Time warp ${f}× refused: ${why}`); this.sendYou(p); return; }
     if (f < was) this.startGrace(p, was);
     p.warp = f; p.warpRouted = routed;
-    this.event(p, 'info', `Time warp ${f}×: your ship's clock runs ${f} times faster — fuel, wear, wages and catch too. It drops back to real time near harbours, land, other skippers, storms and the coast guard.`);
+    const zone = this.harbourZone(p); // V6 item 6: up to HARBOR_MAX inside a harbour zone
+    if (zone) this.event(p, 'info', `Time warp ${f}× in ${zone.harbor.name}: your ship's clock runs ${f} times faster — fuel, wear, wages and contract hours too. The tide and everything ashore stay in real time.`);
+    else this.event(p, 'info', `Time warp ${f}×: your ship's clock runs ${f} times faster — fuel, wear, wages and catch too. It steps down to ${WARP.HARBOR_MAX}× in harbours and drops back to real time near land, other skippers, storms and the coast guard.`);
     this.sendYou(p);
   }
   // Why the ship cannot (keep) warp(ing) at factor f right now, or null. Order = what the skipper should fix first.
   warpBlock(p, f, routed) {
     const why = this.warpConditions(p);
     if (why) return why;
+    const zone = this.harbourZone(p);
+    if (zone && f > WARP.HARBOR_MAX) return `${this.zoneWhere(zone)} — inside harbours time warp is limited to ${WARP.HARBOR_MAX}×.`;
     if (f > WARP.MAX_NO_ROUTE && !routed) return `above ${WARP.MAX_NO_ROUTE}× the crew needs a route to follow — plot one on the chart and sail it.`;
     if (f > WARP.LAND_CHECK_ABOVE) {
       const sh = this.shallowAhead(p, this.warpLookahead(p, f));
@@ -1388,21 +1471,25 @@ export class Game {
     }
     return null;
   }
-  // The factor-independent conditions (contract list): ship state, harbours, other players, weather.
+  // The factor-independent conditions (contract list): ship state, other players, weather. Inside a harbour zone
+  // (docs/V6-QUICK-CONTRACTS.md §2.2) a moored or assisted ship is only stopped by the first three; under way the other
+  // skippers count within HARBOR_PLAYER_M instead of PLAYER_RADIUS_M. The 5× cap itself is in warpBlock / checkWarp.
   warpConditions(p) {
     if (!p.online) return 'you are offline.';
-    if (p.docked) return 'you are in harbour — cast off first.';
-    if (p.assist) return 'the tugs have you.';
     if (p.hail) return 'the coast guard is hailing you.';
     if (p.rescue || p.flooding >= 1) return 'you are in the life raft.';
+    if (p.docked || p.assist) return null; // moored or under tugs: fuel, flooding, storm and other skippers do not matter
     const s = p.ship, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
     // Out of fuel = no propulsion; a sailing yacht with her sails set is still driven by the wind.
     if (!(p.fuel > 0) && !(C.sail && p.sailsUp !== false)) return 'out of fuel.';
     if (p.flooding > WARP.MAX_FLOODING) return `taking water (${Math.round(p.flooding * 100)} %) — patch the hull or let the pumps catch up first.`;
-    const { harbor, units } = this.nearestHarbor(s.lat, s.lon);
-    if (harbor && units <= WARP.HARBOR_RADIUS_M) return `${harbor.name} is ${dist1(units)} away — warp needs ${km1(WARP.HARBOR_RADIUS_M)} km clear of any harbour.`;
-    const other = this.nearestOtherSkipper(p, WARP.PLAYER_RADIUS_M);
-    if (other) return `${other.player.name} is ${dist1(other.distM)} away — warp needs ${km1(WARP.PLAYER_RADIUS_M)} km of sea to yourself.`;
+    if (this.harbourZone(p)) {
+      const near = this.nearestOtherSkipper(p, WARP.HARBOR_PLAYER_M);
+      if (near) return `${near.player.name} is ${dist1(near.distM)} away — in harbour, warp needs ${km1(WARP.HARBOR_PLAYER_M)} km between you and other skippers under way.`;
+    } else {
+      const other = this.nearestOtherSkipper(p, WARP.PLAYER_RADIUS_M);
+      if (other) return `${other.player.name} is ${dist1(other.distM)} away — warp needs ${km1(WARP.PLAYER_RADIUS_M)} km of sea to yourself.`;
+    }
     const wx = this.weatherAt(s.lat, s.lon);
     if (wx.storm > WARP.MAX_STORM) return `heavy weather here (wind ${Math.round(wx.wind.spd)} m/s) — no warp in a storm.`;
     return null;
@@ -1446,12 +1533,49 @@ export class Game {
   landAheadReason(sh) {
     return `${sh.depth <= 0 ? 'land' : `shallows (${sh.depth.toFixed(1)} m)`} ${dist1(sh.distM)} ahead — above ${WARP.LAND_CHECK_ABOVE}× you need ${km1(WARP.MIN_LAND_M)} km of deep water ahead.`;
   }
-  // Every tick while warped: back to 1× (with the reason) as soon as the level is no longer allowed.
+  // Every tick while warped: back to 1× (with the reason) as soon as the level is no longer allowed; entering a harbour
+  // zone above HARBOR_MAX steps down to HARBOR_MAX instead (the route flag is kept for the way out).
   checkWarp(p) {
     const f = this.warpOf(p);
     if (f <= 1) { p.warp = 1; return; }
+    const cond = this.warpConditions(p);
+    if (cond) return void this.dropWarp(p, capitalise(cond));
+    const zone = this.harbourZone(p);
+    if (zone && f > WARP.HARBOR_MAX) return void this.capWarp(p, WARP.HARBOR_MAX, `${this.zoneWhere(zone)} — ${WARP.HARBOR_MAX}× at most inside harbours.`);
     const why = this.warpBlock(p, f, !!p.warpRouted);
     if (why) this.dropWarp(p, capitalise(why));
+  }
+  // V6 item 6 (docs/V6-QUICK-CONTRACTS.md §2): the harbour zone caps warp at HARBOR_MAX. null, or
+  // { harbor (HARBORS entry), distM (m to its anchor; 0 moored), kind: 'moored'|'tugs'|'near'|'patch' }.
+  harbourZone(p) {
+    const s = p.ship;
+    if (p.docked) { const h = harborById(p.docked); if (h) return { harbor: h, distM: 0, kind: 'moored' }; }
+    const { harbor, units } = this.nearestHarbor(s.lat, s.lon);
+    if (p.assist) {
+      const h = harborById(p.assist.harbor), a = h && this.harborAnchor(h);
+      if (h) return { harbor: h, distM: a ? unitsBetween(s.lat, s.lon, a.lat, a.lon) : 0, kind: 'tugs' };
+      if (harbor) return { harbor, distM: units, kind: 'tugs' };
+    }
+    if (!harbor) return null;
+    if (units <= WARP.HARBOR_RADIUS_M) return { harbor, distM: units, kind: 'near' };
+    if (this.landPenetration(s.lat, s.lon) !== null) return { harbor, distM: units, kind: 'patch' };
+    return null;
+  }
+  // 'moored in Rotterdam (Maasvlakte)' | 'under tow by the Rotterdam (Maasvlakte) tugs' | 'Rotterdam (Maasvlakte) is 3.0 km away'
+  zoneWhere(zone) {
+    const name = zone.harbor.name;
+    if (zone.kind === 'moored') return `moored in ${name}`;
+    if (zone.kind === 'tugs') return `under tow by the ${name} tugs`;
+    return `${name} is ${dist1(zone.distM)} away`;
+  }
+  // Step DOWN to `to` (never up), keeping the route flag; a 'warn' event and `you` go out. Returns whether it changed.
+  capWarp(p, to, reason) {
+    const was = this.warpOf(p);
+    if (!(to < was) || !WARP.LEVELS.includes(to)) return false;
+    p.warp = to; this.startGrace(p, was);
+    this.event(p, 'warn', `Time warp ${was}× → ${to}×: ${capitalise(reason)}`);
+    this.sendYou(p);
+    return true;
   }
   // Drop to 1× with a 'warn' event; `send` = false when the caller sends `you` itself. Returns whether it was warped.
   dropWarp(p, reason, send = true) {
@@ -1474,7 +1598,10 @@ export class Game {
   warpLimit(p) {
     const top = WARP.LEVELS[WARP.LEVELS.length - 1];
     const why = this.warpConditions(p);
-    if (why) return { max: 1, reason: capitalise(why), routeAbove: WARP.MAX_NO_ROUTE };
+    const zone = this.harbourZone(p); // inside a harbour zone: HARBOR_MAX, and which harbour (the key is omitted outside)
+    const harbour = zone ? { id: zone.harbor.id, name: zone.harbor.name, distM: Math.round(zone.distM), kind: zone.kind } : null;
+    if (why) return harbour ? { max: 1, reason: capitalise(why), routeAbove: WARP.MAX_NO_ROUTE, harbour } : { max: 1, reason: capitalise(why), routeAbove: WARP.MAX_NO_ROUTE };
+    if (harbour) return { max: WARP.HARBOR_MAX, reason: `${capitalise(this.zoneWhere(zone))} — ${WARP.HARBOR_MAX}× at most inside harbours.`, routeAbove: WARP.MAX_NO_ROUTE, harbour };
     const sh = this.shallowAhead(p, this.warpLookahead(p, top));
     if (!sh) return { max: top, reason: null, routeAbove: WARP.MAX_NO_ROUTE };
     let max = 1;
@@ -1519,7 +1646,8 @@ export class Game {
     if (!stack) return this.event(p, 'warn', 'The supplies are no longer aboard.');
     const frac = Math.min(1, stack.qty / j.qty);
     p.cargo = p.cargo.filter((c) => c !== stack);
-    let pay = Math.round(j.pay * frac * (this.simTime > j.deadline ? 0.5 : 1));
+    if (!Number.isFinite(j.dueShip)) this.migrateAcceptedJob(p, j);
+    let pay = Math.round(j.pay * frac * (p.shipTime > (j.dueShip ?? Infinity) ? 0.5 : 1)); // V6 item 5: due on the ship's clock
     p.money += pay; p.stats.delivered++; p.stats.earned += pay;
     p.jobs = p.jobs.filter((x) => x.id !== j.id);
     this.event(p, 'info', `${j.platformName} took the supplies. +${fmt(pay)} cr.`);
@@ -1546,35 +1674,67 @@ export class Game {
     p.cond = Math.max(0, p.cond - wearPerSimHour(0.8, this.wind.spd, C.wearMul) * hours);
     p.ship.lat = spot.lat; p.ship.lon = spot.lon; p.ship.spd = 0; p.ship.throttle = 0; p.lastValid = { ...spot }; p.moveBudget = 0;
     p.stats.distanceKm += distM / 1000;
-    this.event(p, 'info', `Express passage: ${Math.round(nm)} nm in the blink of an eye for ${fmt(cost)} cr (${hours.toFixed(1)} h of fuel and wear charged).`);
+    p.shipTime = (Number.isFinite(p.shipTime) ? p.shipTime : this.simTime) + hours * 3600; // V6 item 5: the passage hours pass on the ship's clock
+    this.event(p, 'info', `Express passage: ${Math.round(nm)} nm in the blink of an eye for ${fmt(cost)} cr (${hours.toFixed(1)} h of fuel and wear charged; ship's clock +${hours.toFixed(1)} h).`);
     this.sendYou(p, { correction: true });
   }
   setVoyage(p, m) {
     if (m.clear) { p.voyage = null; this.sendYou(p); return; }
-    const lat = Number(m.lat), lon = Number(m.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    p.voyage = { lat: clampLat(lat), lon: wrapLon(lon), throttle: clamp(Number(m.throttle) || 0.7, 0.1, 1), setAt: Date.now() };
-    this.event(p, 'info', `Course laid in for ${lat.toFixed(2)}°, ${lon.toFixed(2)}°. The crew will keep sailing it while you are away.`);
+    // v6 (docs/V6-QUICK-CONTRACTS.md §4.7): { route: [[lat, lon], …] (≤ 250), throttle, harbor? }; the legacy
+    // { lat, lon, throttle } is a one-point route. The crew sails the planned waypoints while the skipper is away.
+    let route;
+    if (Array.isArray(m.route)) {
+      if (!validWarpRoute(m.route) || m.route.length > 250) { this.event(p, 'warn', 'Voyage refused: that route is not valid (1–250 waypoints).'); return; }
+      route = m.route.map((pt) => (Array.isArray(pt) ? [pt[0], pt[1]] : [pt.lat, pt.lon])).map(([lat, lon]) => [Math.round(clampLat(lat) * 1e5) / 1e5, Math.round(wrapLon(lon) * 1e5) / 1e5]);
+    } else {
+      const lat = Number(m.lat), lon = Number(m.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      route = [[clampLat(lat), wrapLon(lon)]];
+    }
+    const harbor = typeof m.harbor === 'string' && harborById(m.harbor) ? m.harbor : null;
+    p.voyage = { route, i: 0, throttle: clamp(Number(m.throttle) || 0.7, 0.1, 1), harbor, setAt: Date.now() };
+    let d = 0, prev = p.ship;
+    for (const [lat, lon] of route) { d += haversine(prev.lat, prev.lon, lat, lon); prev = { lat, lon }; }
+    const where = harbor ? `to the approach off ${harborById(harbor).name}` : route.length > 1 ? 'to the last waypoint' : `to ${route[0][0].toFixed(2)}°, ${route[0][1].toFixed(2)}°`;
+    this.event(p, 'info', `Course laid in: ${route.length} waypoint${route.length > 1 ? 's' : ''}, ${Math.round(d / 1852)} nm ${where}. The crew keeps sailing it while you are away.`);
     this.sendYou(p);
   }
-  // Offline players with a voyage set keep moving on the server.
+  // Offline players with a voyage set keep moving on the server, waypoint by waypoint, slowing in harbour approaches.
   simulateOffline(p, dt) {
     const v = p.voyage; if (!v || p.docked || p.flooding >= 1 || p.hail) return;
-    const s = p.ship;
-    const brg = bearing(s.lat, s.lon, v.lat, v.lon);
-    const dist = haversine(s.lat, s.lon, v.lat, v.lon);
-    if (dist < 400) { p.voyage = null; s.throttle = 0; p.log = (p.log || []).slice(-30).concat([{ kind: 'info', text: 'The crew reached the waypoint and stopped engines.', time: Date.now() }]); return; }
+    const BANDS = [[1000, 4], [2500, 6], [5000, 10]]; // harbour speed limits (m from the nearest anchor → kn), = PILOT.BANDS (public/js/pilotcore.js)
+    if (!Array.isArray(v.route) || !v.route.length) { // a legacy saved voyage { lat, lon }
+      if (!Number.isFinite(v.lat) || !Number.isFinite(v.lon)) { p.voyage = null; return; }
+      v.route = [[v.lat, v.lon]]; v.i = 0; v.harbor = v.harbor || null; delete v.lat; delete v.lon;
+    }
+    const s = p.ship, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
+    const last = v.route.length - 1;
+    let i = Math.max(0, Math.min(last, Number(v.i) | 0));
+    let wp = v.route[i], dist = haversine(s.lat, s.lon, wp[0], wp[1]);
+    while (i < last && dist < Math.max(300, 3 * C.length)) { i++; wp = v.route[i]; dist = haversine(s.lat, s.lon, wp[0], wp[1]); }
+    v.i = i;
+    if (i === last && dist < 400) {
+      const h = v.harbor ? harborById(v.harbor) : null;
+      p.voyage = null; s.throttle = 0;
+      p.log = (p.log || []).slice(-30).concat([{ kind: 'info', text: h ? `The crew reached the approach off ${h.name} and stopped engines.` : 'The crew reached the waypoint and stopped engines.', time: Date.now() }]);
+      return;
+    }
+    const brg = bearing(s.lat, s.lon, wp[0], wp[1]);
+    let nearM = Infinity;
+    for (const h of HARBORS) { if (Math.abs(h.lat - s.lat) > 0.1) continue; const a = this.harborAnchor(h); const d = haversine(s.lat, s.lon, a.lat, a.lon); if (d < nearM) nearM = d; }
+    let capKn = Infinity; for (const [m, kn] of BANDS) if (nearM <= m) { capKn = kn; break; }
+    const throttle = Math.min(v.throttle, capKn / C.maxKn);
     const w = this.weatherAt(s.lat, s.lon), tide = tideAt(s.lat, s.lon, this.simTime);
     const env = {
-      cond: p.cond, flooding: p.flooding, loadFrac: cargoMass(p.cargo) / SHIP_CLASSES[s.cls].capacity, wind: w.wind, current: currentAt(s.lat, s.lon, this.simTime), tideStream: tide.stream,
+      cond: p.cond, flooding: p.flooding, loadFrac: cargoMass(p.cargo) / C.capacity, wind: w.wind, current: currentAt(s.lat, s.lon, this.simTime), tideStream: tide.stream,
       fuelEmpty: p.fuel <= 0, sea: w.sea, waveH: w.waves.height, waveDir: w.waves.dir, towing: !!p.towing, sailsUp: p.sailsUp !== false,
     };
     const before = { lat: s.lat, lon: s.lon };
-    stepShip(s, { throttleCmd: v.throttle, rudderCmd: clamp(angleDiff(s.hdg, brg) / 25, -1, 1) }, env, dt);
+    stepShip(s, { throttleCmd: throttle, rudderCmd: clamp(angleDiff(s.hdg, brg) / 25, -1, 1) }, env, dt);
     // Inside a built harbour patch the mask decides; elsewhere the coarse depth plus the tide.
     const pen = this.landPenetration(s.lat, s.lon);
     const depth = pen != null ? (pen > 0 ? -1 : Infinity) : this.world.depthAt(s.lat, s.lon) + tide.height;
-    if (depth < SHIP_CLASSES[s.cls].draft) { s.lat = before.lat; s.lon = before.lon; s.spd = 0; p.voyage = null; p.log = (p.log || []).slice(-30).concat([{ kind: 'warn', text: 'The crew stopped: shoal water ahead on the autopilot course.', time: Date.now() }]); }
+    if (depth < C.draft) { s.lat = before.lat; s.lon = before.lon; s.spd = 0; p.voyage = null; p.log = (p.log || []).slice(-30).concat([{ kind: 'warn', text: 'The crew stopped: shoal water ahead on the autopilot course.', time: Date.now() }]); }
     else p.lastValid = { lat: s.lat, lon: s.lon };
   }
 
@@ -1731,7 +1891,7 @@ export class Game {
   }
   finishRescue(p, r) {
     const harbor = harborById(r.from), a = this.harborAnchor(harbor);
-    p.rescue = null; this.setDocked(p, harbor.id, null);
+    p.rescue = null; this.dropWarp(p, 'In harbour.', false); this.setDocked(p, harbor.id, null);
     p.ship.lat = a.lat; p.ship.lon = a.lon; p.lastValid = { lat: a.lat, lon: a.lon }; p.voyage = null;
     if (p.money >= 2000) {
       p.money -= 2000; p.ship.cls = 'coaster'; p.cond = 70; p.flooding = 0; p.fuel = 30; p.serviceDue = this.simTime + SERVICE_INTERVAL_S / 2;

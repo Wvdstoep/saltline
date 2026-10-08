@@ -8,12 +8,15 @@ import { WebSocketServer } from 'ws';
 import { World, DATA_DIR } from './server/world.js';
 import { carvingsForWorld, HARBORS } from './server/harbors.js';
 import { Game } from './server/game.js';
-import { SIM, PATCH } from './shared/constants.js';
+import { SIM, PATCH, SHIP_CLASSES } from './shared/constants.js';
 import * as harborgeom from './server/harborgeom.js';
 import { WeatherService } from './server/weather.js';
 import { Traffic } from './server/traffic.js';
 import { LANE_NODES } from './server/lanes.js';
-import { planRoute } from './server/searoute.js';
+import { planRoute, parseRouteQuery } from './server/searoute.js';                 // AUTOPILOT (planRoute stays for the fallback)
+import { RoutePlanner } from './server/routeworker.js';                           // AUTOPILOT
+import { RouteTable } from './server/routetable.js';                              // MARKET
+import { PriceHistory, cachedSnapshot, routesHandler, historyAnswer } from './server/market.js'; // MARKET
 import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
 import { getTile } from './server/maptiles.js';
@@ -28,7 +31,12 @@ harborgeom.init(world);
 const weather = new WeatherService({ log });
 let game = null;
 const traffic = new Traffic(world, HARBORS, { log, weatherAt: (lat, lon) => (game ? game.weatherAt(lat, lon) : null) });
-game = new Game(world, log, { weather, traffic, harborgeom });
+const routePlanner = new RoutePlanner({ world, graph: traffic.graph, geom: harborgeom, log });            // AUTOPILOT (route planner v2 off the main thread)
+const routeTable = new RouteTable({ plan: (a, b, o) => routePlanner.plan(a, b, o, { priority: 'low' }), log }); // MARKET (harbour-to-harbour sea km)
+game = new Game(world, log, { weather, traffic, harborgeom, routeTable });     // MARKET adds routeTable; TIME reads it
+const priceHistory = new PriceHistory({ file: path.join(DATA_DIR, 'market-history.json'), log });           // MARKET
+priceHistory.load(); priceHistory.maybeSample(game); routeTable.start();                                     // MARKET
+setInterval(() => { try { priceHistory.maybeSample(game); } catch (e) { log('[market] sample failed', e.message); } }, 60000);
 // Live AIS (AISStream worldwide with the key in data/secrets/aisstream.key or AISSTREAM_API_KEY; Digitraffic Baltic):
 // where real ships are reported, the invented AI traffic steps aside so the two never overlap.
 const liveAis = new LiveAis({ log, harbors: HARBORS });
@@ -45,7 +53,7 @@ app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
-app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, rssMB: Math.round(process.memoryUsage().rss / 1048576) }); });
+app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576) }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
@@ -113,16 +121,31 @@ app.get('/api/osm', (req, res) => {
   res.setHeader('Content-Type', 'application/json'); fs.createReadStream(f).pipe(res);
 });
 app.get('/api/jobs', (req, res) => res.json(game.publicJobs()));
-// Sea route from a point to a point (or harbour) for the skipper's Route button: straight, else along the sea lanes.
-app.get('/api/route', (req, res) => {
-  const ll = (q) => String(q || '').split(',').map(Number);
-  const [fLat, fLon] = ll(req.query.from), [tLat, tLon] = ll(req.query.to);
-  if (![fLat, fLon, tLat, tLon].every(Number.isFinite)) return res.status(400).json({ error: 'from=lat,lon&to=lat,lon' });
+// Sea route planner v2 (docs/V6-QUICK-CONTRACTS.md §4.5): over water deep enough for the class's draught at low water,
+// out of / into built harbour patches along the fairway, the Dover TSS lanes the right way, round the given storm discs.
+// /api/route?from=lat,lon&to=lat,lon[&harbor=id][&cls=class][&wp=lat,lon;…][&avoid=lat,lon,radiusKm[,name];…]
+const routeHits = new Map();
+setInterval(() => routeHits.clear(), 60000).unref?.();
+app.get('/api/route', async (req, res) => {
+  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '?';
+  const hits = (routeHits.get(ip) || 0) + 1; routeHits.set(ip, hits);
+  if (hits > 30) return res.status(429).json({ error: 'too many route requests — try again in a minute' });
+  const q = parseRouteQuery(req.query);
+  if (!q.ok) return res.status(400).json({ error: q.error });
+  if (routePlanner.full()) return res.status(503).json({ error: 'route planner busy' });
+  const C = q.cls ? SHIP_CLASSES[q.cls] : null;
+  try { if (q.toHarbor && !harborgeom.getHarborPatch(q.toHarbor)) await withTimeout(harborgeom.ensureHarbor(q.toHarbor), 3000); } catch { /* plan without the patch */ }
   let r = null;
-  try { r = planRoute(world, traffic.graph || null, { lat: fLat, lon: fLon }, { lat: tLat, lon: tLon }, { toHarbor: typeof req.query.harbor === 'string' ? req.query.harbor : null }); } catch (e) { log('[route] failed', e.message); }
-  if (!r) return res.status(404).json({ error: 'no sea route found' });
+  try {
+    r = await routePlanner.plan(q.from, q.to, { toHarbor: q.toHarbor, draft: C ? C.draft : 0, beam: C ? C.beam : 0, length: C ? C.length : 0, wp: q.wp, avoid: q.avoid, simTime: Date.now() / 1000 }, { priority: 'high' });
+  } catch (e) { log('[route] failed', e.message); }
+  if (!r) return res.status(routePlanner.full() ? 503 : 404).json({ error: routePlanner.full() ? 'route planner busy' : 'no sea route found' });
   res.json(r);
 });
+// World market (docs/V6-QUICK-CONTRACTS.md §3.4): every harbour's prices, the hourly price history, the trade finder.
+app.get('/api/market', (req, res) => res.json(cachedSnapshot(game)));
+app.get('/api/market/history', (req, res) => { const a = historyAnswer(priceHistory, req.query); res.status(a.status).json(a.body); });
+app.get('/api/market/routes', routesHandler({ game, routeTable }));
 app.get('/api/players', (req, res) => res.json([...game.byId.values()].filter((p) => p.online).map((p) => game.publicState(p))));
 
 const server = http.createServer(app);
@@ -179,8 +202,15 @@ setInterval(() => {
 }, 1000 / SIM.SERVER_TICK_HZ);
 setInterval(() => { try { game.broadcastSnapshot(); } catch (e) { log('[game] snapshot error', e.stack || e); } }, 1000 / SIM.SNAPSHOT_HZ);
 
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { log('shutting down, saving state'); game.saveState(); process.exit(0); });
-process.on('uncaughtException', (e) => { log('[fatal] uncaught', e.stack || e); game.saveState(); });
+// Shutdown: ONE handler pair (docs/V6-QUICK-CONTRACTS.md §6.2). `{ sync: true }` is wave 2's synchronous save; before
+// wave 2, saveState ignores the argument.
+function saveAll(why) {
+  log(why);
+  try { game.saveState({ sync: true }); } catch (e) { log('[save] state failed', e.message); }
+  try { priceHistory?.save(); } catch (e) { log('[save] market history failed', e.message); }
+}
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { saveAll('shutting down, saving state'); try { routePlanner?.close(); } catch {} process.exit(0); });
+process.on('uncaughtException', (e) => { log('[fatal] uncaught', e.stack || e); saveAll('saving after an uncaught exception'); });
 process.on('unhandledRejection', (e) => log('[warn] unhandled rejection', e));
 
 server.listen(PORT, () => log(`Saltline shard listening on :${PORT} — ${HARBORS.length} harbours, sim time ${Math.round(game.simTime)} s`));

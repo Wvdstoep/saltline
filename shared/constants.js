@@ -154,7 +154,9 @@ export const WARP = {
   LEVELS: [1, 5, 20, 100, 400],
   MIN_LAND_M: 3000,          // above LAND_CHECK_ABOVE× the water must stay deeper than draft + KEEL_MARGIN_M this far ahead
   PLAYER_RADIUS_M: 20000,    // no other online player at sea within this
-  HARBOR_RADIUS_M: 4000,     // no harbour anchor within this
+  HARBOR_RADIUS_M: 4000,     // within this of a harbour anchor the cap is HARBOR_MAX (v0.4: no warp at all)
+  HARBOR_MAX: 5,             // highest level inside a harbour zone: moored, under tugs, near an anchor, on a built patch
+  HARBOR_PLAYER_M: 1500,     // in a harbour zone another skipper under way this close stops warp (open water: PLAYER_RADIUS_M)
   MAX_STORM: 0.6,            // weather storm index (0..1) above which warp is off
   MAX_NO_ROUTE: 20,          // factors above this need a route the client is following
   MAX_FLOODING: 0.2,         // flooding fraction above which warp is off

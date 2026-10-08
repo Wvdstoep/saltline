@@ -1,5 +1,6 @@
 // v0.4 time warp, server side (docs/V4-CONTRACTS.md §1): set_warp accept/refuse matrix, movement budget and
 // consumption scaling, auto-drop (harbour, land ahead, other skippers, hail, weather, damage), never resuming warped.
+// V6 item 6 (docs/V6-QUICK-CONTRACTS.md §2): harbours cap warp at 5× instead of forbidding it (test/warp-harbour.test.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -88,13 +89,14 @@ test('warp: constants, worldInfo, you and publicState carry the factor; levels a
   assert.equal(last(a.ws, 'you').you.warp, 1);
 });
 
-test('warp: refused when docked, under tugs, hailed, in the life raft, out of fuel or flooding', () => {
+test('warp: harbour-capped when docked or under tugs; refused when hailed, in the life raft, out of fuel or flooding', () => {
   const g = mkGame(); const d = join(g, 'Dock');
-  assert.equal(d.p.docked, 'rotterdam'); refused(g, d, 5, /in harbour/);
+  // V6 item 6: moored, warp goes up to 5× (docs/V6-QUICK-CONTRACTS.md §2)
+  assert.equal(d.p.docked, 'rotterdam'); accepted(g, d, 5); refused(g, d, 20, /limited to 5×/);
   warp(g, d.p, 1); assert.equal(d.p.warp, 1, '1× is fine anywhere');
   const a = atSea(g, 'Ann');
   a.p.assist = { harbor: 'rotterdam', berthId: null, from: { lat: 55, lon: 3.5, hdg: 0 }, to: { lat: 55, lon: 3.5, hdg: 0 }, start: Date.now(), until: Date.now() + 45000 };
-  refused(g, a, 5, /tugs/); a.p.assist = null;
+  accepted(g, a, 5); refused(g, a, 20, /limited to 5×/); warp(g, a.p, 1); a.p.assist = null;
   a.p.hail = { cutter: 'HMCG Test', cutterId: 'x', until: Date.now() + 30000, state: 'hailed' };
   refused(g, a, 5, /coast guard/); a.p.hail = null;
   a.p.rescue = { id: 'r1', kind: 'lifeboat', eta: Date.now() + 60000, harbor: 'rotterdam', lat: 55, lon: 3.5 };
@@ -119,7 +121,7 @@ test('warp: refused within 4 km of a harbour anchor, near another skipper at sea
   const g = mkGame({ harborgeom: geom });
   const near = destination(anchor.lat, anchor.lon, 270, 3000), clear = destination(anchor.lat, anchor.lon, 270, 5000);
   const a = atSea(g, 'Ann', near, { hdg: 270 });
-  refused(g, a, 5, /Rotterdam \(Maasvlakte\) is 3\.0 km away — warp needs 4\.0 km clear of any harbour/);
+  accepted(g, a, 5); refused(g, a, 20, /Rotterdam \(Maasvlakte\) is 3\.0 km away — inside harbours time warp is limited to 5×/); warp(g, a.p, 1);
   Object.assign(a.p.ship, clear); assert.ok(haversine(clear.lat, clear.lon, ROT.lat, ROT.lon) > 14000);
   accepted(g, a, 5); warp(g, a.p, 1);
 
@@ -215,10 +217,19 @@ test('warp: auto-drop near a harbour, with land ahead, near another skipper, on 
     assert.equal(last(a.ws, 'you').you.warp, 1, 'the client hears about it at once');
     a.ws.sent.length = 0;
   };
+  // V6 item 6: entering a harbour zone above 5× steps down to 5×, it does not stop dead
+  const capped = (re, from) => {
+    assert.equal(a.p.warp, 5, 'capped to 5×');
+    const ev = evs(a.ws).reverse().find((e) => /Time warp \d+× → 5×/.test(e.text));
+    assert.ok(ev, 'a cap event'); assert.equal(ev.kind, 'warn'); assert.match(ev.text, new RegExp(`${from}× → 5×`)); assert.match(ev.text, re);
+    assert.equal(last(a.ws, 'you').you.warp, 5, 'the client hears about it at once');
+    a.ws.sent.length = 0;
+  };
   // harbour: steaming into the 4 km circle around Rotterdam (no geometry: the harbour's own point)
   accepted(g, a, 20); g.tick(0.1); assert.equal(a.p.warp, 20, 'open sea: stays warped');
   const ROT = harborById('rotterdam'); Object.assign(a.p.ship, destination(ROT.lat, ROT.lon, 270, 3500), { hdg: 270 });
-  g.tick(0.1); dropped(/Rotterdam \(Maasvlakte\) is 3\.5 km away/, 20);
+  g.tick(0.1); capped(/Rotterdam \(Maasvlakte\) is 3\.5 km away — 5× at most inside harbours/, 20);
+  warp(g, a.p, 1); Object.assign(a.p.ship, OPEN_A, { hdg: 0 }); a.ws.sent.length = 0;
   // land ahead: turning toward the Danish coast at 20× drops, 5× carries on
   Object.assign(a.p.ship, DK_COAST, { hdg: 270 });
   accepted(g, a, 100, ROUTE); g.tick(0.1); assert.equal(a.p.warp, 100);
@@ -278,7 +289,8 @@ test('warp: never resumed — reconnect, disconnect and a restart all come back 
 
 test('warp: you.warpLimit gives the HUD the highest level allowed right now and why not higher', () => {
   const g = mkGame(); const d = join(g, 'Dock');
-  assert.deepEqual(g.privateState(d.p).warpLimit, { max: 1, reason: 'You are in harbour — cast off first.', routeAbove: WARP.MAX_NO_ROUTE });
+  assert.deepEqual(g.privateState(d.p).warpLimit, { max: 5, reason: 'Moored in Rotterdam (Maasvlakte) — 5× at most inside harbours.', routeAbove: 20,
+    harbour: { id: 'rotterdam', name: 'Rotterdam (Maasvlakte)', distM: 0, kind: 'moored' } });
   const a = atSea(g, 'Ann', OPEN_A);
   g.sendYou(a.p); assert.deepEqual(last(a.ws, 'you').you.warpLimit, { max: 400, reason: null, routeAbove: 20 });
   Object.assign(a.p.ship, DK_COAST, { hdg: 90 });

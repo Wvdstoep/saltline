@@ -6,6 +6,7 @@
 // devicePixelRatio-scaled canvas that follows its container.
 import { haversine, bearing, fmtDMS, fmtDistance, wrapLon } from '/shared/geo.js';
 import { LAYERS, SHIP_CLASSES, SIM, GEO } from '/shared/constants.js';
+import { serviceKn } from '/shared/rates.js'; // AUTOPILOT: planned-route ETA at service speed
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI, TILE = 256, NM = 1852, EARTH_CIRC = 40075016.686;
 export const ZOOM_MIN = 2, ZOOM_MAX = 18, TILE_ZOOM = 7, TILE_ZOOM_MAX = 18, MAX_TILES = 256;
@@ -86,7 +87,7 @@ export class Chart {
     this.center = { lat: 54, lon: 3 }; this.zoom = 5;
     this.W = 0; this.H = 0; this.dpr = 1;
     this.route = []; this.track = []; this.mode = 'route';
-    this.layers = { base: true, tiles: true, seamarks: true, lanes: true, ai: true, jobs: true, track: true, storms: true, fishing: true, platforms: true, harbors: true, ships: true, wrecks: true, rescues: true };
+    this.layers = { base: true, tiles: true, seamarks: true, lanes: true, ai: true, jobs: true, track: true, storms: true, fishing: true, platforms: true, harbors: true, ships: true, wrecks: true, rescues: true, market: false };
     this.base = { world: null, region: null };
     this.tiles = new Map(); this.tilesDrawn = 0; this.seaDrawn = 0;
     this.jobsTimer = null; this.drawTimer = null;
@@ -125,7 +126,7 @@ export class Chart {
   getRoute() { return this.route.map((p) => ({ lat: p.lat, lon: p.lon })); }
   /** Clear the plotted route; `fromApp` is set when the app itself is clearing (avoids app ↔ chart recursion). */
   clearRoute(fromApp) {
-    this.route = []; this.requestDraw();
+    this.route = []; if (this.app.routeMeta) this.app.routeMeta.via = []; this.requestDraw();
     if (!fromApp && !this._clearing) { this._clearing = true; try { this.app.clearRoute?.(); } finally { this._clearing = false; } }
   }
   setLayer(name, on) {
@@ -147,6 +148,8 @@ export class Chart {
   sailRoute() {
     const a = this.app;
     if (!this.route.length) { a.hud?.event?.({ kind: 'warn', text: 'Tap the chart to add waypoints first (Route mode).' }); return; }
+    // v6: the plotted points become the user waypoints of a route planned over water deep enough for this hull
+    if (a.pilot) { const via = this.getRoute(); this.route = []; this.requestDraw(); a.pilot.planVia(via); return; }
     const pts = this.getRoute();
     if (typeof a.setRoute === 'function') a.setRoute(pts);
     else { const last = pts[pts.length - 1]; a.setWaypoint?.(last.lat, last.lon); }
@@ -243,14 +246,17 @@ export class Chart {
     this.track.push({ lat: s.lat, lon: s.lon });
     if (this.track.length > 720) this.track.shift();
   }
-  routeStats() {
-    const s = this.app.ship, pts = this.route;
+  /** Distance / ETA of the plotted points, or of the ship's planned route when nothing is being plotted. ETA at SOG when
+   *  under way, else at the class's service speed (shared/rates.js). */
+  routeStats(pts = this.route.length ? this.route : this.app.route || []) {
+    const s = this.app.ship;
     let m = 0, prev = s ? { lat: s.lat, lon: s.lon } : null;
     for (const p of pts) { if (prev) m += haversine(prev.lat, prev.lon, p.lat, p.lon); prev = p; }
     const nm = m / NM;
-    const C = s ? SHIP_CLASSES[s.cls] : null;
     const sog = s ? Math.abs(s.spd) : 0;
-    const planKn = sog > 0.5 ? sog : C ? C.maxKn * 0.8 : 10;
+    let load = 0;
+    try { const C = s ? SHIP_CLASSES[s.cls] : null, cargo = this.app.you?.cargo || []; if (C?.capacity) load = cargo.reduce((a, c) => a + (c.qty || 0), 0) / C.capacity; } catch { load = 0; }
+    const planKn = sog > 0.5 ? sog : s ? serviceKn(s.cls, load) : 10;
     const etaSec = nm > 0 ? (nm / planKn) * 3600 : 0;
     return { nm, etaSec, planKn, atSog: sog > 0.5, expressCost: Math.round(nm * SIM.EXPRESS_CR_PER_NM) };
   }
@@ -286,6 +292,7 @@ export class Chart {
     if (this.layers.rescues) this.drawRescues();
     this.drawMe();
     if (this.layers.harbors) this.drawHarbors();
+    if (this.layers.market) this.app.market?.drawLayer(this, this.ctx); // V6 item 7: harbours coloured by the price of one good
     if (this.layers.jobs) this.drawActiveJobs();
     this.drawHover();
     this.drawScaleBar();
@@ -412,29 +419,76 @@ export class Chart {
     ctx.stroke();
   }
   drawRoute() {
-    const ctx = this.ctx, a = this.app, s = a.ship;
-    // legacy single waypoint (set by main.js / autopilot target) when it is not part of the planned route
-    if (a.waypoint && !this.route.some((w) => Math.abs(w.lat - a.waypoint.lat) < 1e-6 && Math.abs(w.lon - a.waypoint.lon) < 1e-6)) {
-      const p = this.project(a.waypoint.lat, a.waypoint.lon);
-      if (s) { const q = this.project(s.lat, s.lon); ctx.strokeStyle = 'rgba(242,177,52,0.5)'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.setLineDash([]); }
-      ctx.strokeStyle = '#f2b134'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p.x, p.y - 8); ctx.lineTo(p.x + 8, p.y); ctx.lineTo(p.x, p.y + 8); ctx.lineTo(p.x - 8, p.y); ctx.closePath(); ctx.stroke();
+    const ctx = this.ctx, a = this.app, s = a.ship, meta = a.routeMeta;
+    const active = Array.isArray(a.route) && a.route.length ? a.route : null;
+    const wrapOk = (p, q) => Math.abs(p.x - q.x) < this.scale / 2;
+    if (active) {
+      // the planned route (solid green) or a raw waypoint route (dashed), from the ship
+      const flash = (a.routeFlashUntil || 0) > performance.now();
+      ctx.strokeStyle = flash ? '#b6ffcf' : meta ? '#3ddc84' : 'rgba(88,214,141,0.75)'; ctx.lineWidth = flash ? 4.5 : meta ? 2.5 : 2;
+      if (!meta) ctx.setLineDash([8, 4]);
+      ctx.beginPath(); let prev = s ? this.project(s.lat, s.lon) : null; if (prev) ctx.moveTo(prev.x, prev.y);
+      for (const w of active) { const p = this.project(w.lat, w.lon); if (prev && wrapOk(p, prev)) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); prev = p; }
+      ctx.stroke(); ctx.setLineDash([]);
+      // TSS lane: blue chevrons in the direction of travel along the legs either side of the lane node
+      active.forEach((w, i) => {
+        if (w.mark !== 'tss') return;
+        const before = i > 0 ? active[i - 1] : s, after = active[i + 1];
+        for (const [p0, p1] of [[before, w], [w, after]]) { if (p0 && p1) this.drawChevrons(p0, p1, '#5aa9ff'); }
+      });
+      // route point dots, the approach (anchor glyph), harbour exit, canal
+      ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      active.forEach((w, i) => {
+        const p = this.project(w.lat, w.lon); if (!this.onScreen(p)) return;
+        if (w.mark === 'approach') { this.drawAnchor(p, '#3ddc84'); if (this.zoom >= 9) { ctx.fillStyle = 'rgba(4,12,20,0.75)'; const t = `${w.name ? w.name.split(' (')[0] + ' · ' : ''}berth guidance`; const tw = ctx.measureText(t).width + 8; ctx.fillRect(p.x + 12, p.y - 8, tw, 16); ctx.fillStyle = '#b6ffcf'; ctx.fillText(t, p.x + 16, p.y); } return; }
+        ctx.fillStyle = w.mark === 'tss' ? '#5aa9ff' : w.mark === 'patch_exit' ? '#b6ffcf' : '#3ddc84';
+        ctx.beginPath(); ctx.arc(p.x, p.y, w.mark ? 4.5 : i === 0 ? 4 : 3, 0, Math.PI * 2); ctx.fill();
+        if (w.mark === 'tss' && this.zoom >= 7) { ctx.fillStyle = '#9ccaff'; ctx.fillText(w.name || 'TSS lane', p.x + 8, p.y); }
+      });
     }
-    // the ship's active route (C3) if it differs from the editing buffer
-    const active = Array.isArray(a.route) && a.route.length && a.route !== this.route ? a.route : null;
-    if (active && !this.route.length) { ctx.strokeStyle = 'rgba(88,214,141,0.7)'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]); ctx.beginPath(); let prev = s ? this.project(s.lat, s.lon) : null; if (prev) ctx.moveTo(prev.x, prev.y); for (const w of active) { const p = this.project(w.lat, w.lon); if (prev) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); prev = p; } ctx.stroke(); ctx.setLineDash([]); }
+    // the skipper's own waypoints of the planned route: numbered amber diamonds
+    (meta?.via || []).forEach((w, i) => {
+      const p = this.project(w.lat, w.lon); if (!this.onScreen(p)) return;
+      ctx.fillStyle = '#f2b134'; ctx.strokeStyle = '#1a1200'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y - 9); ctx.lineTo(p.x + 9, p.y); ctx.lineTo(p.x, p.y + 9); ctx.lineTo(p.x - 9, p.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#1a1200'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(i + 1), p.x, p.y + 0.5);
+    });
+    // planner warnings: red "!" (text on hover, or always when zoomed in)
+    this.routeWarnHit = [];
+    for (const w of meta?.warnings || []) {
+      if (!Number.isFinite(w.lat) || !Number.isFinite(w.lon)) continue;
+      const p = this.project(w.lat, w.lon); if (!this.onScreen(p)) continue;
+      ctx.fillStyle = '#ff4d4d'; ctx.beginPath(); ctx.arc(p.x + 10, p.y - 10, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', p.x + 10, p.y - 9.5);
+      this.routeWarnHit.push({ x: p.x + 10, y: p.y - 10, text: w.text });
+      const hov = this.cursor && (() => { const c = this.project(this.cursor.lat, this.cursor.lon); return Math.hypot(c.x - p.x - 10, c.y - p.y + 10) < 14; })();
+      if (hov || this.zoom >= 9) {
+        ctx.font = '11px sans-serif'; ctx.textAlign = 'left'; const tw = Math.min(this.W - p.x - 24, ctx.measureText(w.text).width + 10);
+        ctx.fillStyle = 'rgba(60,8,8,0.88)'; ctx.fillRect(p.x + 20, p.y - 19, Math.max(60, tw), 18); ctx.fillStyle = '#ffd6d6'; ctx.fillText(w.text, p.x + 25, p.y - 10, Math.max(50, tw - 8));
+      }
+    }
+    // summary label at the end of the planned route
+    if (active && !this.route.length) {
+      const { nm, etaSec, atSog, planKn } = this.routeStats(active);
+      const lastW = active[active.length - 1], last = this.project(lastW.lat, lastW.lon);
+      const txt = `${nm.toFixed(1)} nm · ETA ${fmtDur(etaSec)}${atSog ? '' : ` @ ${planKn.toFixed(0)} kn`}${meta?.draft ? ` · ${meta.draft} m draught` : ''}`;
+      ctx.font = '11px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; const tw = ctx.measureText(txt).width + 8;
+      const x = Math.min(last.x + 10, this.W - tw - 4);
+      ctx.fillStyle = 'rgba(4,12,20,0.75)'; ctx.fillRect(x, last.y + 10, tw, 16); ctx.fillStyle = '#b6ffcf'; ctx.fillText(txt, x + 4, last.y + 18);
+    }
+    // the editing buffer (while plotting): amber dashed with numbered markers, as before
     if (!this.route.length) return;
     ctx.strokeStyle = 'rgba(242,177,52,0.85)'; ctx.lineWidth = 2; ctx.setLineDash([8, 5]); ctx.beginPath();
     let prev = s ? this.project(s.lat, s.lon) : null; if (prev) ctx.moveTo(prev.x, prev.y);
-    for (const w of this.route) { const p = this.project(w.lat, w.lon); if (prev && Math.abs(p.x - prev.x) < this.scale / 2) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); prev = p; }
+    for (const w of this.route) { const p = this.project(w.lat, w.lon); if (prev && wrapOk(p, prev)) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); prev = p; }
     ctx.stroke(); ctx.setLineDash([]);
-    // leg lengths
     ctx.font = '10px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     let from = s ? { lat: s.lat, lon: s.lon } : null;
     for (const w of this.route) {
       if (from && this.zoom >= 6) { const m = haversine(from.lat, from.lon, w.lat, w.lon); const p1 = this.project(from.lat, from.lon), p2 = this.project(w.lat, w.lon); const mxp = (p1.x + p2.x) / 2, myp = (p1.y + p2.y) / 2; if (Math.hypot(p2.x - p1.x, p2.y - p1.y) > 60) { ctx.fillStyle = 'rgba(4,12,20,0.7)'; const t = `${(m / NM).toFixed(1)} nm`; const tw = ctx.measureText(t).width + 6; ctx.fillRect(mxp - tw / 2, myp - 7, tw, 14); ctx.fillStyle = '#ffd98a'; ctx.fillText(t, mxp, myp); } }
       from = w;
     }
-    // numbered waypoint markers
     ctx.font = 'bold 10px sans-serif';
     this.route.forEach((w, i) => {
       const p = this.project(w.lat, w.lon);
@@ -442,11 +496,34 @@ export class Chart {
       ctx.strokeStyle = '#1a1200'; ctx.lineWidth = 1; ctx.stroke();
       ctx.fillStyle = '#1a1200'; ctx.fillText(String(i + 1), p.x, p.y + 0.5);
     });
-    const { nm, etaSec, atSog, planKn } = this.routeStats();
+    const { nm, etaSec, atSog, planKn } = this.routeStats(this.route);
     const last = this.project(this.route[this.route.length - 1].lat, this.route[this.route.length - 1].lon);
-    const txt = `${nm.toFixed(1)} nm · ETA ${fmtDur(etaSec)}${atSog ? '' : ` @ ${planKn.toFixed(0)} kn`}`;
+    const txt = `${nm.toFixed(1)} nm · ETA ${fmtDur(etaSec)}${atSog ? '' : ` @ ${planKn.toFixed(0)} kn`} · straight, Sail route plans it`;
     ctx.font = '11px monospace'; ctx.textAlign = 'left'; const tw = ctx.measureText(txt).width + 8;
-    ctx.fillStyle = 'rgba(4,12,20,0.75)'; ctx.fillRect(last.x + 10, last.y - 8, tw, 16); ctx.fillStyle = '#ffd98a'; ctx.fillText(txt, last.x + 14, last.y);
+    const x = Math.min(last.x + 10, this.W - tw - 4);
+    ctx.fillStyle = 'rgba(4,12,20,0.75)'; ctx.fillRect(x, last.y - 8, tw, 16); ctx.fillStyle = '#ffd98a'; ctx.fillText(txt, x + 4, last.y);
+  }
+  /** Chevrons (›) along the leg a→b pointing in the direction of travel (TSS lane on the planned route). */
+  drawChevrons(a, b, color) {
+    const ctx = this.ctx, p = this.project(a.lat, a.lon), q = this.project(b.lat, b.lon);
+    const dx = q.x - p.x, dy = q.y - p.y, L = Math.hypot(dx, dy);
+    if (L < 20 || L > this.W * 4) return;
+    const ux = dx / L, uy = dy / L, n = Math.min(12, Math.max(1, Math.floor(L / 28)));
+    ctx.strokeStyle = color; ctx.lineWidth = 2.2;
+    for (let k = 1; k <= n; k++) {
+      const t = k / (n + 1), cx = p.x + dx * t, cy = p.y + dy * t;
+      if (cx < -10 || cy < -10 || cx > this.W + 10 || cy > this.H + 10) continue;
+      ctx.beginPath(); ctx.moveTo(cx - ux * 5 - uy * 5, cy - uy * 5 + ux * 5); ctx.lineTo(cx + ux * 2, cy + uy * 2); ctx.lineTo(cx - ux * 5 + uy * 5, cy - uy * 5 - ux * 5); ctx.stroke();
+    }
+  }
+  /** A small anchor glyph (the approach point, where berth guidance takes over). */
+  drawAnchor(p, color) {
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(4,12,20,0.8)'; ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.arc(p.x, p.y - 5, 2, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p.x, p.y - 3); ctx.lineTo(p.x, p.y + 6); ctx.moveTo(p.x - 4, p.y - 1); ctx.lineTo(p.x + 4, p.y - 1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x, p.y + 1, 5.5, 0.25 * Math.PI, 0.75 * Math.PI); ctx.stroke();
   }
   drawTriangle(p, hdgDeg, size, fill, stroke) {
     const ctx = this.ctx, h = hdgDeg * D2R;
@@ -784,10 +861,11 @@ export class Chart {
   jobRows(entry, table) {
     const you = this.app.you, C = you ? SHIP_CLASSES[you.ship.cls] : null, now = this.app.simTime || Date.now() / 1000;
     const hname = (id) => this.app.world?.harbors?.find((x) => x.id === id)?.name?.split(' (')[0] || id;
-    const thead = document.createElement('tr'); thead.innerHTML = '<th>Contract</th><th class="num">Pay</th><th class="num">Pay/t</th><th class="num">Dist</th><th class="num">Deadline</th>'; table.appendChild(thead);
+    const thead = document.createElement('tr'); thead.innerHTML = '<th>Contract</th><th class="num">Pay</th><th class="num">Pay/t</th><th class="num">Dist</th><th class="num" title="Time allowed, in hours of ship time">Time</th>'; table.appendChild(thead);
     for (const j of entry.jobs) {
       const tr = document.createElement('tr');
-      const dl = j.deadline - now; const dlTxt = dl < 0 ? 'expired' : dl < 48 * 3600 ? `${Math.floor(dl / 3600)} h` : `${Math.floor(dl / 86400)} d`;
+      // V6 item 5: the budget in ship hours ('26 h'); a legacy offer still shows its world-clock time left
+      const dl = (j.deadline ?? 0) - now; const dlTxt = Number.isFinite(j.hours) ? `${j.hours} h` : dl < 0 ? 'expired' : dl < 48 * 3600 ? `${Math.floor(dl / 3600)} h` : `${Math.floor(dl / 86400)} d`;
       const perT = j.qty ? fmtN(j.pay / j.qty) : j.pax ? fmtN(j.pay / j.pax) + '/pax' : '—';
       const needs = j.needsCat && C && !j.needsCat.includes(C.cat) ? ' <span class="pill bad">needs yacht or ferry</span>' : j.needsCat ? ' <span class="pill">yacht or ferry</span>' : '';
       const td1 = document.createElement('td'); td1.innerHTML = `<span class="pill ${j.type === 'fishing' ? 'good' : j.type === 'smuggling' ? 'bad' : ''}">${j.type}</span>`; td1.append(document.createTextNode(j.title || `${j.type} to ${hname(j.to)}`)); td1.insertAdjacentHTML('beforeend', needs);
@@ -810,6 +888,7 @@ export class Chart {
         const p = document.createElement('p'); p.className = 'muted'; p.textContent = `Fuel ${fmtN(entry.fuel)} cr/t · ${entry.used} used hull${entry.used === 1 ? '' : 's'} for sale · ${entry.jobs.length} contract${entry.jobs.length === 1 ? '' : 's'} on the board`; body.appendChild(p);
         if (entry.jobs.length) { const table = document.createElement('table'); this.jobRows(entry, table); body.appendChild(table); }
       } else { const p = document.createElement('p'); p.className = 'muted'; p.textContent = cachedJobs() ? 'No job board data for this harbour yet.' : 'Loading job board…'; body.appendChild(p); if (!cachedJobs()) fetchJobs().then(() => { if (this.popupAnchor && this.popupAnchor.lat === h.lat) this.showHarborPopup(h); }); }
+      this.app.market?.popupRows?.(h, body); // V6 item 7: the harbour's 7 goods
     });
   }
   showShipPopup(hit) {
