@@ -177,6 +177,12 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius
 #berthText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #berthLine .berthBtns { display: flex; gap: 6px; flex: none; }
 #berthLine button { min-height: 34px; font-size: 12.5px; padding: 0 12px; }
+/* live AIS vessel card */
+#aisCardWrap { position: absolute; top: calc(var(--top-h) + var(--sat) + 6px); right: calc(var(--gut) + var(--sar)); width: min(340px, calc(100vw - 2 * var(--gut))); max-height: calc(100vh - var(--top-h) - 280px); overflow: auto; padding: var(--s3) var(--s3) var(--s2); font-size: 12.5px; z-index: 6; }
+#aisCardWrap .close { position: absolute; top: 6px; right: 6px; }
+#aisCardWrap .aisHead { padding-right: 36px; }
+#aisCardWrap dd { overflow-wrap: anywhere; }
+body.touch #aisCardWrap { top: auto; bottom: calc(var(--bar) + var(--sab) + 8px); left: calc(var(--gut) + var(--sal)); right: calc(var(--gut) + var(--sar)); width: auto; max-height: 52vh; z-index: 8; }
 /* contract card: the next step of the accepted jobs */
 #jobLine { --job: #f2b134; display: flex; flex-direction: column; gap: 4px; border-left: 3px solid var(--job); }
 #jobLine .jobHead { display: flex; align-items: center; gap: var(--s2); font-size: 13px; min-width: 0; }

@@ -1,0 +1,40 @@
+[
+  {
+    "Message": {
+      "StaticDataReport": {
+        "MessageID": 24,
+        "PartNumber": false,
+        "RepeatIndicator": 0,
+        "Reserved": 0,
+        "UserID": 244012345,
+        "Valid": true,
+        "ReportA": { "Name": "BLAUWE REIGER@@@@@@@", "Valid": true },
+        "ReportB": {
+          "CallSign": "", "Dimension": { "A": 0, "B": 0, "C": 0, "D": 0 }, "FixType": 0, "ShipType": 0, "Spare": 0,
+          "Valid": false, "VenderIDModel": 0, "VenderIDSerial": 0, "VendorIDName": ""
+        }
+      }
+    },
+    "MessageType": "StaticDataReport",
+    "MetaData": { "MMSI": 244012345, "MMSI_String": 244012345, "ShipName": "", "latitude": 52.1105, "longitude": 4.2481, "time_utc": "2026-10-07 11:57:03.400000 +0000 UTC" }
+  },
+  {
+    "Message": {
+      "StaticDataReport": {
+        "MessageID": 24,
+        "PartNumber": true,
+        "RepeatIndicator": 0,
+        "Reserved": 0,
+        "UserID": 244012345,
+        "Valid": true,
+        "ReportA": { "Name": "", "Valid": false },
+        "ReportB": {
+          "CallSign": "PB1234", "Dimension": { "A": 9, "B": 3, "C": 2, "D": 2 }, "FixType": 1, "ShipType": 37, "Spare": 0,
+          "Valid": true, "VenderIDModel": 1, "VenderIDSerial": 12345, "VendorIDName": "SRT"
+        }
+      }
+    },
+    "MessageType": "StaticDataReport",
+    "MetaData": { "MMSI": 244012345, "MMSI_String": 244012345, "ShipName": "BLAUWE REIGER", "latitude": 52.1105, "longitude": 4.2481, "time_utc": "2026-10-07 11:57:09.900000 +0000 UTC" }
+  }
+]

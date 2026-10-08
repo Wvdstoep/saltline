@@ -51,7 +51,13 @@ export function collectAi(app) {
     if (!Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
     out.push({ id: a.id, name: a.name || a.id, cls: a.cls, flag: a.flag, lat: c.lat, lon: c.lon, hdg: c.hdg ?? 0, spd: c.spd ?? 0, dest: a.dest, destName: a.destName, state: a.state, eta: a.eta });
   }
-  return out;
+  return out.concat(collectLiveAis(app));
+}
+/** Live AIS vessels near the ship (the 3D layer's contacts), in collectAi's shape plus `live: true` and the type colour. */
+export function collectLiveAis(app) {
+  const l = app.aisLayer; if (!l?.contacts) return [];
+  let cs; try { cs = l.contacts(); } catch { return []; }
+  return cs.map((c) => ({ id: c.id, name: c.label, cls: c.cls, flag: c.flag, lat: c.lat, lon: c.lon, hdg: c.hdg ?? 0, spd: c.spd ?? 0, dest: c.dest, destName: c.dest, state: c.state === 'underway' ? 'underway' : c.state, eta: null, color: c.color, live: true, mmsi: c.mmsi }));
 }
 export function collectStorms(app) { return app.storms || app.lastSnap?.storms || app.snap?.storms || []; }
 export function collectRescues(app) {
@@ -452,13 +458,33 @@ export class Chart {
     if (fill) { ctx.fillStyle = fill; ctx.fill(); }
     if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
   }
+  /** Live AIS for the visible area (the whole world map too): /api/ais?bbox every 15 s while the chart is open. */
+  aisWideList() {
+    const now = performance.now();
+    if (this.isOpen() && this.W && (now - (this.aisAt || 0) > 15000 || this.aisZoomAt !== Math.round(this.zoom))) {
+      this.aisAt = now; this.aisZoomAt = Math.round(this.zoom);
+      const a = this.unproject(0, this.H), b = this.unproject(this.W, 0);
+      const latMin = Math.max(-85, Math.min(a.lat, b.lat)), latMax = Math.min(85, Math.max(a.lat, b.lat));
+      const span = Math.abs(b.lon - a.lon), lonMin = span >= 359 || this.zoom < 2 ? -180 : a.lon, lonMax = span >= 359 || this.zoom < 2 ? 180 : b.lon;
+      fetch(`/api/ais?bbox=${latMin.toFixed(3)},${lonMin.toFixed(3)},${latMax.toFixed(3)},${lonMax.toFixed(3)}&limit=2000`).then((r) => (r.ok ? r.json() : null)).then((j) => {
+        if (!j || !Array.isArray(j.ships)) return;
+        this.aisWide = j.ships.map((v) => ({ id: v.id, name: v.name || `MMSI ${v.mmsi}`, cls: v.cls, flag: v.flag, lat: v.lat, lon: v.lon, hdg: Number.isFinite(v.hdg) ? v.hdg : v.cog ?? 0, spd: v.sog ?? 0, dest: v.dest, destName: v.destName || v.dest, from: v.fromName || v.from, state: v.nav === 5 ? 'moored' : v.nav === 1 ? 'anchored' : 'underway', eta: v.eta, live: true, mmsi: v.mmsi, len: v.length }));
+        this.requestDraw();
+      }).catch(() => {});
+    }
+    return this.aisWide || [];
+  }
   drawAi() {
-    const ctx = this.ctx, list = collectAi(this.app); if (!list.length || this.zoom < 4) return;
+    const ctx = this.ctx, near = collectAi(this.app), seen = new Set(near.map((x) => x.id));
+    const list = near.concat(this.aisWideList().filter((x) => !seen.has(x.id))); if (!list.length) return;
+    this.aisDrawn = list.some((x) => x.live);
     ctx.strokeStyle = 'rgba(200,200,200,0.8)'; ctx.lineWidth = 1;
     for (const a of list) {
       const p = this.project(a.lat, a.lon); if (!this.onScreen(p)) continue;
       const moored = a.state === 'moored' || a.state === 'anchored';
-      this.drawTriangle(p, a.hdg, moored ? 4 : 5, moored ? 'rgba(150,150,150,0.8)' : '#b8bec4', 'rgba(20,30,40,0.8)');
+      if (this.zoom < 4 && !a.live) continue;
+      if (a.live) { this.drawTriangle(p, a.hdg, moored ? 3 : this.zoom < 5 ? 3.5 : 5, moored ? 'rgba(150,170,190,0.75)' : a.color || '#7fd3ff', 'rgba(10,20,30,0.85)'); if (this.zoom < 6) continue; }
+      else this.drawTriangle(p, a.hdg, moored ? 4 : 5, moored ? 'rgba(150,150,150,0.8)' : '#b8bec4', 'rgba(20,30,40,0.8)');
       if (!moored && a.spd > 0.5) { const h = a.hdg * D2R; const len = clamp(a.spd * 1.2, 6, 20); ctx.strokeStyle = 'rgba(200,200,200,0.7)'; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + Math.sin(h) * len, p.y - Math.cos(h) * len); ctx.stroke(); }
       if (this.zoom >= 11) { ctx.font = '10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = 'rgba(220,220,220,0.85)'; ctx.fillText(a.name, p.x + 8, p.y); }
     }
@@ -570,6 +596,7 @@ export class Chart {
     const ctx = this.ctx;
     let t = 'Chart: Natural Earth';
     if (this.tilesDrawn) t = '© OpenStreetMap contributors' + (this.seaDrawn ? ' · © OpenSeaMap' : '');
+    if (this.aisDrawn) t += ' · AIS: aisstream.io · Fintraffic/digitraffic.fi (CC BY 4.0)';
     ctx.font = '10px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
     const tw = ctx.measureText(t).width + 8;
     ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillRect(this.W - tw, this.H - 15, tw, 15);
@@ -693,7 +720,10 @@ export class Chart {
     let best = null, bd = r;
     const consider = (lat, lon, obj) => { const p = this.project(lat, lon); const d = Math.hypot(p.x - x, p.y - y); if (d < bd) { bd = d; best = { ...obj, lat, lon }; } };
     const a = this.app;
-    if (this.layers.ai && this.zoom >= 4) for (const s of collectAi(a)) consider(s.lat, s.lon, { kind: 'ai', text: `${s.name}${s.destName ? ' → ' + s.destName : ''}${s.eta ? ' · ETA ' + fmtClock(s.eta > 1e11 ? s.eta / 1000 : s.eta) : ''}`, data: s });
+    if (this.layers.ai) {
+      const near = collectAi(a), seen = new Set(near.map((x) => x.id));
+      for (const s of near.concat((this.aisWide || []).filter((x) => !seen.has(x.id)))) { if (this.zoom < 4 && !s.live) continue; consider(s.lat, s.lon, { kind: 'ai', text: `${s.name}${s.destName ? ' → ' + s.destName : ''}${s.spd > 0.5 ? ` · ${(+s.spd).toFixed(1)} kn` : ''}${s.eta ? ' · ETA ' + fmtClock(s.eta > 1e11 ? s.eta / 1000 : s.eta) : ''}`, data: s }); }
+    }
     for (const o of a.others?.values?.() || []) { const c = o.cur || o; consider(c.lat, c.lon, { kind: 'player', text: `${o.name} · ${SHIP_CLASSES[o.cls]?.name || o.cls || 'ship'}`, data: o }); }
     for (const c of a.cutters?.values?.() || []) { const cur = c.cur || c; consider(cur.lat, cur.lon, { kind: 'cutter', text: `${c.name || 'Coast guard'} · ${c.state || 'patrol'}`, data: c }); }
     for (const r of collectRescues(a)) consider(r.lat, r.lon, { kind: 'rescue', text: `SAR ${r.kind} → ${r.playerName || ''}`, data: r });
@@ -788,7 +818,11 @@ export class Chart {
       const b = document.createElement('b'); b.textContent = hit.kind === 'ai' ? d.name : hit.kind === 'cutter' ? (d.name || 'Coast guard cutter') : hit.kind === 'rescue' ? `SAR ${d.kind}` : d.name; head.appendChild(b);
       const lines = [];
       const cur = d.cur || d;
-      if (hit.kind === 'ai') lines.push(`${SHIP_CLASSES[d.cls]?.name || d.cls || 'vessel'}${d.flag ? ' · ' + d.flag : ''}`, `${d.state || 'underway'}${d.destName ? ' → ' + d.destName : ''}${d.eta ? ' · ETA ' + fmtClock(d.eta > 1e11 ? d.eta / 1000 : d.eta) + ' UTC' : ''}`);
+      if (hit.kind === 'ai' && d.live) { // live AIS: the full card from the 3D layer when it knows the vessel, else what the box query gave
+        const html = a.aisLayer?.info?.(d.id) || '';
+        if (html) { const div = document.createElement('div'); div.innerHTML = html; body.appendChild(div); }
+        else lines.push(`${SHIP_CLASSES[d.cls]?.name || d.cls || 'vessel'}${d.flag ? ' · ' + d.flag : ''}${d.len ? ` · ${Math.round(d.len)} m` : ''}`, `${d.from ? d.from + ' → ' : ''}${d.destName || '—'}${d.eta ? ' · ETA ' + fmtClock(d.eta > 1e11 ? d.eta / 1000 : d.eta) + ' UTC' : ''}`, `MMSI ${d.mmsi ?? '—'} · live AIS`);
+      } else if (hit.kind === 'ai') lines.push(`${SHIP_CLASSES[d.cls]?.name || d.cls || 'vessel'}${d.flag ? ' · ' + d.flag : ''}`, `${d.state || 'underway'}${d.destName ? ' → ' + d.destName : ''}${d.eta ? ' · ETA ' + fmtClock(d.eta > 1e11 ? d.eta / 1000 : d.eta) + ' UTC' : ''}`);
       if (hit.kind === 'player') lines.push(`${SHIP_CLASSES[d.cls]?.name || d.cls || 'ship'}${d.convoyId && d.convoyId === a.you?.convoyId ? ' · convoy mate' : ''}${d.wanted ? ' · wanted' : ''}${d.docked ? ' · docked' : d.sinking ? ' · SINKING' : ''}`);
       if (hit.kind === 'cutter') lines.push(`Coast guard · ${d.state || 'patrol'}`);
       if (hit.kind === 'rescue') lines.push(`${d.state || ''} · for ${d.playerName || ''}`);

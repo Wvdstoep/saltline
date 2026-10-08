@@ -354,7 +354,10 @@ export class Game {
   feesFor(p, h) { return { dues: portDues(p.ship.cls, h), berthPerDay: berthFeePerDay(p.ship.cls), pilotage: pilotageFee(p.ship.cls, h), tug: tugCostFor(p.ship.cls), service: serviceCostFor(p.ship.cls) }; }
   fuelPrice(h) { return Math.round(this.harbors[h.id].market.fuel * (h.fuelMul || 1)); }
   repairCost(p) { return repairCostFor(p.ship.cls, p.cond); }
-  aiNear(lat, lon) { if (!this.traffic) return []; try { return this.traffic.near(lat, lon, SIM.AI_RANGE_U) || []; } catch (e) { this.log(`[game] traffic.near failed: ${e.message}`); return []; } }
+  aiNear(lat, lon) {
+    if (!this.traffic) return [];
+    try { const l = this.traffic.near(lat, lon, SIM.AI_RANGE_U) || []; return this.aiFilter ? l.filter(this.aiFilter) : l; } catch (e) { this.log(`[game] traffic.near failed: ${e.message}`); return []; }
+  }
 
   connect(ws, tok, name) {
     const p = this.findOrCreatePlayer(tok, name);

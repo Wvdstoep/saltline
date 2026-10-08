@@ -1,0 +1,32 @@
+{
+  "Message": {
+    "PositionReport": {
+      "Cog": 47.3,
+      "CommunicationState": 59916,
+      "Latitude": 52.1012,
+      "Longitude": 3.9123,
+      "MessageID": 1,
+      "NavigationalStatus": 0,
+      "PositionAccuracy": true,
+      "Raim": false,
+      "RateOfTurn": -4,
+      "RepeatIndicator": 0,
+      "Sog": 13.4,
+      "Spare": 0,
+      "SpecialManoeuvreIndicator": 0,
+      "Timestamp": 30,
+      "TrueHeading": 49,
+      "UserID": 244670587,
+      "Valid": true
+    }
+  },
+  "MessageType": "PositionReport",
+  "MetaData": {
+    "MMSI": 244670587,
+    "MMSI_String": 244670587,
+    "ShipName": "NOORDZEE TRADER     ",
+    "latitude": 52.1012,
+    "longitude": 3.9123,
+    "time_utc": "2026-10-07 11:59:30.512345 +0000 UTC"
+  }
+}

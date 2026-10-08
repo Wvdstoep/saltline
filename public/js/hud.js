@@ -235,6 +235,7 @@ export class Hud {
     on('weatherClose', () => $('weatherPanel').classList.add('hidden'));
     on('btnMore', () => this.toggleMore());
     on('btnMoor', () => a.toggleDock());
+    on('aisCardClose', () => this.showAisCard(null));
     on('jobPrev', () => this.cycleJob(-1));
     on('jobNext', () => this.cycleJob(1));
     on('btnJobRoute', () => { const t = this.jobShown; if (t) a.routeToJob?.(t); });
@@ -353,10 +354,17 @@ export class Hud {
   showWelcome(show) { $('welcome').classList.toggle('hidden', !show); $('hud').classList.toggle('hidden', show); if (!show) this.syncModes(); }
   anyOverlayOpen() { return ['chartWrap', 'harborWrap', 'shipsWrap', 'helpWrap'].some((id) => !$(id).classList.contains('hidden')); }
   transientOpen() {
-    return ['chartWrap', 'shipsWrap', 'helpWrap', 'compareWrap'].some((id) => !$(id)?.classList.contains('hidden')) || !!$('moreSheet')?.classList.contains('open')
+    return ['chartWrap', 'shipsWrap', 'helpWrap', 'compareWrap', 'aisCardWrap'].some((id) => !$(id)?.classList.contains('hidden')) || !!$('moreSheet')?.classList.contains('open')
       || (this.touch && !$('weatherPanel')?.classList.contains('hidden'));
   }
+  /** Live AIS vessel card: `html` from AisLayer.info() (already escaped), or null to close. */
+  showAisCard(html) {
+    const w = $('aisCardWrap'); if (!w) return;
+    if (!html) { w.classList.add('hidden'); return; }
+    $('aisCardBody').innerHTML = html; w.classList.remove('hidden'); this.hydrateIcons(w);
+  }
   closeOverlays() {
+    $('aisCardWrap')?.classList.add('hidden');
     this.chart.close();
     for (const id of ['shipsWrap', 'helpWrap', 'compareWrap']) $(id)?.classList.add('hidden');
     this.closeMore();

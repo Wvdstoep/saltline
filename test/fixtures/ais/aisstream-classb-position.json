@@ -1,0 +1,37 @@
+{
+  "Message": {
+    "StandardClassBPositionReport": {
+      "AssignedMode": false,
+      "ClassBBand": true,
+      "ClassBDisplay": false,
+      "ClassBDsc": true,
+      "ClassBMsg22": true,
+      "ClassBUnit": true,
+      "Cog": 300.2,
+      "CommunicationState": 393222,
+      "CommunicationStateIsItdma": true,
+      "Latitude": 52.1105,
+      "Longitude": 4.2481,
+      "MessageID": 18,
+      "PositionAccuracy": false,
+      "Raim": false,
+      "RepeatIndicator": 0,
+      "Sog": 5.2,
+      "Spare1": 0,
+      "Spare2": 0,
+      "Timestamp": 41,
+      "TrueHeading": 511,
+      "UserID": 244012345,
+      "Valid": true
+    }
+  },
+  "MessageType": "StandardClassBPositionReport",
+  "MetaData": {
+    "MMSI": 244012345,
+    "MMSI_String": 244012345,
+    "ShipName": "",
+    "latitude": 52.1105,
+    "longitude": 4.2481,
+    "time_utc": "2026-10-07 11:59:41.000210 +0000 UTC"
+  }
+}

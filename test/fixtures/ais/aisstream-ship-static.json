@@ -1,0 +1,31 @@
+{
+  "Message": {
+    "ShipStaticData": {
+      "AisVersion": 2,
+      "CallSign": "PDZX   ",
+      "Destination": "DEHAM@@@@@@@@@@@@@@@",
+      "Dimension": { "A": 112, "B": 22, "C": 12, "D": 10 },
+      "Dte": false,
+      "Eta": { "Day": 8, "Hour": 14, "Minute": 30, "Month": 10 },
+      "FixType": 1,
+      "ImoNumber": 9456789,
+      "MaximumStaticDraught": 7.8,
+      "MessageID": 5,
+      "Name": "NOORDZEE TRADER@@@@@",
+      "RepeatIndicator": 0,
+      "Spare": false,
+      "Type": 70,
+      "UserID": 244670587,
+      "Valid": true
+    }
+  },
+  "MessageType": "ShipStaticData",
+  "MetaData": {
+    "MMSI": 244670587,
+    "MMSI_String": 244670587,
+    "ShipName": "NOORDZEE TRADER     ",
+    "latitude": 52.1012,
+    "longitude": 3.9123,
+    "time_utc": "2026-10-07 11:58:02.100000 +0000 UTC"
+  }
+}

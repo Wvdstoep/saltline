@@ -1,0 +1,36 @@
+{
+  "Message": {
+    "ExtendedClassBPositionReport": {
+      "AssignedMode": false,
+      "Cog": 15.0,
+      "Dimension": { "A": 8, "B": 4, "C": 2, "D": 2 },
+      "Dte": true,
+      "FixType": 1,
+      "Latitude": 54.3601,
+      "Longitude": 10.1702,
+      "MessageID": 19,
+      "Name": "SEESTERN@@@@@@@@@@@@",
+      "PositionAccuracy": true,
+      "Raim": false,
+      "RepeatIndicator": 0,
+      "Sog": 6.1,
+      "Spare1": 0,
+      "Spare2": 0,
+      "Spare3": 0,
+      "Timestamp": 12,
+      "TrueHeading": 18,
+      "Type": 36,
+      "UserID": 211987654,
+      "Valid": true
+    }
+  },
+  "MessageType": "ExtendedClassBPositionReport",
+  "MetaData": {
+    "MMSI": 211987654,
+    "MMSI_String": 211987654,
+    "ShipName": "SEESTERN",
+    "latitude": 54.3601,
+    "longitude": 10.1702,
+    "time_utc": "2026-10-07 11:59:12.880000 +0000 UTC"
+  }
+}

@@ -14,6 +14,7 @@ import { Ocean } from './ocean2.js';
 import { createMotion, stepMotion } from './motion.js';
 import { SoundEngine } from './sound.js';
 import { JobLayer, jobTargets } from './jobs.js';
+import { AisLayer } from './ais.js';
 import { Terrain, VSCALE } from './terrain.js';
 import * as ShipMod from './ship.js';
 import * as HarborMod from './harbor.js';
@@ -84,6 +85,7 @@ class App {
     this.lastTerrainUpdate = 0; this.lastRadar = 0; this.lastTelemetry = 0; this.lastSails = 0; this.ready = false;
     this.interior = new Interior(this);
     this.jobLayer = new JobLayer(this); this.jobTargets = [];
+    this.aisLayer = new AisLayer(this); // live AIS: real ships at real size
     // Going ashore (docs/V4-CONTRACTS.md §3): `app.ashore = new Ashore(this)`. Loaded as its own module so a problem in the
     // on-foot layer can never take the helm down with it; `ashoreReady` resolves to the instance (or null).
     this.ashore = null;
@@ -136,6 +138,7 @@ class App {
     switch (m.t) {
       case 'welcome': this.onWelcome(m); break;
       case 'snap': this.onSnap(m); break;
+      case 'ais': try { this.aisLayer.ingest(m.ships || [], m.time); } catch (e) { console.warn('[ais] ingest failed', e); } break;
       case 'you': this.onYou(m.you, false, !!m.correction); break;
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
       case 'harbor': this.hud.showHarbor(m.harbor); break;
@@ -411,6 +414,7 @@ class App {
       for (const o of this.others.values()) add(o, o.cls);
       for (const a of this.ai.values()) add(a, a.cls);
       for (const c of this.cutters.values()) add(c, 'pilot');
+      for (const v of this.aisLayer.others({ rangeM: 2500 })) add({ id: v.id, cur: v }, 'coaster');
       ships.sort((a, b) => a.distM - b.distM); st.nearShips = ships.slice(0, 4);
     }
     snd.update(st, dt);
@@ -551,7 +555,12 @@ class App {
       this.cam.pitch = THREE.MathUtils.clamp(this.cam.pitch + dy * 0.004, 0.05, 1.3); this.cam.free = true; this.cam.lastDrag = performance.now();
       pt.x = e.clientX; pt.y = e.clientY;
     });
-    const endPointer = (e) => { pointers.delete(e.pointerId); if (pointers.size < 2) pinch = null; };
+    const tap = { x: 0, y: 0, t: 0 };
+    this.canvas.addEventListener('pointerdown', (e) => { tap.x = e.clientX; tap.y = e.clientY; tap.t = performance.now(); }, true);
+    const endPointer = (e) => {
+      if (e.type === 'pointerup' && pointers.size === 1 && !this.walking() && performance.now() - tap.t < 450 && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 8) this.pickAt(e.clientX, e.clientY);
+      pointers.delete(e.pointerId); if (pointers.size < 2) pinch = null;
+    };
     this.canvas.addEventListener('pointerup', endPointer);
     this.canvas.addEventListener('pointercancel', endPointer);
     this.canvas.addEventListener('lostpointercapture', endPointer);
@@ -628,6 +637,15 @@ class App {
     if (!this.you?.docked) return;
     if (this.ashore?.active) { this.hud.event({ kind: 'warn', text: 'Go aboard first (G) — the ship cannot cast off without her skipper.' }); return; }
     this.net.action('undock');
+  }
+  /** A tap / click on the 3D view: a live AIS ship under it opens its info card. */
+  pickAt(cx, cy) {
+    const r = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+    const rc = this._raycaster || (this._raycaster = new THREE.Raycaster());
+    rc.setFromCamera(ndc, this.camera);
+    const v = this.aisLayer.pick(rc);
+    if (v) this.hud.showAisCard?.(this.aisLayer.info(v), v); else this.hud.showAisCard?.(null);
   }
   /** The contract card's action (J): pass the tow line, crane transfer, nets out / in. `t` = a jobTargets() entry. */
   jobAction(t) {
@@ -894,6 +912,7 @@ class App {
     for (const o of this.others.values()) { if (o.docked || o.sinking) continue; push(o, SHIP_CLASSES[o.cls] || o.mesh.userData); }
     for (const c of this.cutters.values()) push(c, CUTTER_DIMS);
     for (const a of this.ai.values()) { if (a.state === 'moored') continue; push(a, SHIP_CLASSES[a.cls] || a.mesh.userData); }
+    for (const v of this.aisLayer.others({ rangeM: 600 })) out.push(v); // real AIS hulls at their reported size
     return out;
   }
   onCollision(res) {
@@ -1065,6 +1084,7 @@ class App {
       if (r.kind === 'helicopter') { const p = this.place(r.mesh, r.cur.lat, r.cur.lon, 60 + Math.sin(this.time * 0.8) * 2); r.mesh.rotation.set(-0.08, -r.cur.hdg * D2R, 0, 'YXZ'); r.mesh.userData.setRotor?.(this.time); void p; }
       else this.shipVisual(r.mesh, r.cur.lat, r.cur.lon, r.cur.hdg, r.cur.spd, r.vis, 0, dt, false);
     }
+    try { this.aisLayer.update(dt, now); } catch (e) { if (!this.aisWarned) { this.aisWarned = true; console.warn('[ais] layer update failed', e); } }
     try { this.jobLayer.update(dt); } catch (e) { if (!this.jobLayerWarned) { this.jobLayerWarned = true; console.warn('[jobs] layer update failed', e); } }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
     // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views
@@ -1129,6 +1149,7 @@ class App {
     for (const c of this.cutters.values()) contacts.push({ kind: 'cutter', lat: c.cur.lat, lon: c.cur.lon, color: c.state === 'patrol' ? '#ff6b6b' : '#ff2020' });
     for (const o of this.others.values()) contacts.push({ kind: 'ship', lat: o.cur.lat, lon: o.cur.lon, hdg: o.cur.hdg, color: o.convoyId && o.convoyId === this.you?.convoyId ? '#5ad6ff' : o.wanted ? '#ffb070' : '#ffffff', label: o.name });
     for (const a of this.ai.values()) contacts.push({ kind: 'ai', lat: a.cur.lat, lon: a.cur.lon, hdg: a.cur.hdg, spd: a.cur.spd, color: '#9aa3ab', label: a.name, dest: a.destName, state: a.state });
+    for (const c of this.aisLayer.contacts()) contacts.push({ ...c, kind: 'ai', color: c.color || '#9aa3ab' });
     for (const r of this.rescues.values()) contacts.push({ kind: 'rescue', lat: r.cur.lat, lon: r.cur.lon, hdg: r.cur.hdg, color: '#ff8c42', label: r.kind === 'helicopter' ? 'SAR heli' : 'Lifeboat' });
     if (this.you?.nearBerth) { const b = this.you.nearBerth; if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) contacts.push({ kind: 'berth', lat: b.lat, lon: b.lon, hdg: b.hdg, color: '#58d68d', label: b.name }); }
     for (const t of this.jobTargets || []) contacts.push({ kind: 'job', lat: t.lat, lon: t.lon, color: t.color, label: t.kind === 'casualty' ? 'Casualty' : t.name, radiusU: t.kind === 'ground' ? t.rangeM / GEO.SCALE : 0 });

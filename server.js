@@ -17,6 +17,7 @@ import { planRoute } from './server/searoute.js';
 import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
 import { getTile } from './server/maptiles.js';
+import { LiveAis } from './server/ais/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -28,6 +29,12 @@ const weather = new WeatherService({ log });
 let game = null;
 const traffic = new Traffic(world, HARBORS, { log, weatherAt: (lat, lon) => (game ? game.weatherAt(lat, lon) : null) });
 game = new Game(world, log, { weather, traffic, harborgeom });
+// Live AIS (AISStream worldwide with the key in data/secrets/aisstream.key or AISSTREAM_API_KEY; Digitraffic Baltic):
+// where real ships are reported, the invented AI traffic steps aside so the two never overlap.
+const liveAis = new LiveAis({ log, harbors: HARBORS });
+liveAis.start();
+game.aiFilter = (a) => !liveAis.covers(a.lat, a.lon);
+const AIS_NEAR_M = 40000, AIS_NEAR_LIMIT = 200, AIS_PUSH_MS = 2000;
 if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 1500 }).catch((e) => log('[geom] prefetch failed', e.message));
 
 const app = express();
@@ -38,7 +45,7 @@ app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
-app.get('/api/health', (req, res) => res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime() }));
+app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, rssMB: Math.round(process.memoryUsage().rss / 1048576) }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
@@ -63,7 +70,20 @@ app.get('/api/harbor/:id/patch', async (req, res) => {
 });
 app.get('/api/weather', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon; if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).end(); res.json(game.weatherAt(lat, lon)); });
 app.get('/api/tide', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon; if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).end(); res.json(tideAt(lat, lon, Date.now() / 1000)); });
-app.get('/api/ai', (req, res) => res.json(traffic.all()));
+app.get('/api/ai', (req, res) => res.json(traffic.all().filter((a) => !liveAis.covers(a.lat, a.lon))));
+// Live AIS for the chart: every vessel in a box (decimated over the limit), and one vessel with its track.
+app.get('/api/ais', (req, res) => {
+  const b = String(req.query.bbox || '').split(',').map(Number);
+  if (b.length !== 4 || !b.every(Number.isFinite) || b[0] >= b[2] || Math.abs(b[0]) > 90 || Math.abs(b[2]) > 90) return res.status(400).json({ error: 'bbox=latMin,lonMin,latMax,lonMax' });
+  const limit = Math.max(1, Math.min(2000, Number(req.query.limit) || 2000));
+  try { res.json({ time: Date.now(), ships: liveAis.bbox(b[0], b[1], b[2], b[3], { limit }) }); } catch (e) { log('[ais] bbox failed', e.message); res.status(500).end(); }
+});
+app.get('/api/ais/:mmsi', (req, res) => {
+  const m = Number(String(req.params.mmsi).replace(/^ais/, ''));
+  if (!Number.isInteger(m) || m <= 0) return res.status(400).end();
+  const v = liveAis.get(m); if (!v) return res.status(404).end();
+  res.json(v);
+});
 // v0.4: cached map tile proxy (OSM raster + OpenSeaMap seamarks) for the chart and the street-level terrain drape
 app.get('/api/maptile/:layer/:z/:x/:y.png', async (req, res) => {
   const { layer } = req.params; const [z, x, y] = [req.params.z, req.params.x, req.params.y].map((v) => (/^\d{1,7}$/.test(v) ? +v : NaN));
@@ -134,6 +154,20 @@ wss.on('connection', (ws, req) => {
 setInterval(() => {
   for (const ws of wss.clients) { if (ws.isAlive === false) { ws.terminate(); continue; } ws.isAlive = false; ws.ping(); }
 }, 30000);
+
+// Live AIS push: AISStream follows the online skippers; each one gets the real ships within 40 km every 2 s.
+setInterval(() => {
+  try {
+    const online = [...game.byId.values()].filter((p) => p.online);
+    liveAis.setInterest(online.map((p) => ({ lat: p.ship.lat, lon: p.ship.lon })));
+    const time = Date.now();
+    for (const [id, ws] of game.sockets) {
+      if (ws.readyState !== 1) continue;
+      const p = game.byId.get(id); if (!p) continue;
+      ws.send(JSON.stringify({ t: 'ais', time, ships: liveAis.near(p.ship.lat, p.ship.lon, AIS_NEAR_M, { limit: AIS_NEAR_LIMIT }) }));
+    }
+  } catch (e) { log('[ais] push failed', e.message); }
+}, AIS_PUSH_MS);
 
 let last = Date.now();
 setInterval(() => {

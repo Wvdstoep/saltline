@@ -1,0 +1,235 @@
+{
+ "note": "REAL AISStream.io frames, verbatim (delivered as binary WebSocket frames of JSON text). position/static: ais-live-samples.json (2026-10-07 19:48Z, North Sea box). frames: from a 90 s capture of the detail region on 2026-10-08 05:55Z (4104 frames: a SubscriptionConfirmation first, then PositionReport, ShipStaticData, StaticDataReport, StandardClassBPositionReport, ExtendedClassBPositionReport).",
+ "position": {
+  "MetaData": {
+   "MMSI": 211307810,
+   "MMSI_String": 211307810,
+   "ShipName": "BRUECKENKIEKER",
+   "latitude": 53.54608,
+   "longitude": 9.98378,
+   "time_utc": "2026-10-07 19:48:36.381479468 +0000 UTC"
+  },
+  "MessageType": "PositionReport",
+  "Message": {
+   "PositionReport": {
+    "MessageID": 1,
+    "RepeatIndicator": 0,
+    "UserID": 211307810,
+    "Valid": true,
+    "NavigationalStatus": 0,
+    "RateOfTurn": -128,
+    "Sog": 0,
+    "PositionAccuracy": false,
+    "Longitude": 9.983783333333333,
+    "Latitude": 53.546075,
+    "Cog": 0,
+    "TrueHeading": 511,
+    "Timestamp": 36,
+    "SpecialManoeuvreIndicator": 0,
+    "Spare": 0,
+    "Raim": false,
+    "CommunicationState": 2219
+   }
+  }
+ },
+ "static": {
+  "MetaData": {
+   "MMSI": 257169000,
+   "MMSI_String": 257169000,
+   "ShipName": "BERNTINE",
+   "latitude": 59.20408,
+   "longitude": 10.94359,
+   "time_utc": "2026-10-07 19:48:36.482349935 +0000 UTC"
+  },
+  "MessageType": "ShipStaticData",
+  "Message": {
+   "ShipStaticData": {
+    "AisVersion": 2,
+    "CallSign": "LIAS",
+    "Destination": "TONSBERG",
+    "Dimension": {
+     "A": 22,
+     "B": 1,
+     "C": 3,
+     "D": 3
+    },
+    "Dte": false,
+    "Eta": {
+     "Day": 29,
+     "Hour": 17,
+     "Minute": 39,
+     "Month": 8
+    },
+    "FixType": 0,
+    "ImoNumber": 0,
+    "MaximumStaticDraught": 4,
+    "MessageID": 5,
+    "Name": "BERNTINE",
+    "RepeatIndicator": 0,
+    "Spare": false,
+    "Type": 69,
+    "UserID": 257169000,
+    "Valid": true
+   }
+  }
+ },
+ "frames": [
+  {
+   "Message": {
+    "CompressionEnabled": true
+   },
+   "MessageType": "SubscriptionConfirmation"
+  },
+  {
+   "MetaData": {
+    "MMSI": 244700109,
+    "MMSI_String": 244700109,
+    "ShipName": "BENTHE   ",
+    "latitude": 51.7429,
+    "longitude": 5.17391,
+    "time_utc": "2026-10-08 05:55:15.093312172 +0000 UTC"
+   },
+   "MessageType": "PositionReport",
+   "Message": {
+    "PositionReport": {
+     "MessageID": 1,
+     "RepeatIndicator": 0,
+     "UserID": 244700109,
+     "Valid": true,
+     "NavigationalStatus": 0,
+     "RateOfTurn": -128,
+     "Sog": 8.3,
+     "PositionAccuracy": true,
+     "Longitude": 5.173906666666666,
+     "Latitude": 51.74290166666666,
+     "Cog": 92.5,
+     "TrueHeading": 511,
+     "Timestamp": 15,
+     "SpecialManoeuvreIndicator": 1,
+     "Spare": 0,
+     "Raim": true,
+     "CommunicationState": 114837
+    }
+   }
+  },
+  {
+   "MetaData": {
+    "MMSI": 205334890,
+    "MMSI_String": 205334890,
+    "ShipName": "WERE-DI             ",
+    "latitude": 51.61143,
+    "longitude": 4.52388,
+    "time_utc": "2026-10-08 05:55:15.102193579 +0000 UTC"
+   },
+   "MessageType": "ShipStaticData",
+   "Message": {
+    "ShipStaticData": {
+     "AisVersion": 2,
+     "CallSign": "OT 3348",
+     "Destination": "BRUG STANDDAARBUITEN",
+     "Dimension": {
+      "A": 74,
+      "B": 7,
+      "C": 8,
+      "D": 2
+     },
+     "Dte": false,
+     "Eta": {
+      "Day": 7,
+      "Hour": 15,
+      "Minute": 56,
+      "Month": 10
+     },
+     "FixType": 15,
+     "ImoNumber": 0,
+     "MaximumStaticDraught": 2,
+     "MessageID": 5,
+     "Name": "WERE-DI             ",
+     "RepeatIndicator": 0,
+     "Spare": false,
+     "Type": 79,
+     "UserID": 205334890,
+     "Valid": true
+    }
+   }
+  },
+  {
+   "MetaData": {
+    "MMSI": 244137596,
+    "MMSI_String": 244137596,
+    "ShipName": "MRS BOJANGLES",
+    "latitude": 53.05174,
+    "longitude": 5.39672,
+    "time_utc": "2026-10-08 05:55:15.183190339 +0000 UTC"
+   },
+   "MessageType": "StaticDataReport",
+   "Message": {
+    "StaticDataReport": {
+     "MessageID": 24,
+     "PartNumber": false,
+     "RepeatIndicator": 0,
+     "ReportA": {
+      "Name": "MRS BOJANGLES",
+      "Valid": true
+     },
+     "ReportB": {
+      "CallSign": "",
+      "Dimension": {
+       "A": 0,
+       "B": 0,
+       "C": 0,
+       "D": 0
+      },
+      "FixType": 0,
+      "ShipType": 0,
+      "Spare": 0,
+      "Valid": false,
+      "VenderIDModel": 0,
+      "VenderIDSerial": 0,
+      "VendorIDName": ""
+     },
+     "Reserved": 0,
+     "UserID": 244137596,
+     "Valid": true
+    }
+   }
+  },
+  {
+   "MetaData": {
+    "MMSI": 244020045,
+    "MMSI_String": 244020045,
+    "ShipName": "CARINO",
+    "latitude": 52.70438,
+    "longitude": 5.29906,
+    "time_utc": "2026-10-08 05:55:15.708156987 +0000 UTC"
+   },
+   "MessageType": "StandardClassBPositionReport",
+   "Message": {
+    "StandardClassBPositionReport": {
+     "AssignedMode": false,
+     "ClassBBand": true,
+     "ClassBDisplay": false,
+     "ClassBDsc": true,
+     "ClassBMsg22": true,
+     "ClassBUnit": true,
+     "Cog": 294,
+     "CommunicationState": 393222,
+     "CommunicationStateIsItdma": true,
+     "Latitude": 52.70437666666667,
+     "Longitude": 5.29906,
+     "MessageID": 18,
+     "PositionAccuracy": false,
+     "Raim": true,
+     "RepeatIndicator": 0,
+     "Sog": 0.2,
+     "Spare1": 0,
+     "Spare2": 0,
+     "Timestamp": 15,
+     "TrueHeading": 511,
+     "UserID": 244020045,
+     "Valid": true
+    }
+   }
+  }
+ ]
+}

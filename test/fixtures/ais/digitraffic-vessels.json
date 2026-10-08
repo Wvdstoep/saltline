@@ -1,0 +1,12 @@
+[
+  { "callSign": "V7B2739", "destination": "DK SKA", "draught": 101, "eta": 673984, "imo": 9692789, "mmsi": 538012359, "name": "AGIA DIMITRA", "posType": 1,
+    "referencePointA": 154, "referencePointB": 26, "referencePointC": 20, "referencePointD": 10, "shipType": 70, "timestamp": 1791316336904 },
+  { "mmsi": 230123450, "name": "BALTIC AURORA", "shipType": 60, "referencePointA": 160, "referencePointB": 25, "referencePointC": 14, "referencePointD": 14,
+    "posType": 1, "draught": 68, "imo": 9000001, "callSign": "OJAA", "eta": 670720, "timestamp": 1790842320000, "destination": "FIHEL" },
+  { "mmsi": 230987650, "name": "HAMINA TUG 3", "shipType": 52, "referencePointA": 20, "referencePointB": 10, "referencePointC": 5, "referencePointD": 5,
+    "posType": 1, "draught": 45, "imo": 0, "callSign": "OJBB", "eta": 0, "timestamp": 1790842320000, "destination": "HELSINKI" },
+  { "mmsi": 276123456, "name": "PAKRI", "shipType": 70, "referencePointA": 70, "referencePointB": 20, "referencePointC": 7, "referencePointD": 7,
+    "posType": 1, "draught": 52, "imo": 9000002, "callSign": "ESCC", "eta": 674974, "timestamp": 1790842320000, "destination": "EE MUG" },
+  { "mmsi": 265123456, "name": "NORDIC ICE", "shipType": 79, "referencePointA": 220, "referencePointB": 40, "referencePointC": 16, "referencePointD": 16,
+    "posType": 1, "draught": 0, "imo": 9000003, "callSign": "SDDD", "eta": 0, "timestamp": 1790842320000, "destination": "FOR ORDERS" }
+]
