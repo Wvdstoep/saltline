@@ -14,6 +14,12 @@
 //    exposure-to-the-sea term) that ocean.js turns into a soft wash line and surf rows (setShoreField).
 //  * the coarse coast under and around a patch stays sunk / clamped under the 10 m patch surface, and the patch has a
 //    skirt so no gap opens between the patch edge and the coarse tiles.
+// World detail streaming (docs/WORLD-DETAIL-STREAMING.md §3.6.1, §3.7, Lane B): a WorldTileSet (wtiles.js) streams the
+// server's D14 (z14, ≈ 6–10 m) and C11 (z11, ≈ 50–75 m) tiles around the camera focus and the ship. The coarse L0 / L1
+// meshes are never rebuilt for it: their fragments are discarded (clip rectangles, wtiles.js CLIP) inside the footprint
+// of an attached finer mesh, in the same frame the finer mesh is attached, so there is never a hole. Height lookups
+// follow the server stack's order: harbour patch → D14 → L1 region → C11 (outside L1) → L0 global.
+// `update(lat, lon, camera)` takes the camera (optional) for the focus point; `?wt=0` / localStorage saltline.wt=0 off.
 // Scale reference (documented for main.js): ships are 1:1; the default chase camera is distance = max(60, 2.6 × ship
 // length) at pitch 0.32 rad, which keeps quays, buildings and hull in proportion next to the 10 m patch coast.
 import * as THREE from 'three';
@@ -21,6 +27,7 @@ import { TILE, LAYERS, PATCH, decodeHeight, decodePatchHeight, GEO } from '/shar
 import { toLocal } from '/shared/geo.js';
 import { patchHeightAt, computeSDF } from './harborgeom.js';
 import { setShoreField } from './ocean2.js';
+import { WorldTileSet, applyClip } from './wtiles.js';
 
 export const VSCALE = 1; // the world is rendered 1:1 — real metres horizontally and vertically
 /** Default chase camera for the 1:1 world (§4): main.js applies it. */
@@ -239,7 +246,7 @@ function closeImage(img) { try { img?.close?.(); } catch { /* HTMLImageElement *
  * uniforms uDrape (sampler), uDrapeOn (0/1), uDrapeTone. Final albedo = mix(vertex, 0.85·tile + 0.15·shaded vertex,
  * drapeW · tile alpha). All drape materials share one program (customProgramCacheKey).
  */
-function makeDrapeMaterial() {
+function makeDrapeMaterial(clip = null) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true });
   const uniforms = { uDrape: { value: blankTexture() }, uDrapeOn: { value: 0 }, uDrapeTone: { value: DRAPE_TONE } };
   m.userData.uniforms = uniforms;
@@ -260,7 +267,7 @@ function makeDrapeMaterial() {
   }`);
   };
   m.customProgramCacheKey = () => 'saltline-drape-1';
-  return m;
+  return clip ? applyClip(m, clip) : m;
 }
 
 // ------------------------------------------------------------------------------------------------ Terrain
@@ -273,18 +280,24 @@ export class Terrain {
     this.origin = { lat: 0, lon: 0 };
     this.group = new THREE.Group();
     scene.add(this.group);
-    this.mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    this.mat = applyClip(new THREE.MeshLambertMaterial({ vertexColors: true }), 'coarse'); // hidden under attached detail tiles
     this.version = 0; // bumps when tiles / patches load (ocean depth texture refresh)
     this.halfRes = (navigator.hardwareConcurrency || 8) <= 4 || (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1;
     this.lowPower = this.halfRes;
     let pref = null; try { pref = localStorage.getItem('saltline.drape'); } catch { /* storage blocked */ }
     this.drapeEnabled = pref !== '0';
     this.shipPos = null;
+    // world detail tiles (D14 / C11): on unless ?wt=0 or localStorage saltline.wt = '0'
+    let wtOn = true;
+    try { wtOn = localStorage.getItem('saltline.wt') !== '0' && !/[?&]wt=0\b/.test(location.search); } catch { /* storage blocked */ }
+    this.wtiles = new WorldTileSet({ parent: this.group, origin: this.origin, halfRes: this.halfRes, enabled: wtOn, coarseAt: (lat, lon, z) => this.coarseHeightAt(lat, lon, z), shoreField: (e) => buildShoreField(e) });
+    this.wtVersion = 0;
   }
   setOrigin(origin) {
     this.origin = origin;
     for (const t of this.tiles.values()) if (t.mesh) this.buildMesh(t);
     for (const p of this.patches.values()) this.placePatch(p);
+    this.wtiles?.setOrigin(origin);
   }
   layerDef(level) { return LAYERS[level]; }
   tileOf(level, lat, lon) {
@@ -295,9 +308,17 @@ export class Terrain {
     const d = LAYERS[level];
     return lat >= d.latMin - margin && lat < d.latMax + margin && lon >= d.lonMin - margin && lon < d.lonMax + margin;
   }
-  /** Ensure tiles around (lat, lon) are loaded; drop far ones; drive the map drapes. */
-  update(lat, lon) {
+  /**
+   * Ensure tiles around (lat, lon) are loaded; drop far ones; drive the map drapes and the world detail tiles.
+   * `camera` (optional): its look point on the sea is the detail focus (else the ship) and its height gates D14.
+   */
+  update(lat, lon, camera = null) {
     this.shipPos = { lat, lon };
+    if (this.wtiles) {
+      const f = camera ? WorldTileSet.focusFromCamera(camera, this.origin) : null;
+      this.wtiles.update(f || { lat, lon }, { lat, lon }, { camH: f?.camH ?? 0 });
+      if (this.wtiles.version !== this.wtVersion) { this.wtVersion = this.wtiles.version; this.version++; } // ocean depth refresh, ≤ 1 per tick
+    }
     const want = new Set();
     const req = (level, tx, ty) => {
       const d = LAYERS[level];
@@ -440,7 +461,7 @@ export class Terrain {
     }
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeVertexNormals();
-    if (drapable) t.mat = makeDrapeMaterial();
+    if (drapable) t.mat = makeDrapeMaterial('coarse');
     t.mesh = new THREE.Mesh(geo, drapable ? t.mat : this.mat);
     t.mesh.frustumCulled = true;
     this.group.add(t.mesh);
@@ -618,6 +639,7 @@ export class Terrain {
     try { p.shore = buildShoreField(entry); } catch { p.shore = null; }
     this.placePatch(p);
     this.rebuildAffectedTiles(entry.bbox);
+    this.wtiles?.setPatchBoxes([...this.patches.values()].map((q) => q.bbox));
     if (this.drapeEnabled) { this.ensurePatchDrape(p); MapTiles.pump(); }
     this.version++;
     return mesh;
@@ -630,6 +652,7 @@ export class Terrain {
     this.patches.delete(id);
     if (PATCHES.get(String(id)) === p) PATCHES.delete(String(id));
     if (rebuild) { this.rebuildAffectedTiles(p.bbox); this.version++; }
+    this.wtiles?.setPatchBoxes([...this.patches.values()].map((q) => q.bbox));
   }
   hasPatch(id) { return this.patches.has(id); }
   placePatch(p) {
@@ -649,7 +672,10 @@ export class Terrain {
     }
   }
 
-  /** Real-metre height at lat/lon: harbour patches first (bilinear over their 10 m heights), then the finest loaded tile. null if unknown. */
+  /**
+   * Real-metre height at lat/lon, the server stack's order (§3.6.1): harbour patch (bilinear over its 10 m heights) →
+   * D14 detail tile → L1 region tile → C11 coast tile (outside L1) → L0 global tile. null if nothing is loaded.
+   */
   heightAt(lat, lon) {
     for (const p of this.patches.values()) {
       const b = p.bbox;
@@ -657,7 +683,14 @@ export class Terrain {
       const h = patchHeightAt(p.entry, lat, lon);
       if (h != null) return h;
     }
+    const d = this.wtiles?.heightAt(lat, lon);
+    if (d != null) return d;
+    return this.layerHeightAt(lat, lon, true);
+  }
+  /** Raster layers only (finest first): L1, then C11 (outside L1, when `c11`), then L0. */
+  layerHeightAt(lat, lon, c11 = true) {
     for (let level = LAYERS.length - 1; level >= 0; level--) {
+      if (level === 0 && c11 && this.wtiles) { const c = this.wtiles.heightAtC11(lat, lon); if (c != null) return c; }
       if (!this.inLayer(level, lat, lon)) continue;
       const d = LAYERS[level];
       // Tile samples are cell CENTRES (server convention): shift by half a cell BEFORE choosing the tile so the
@@ -674,7 +707,17 @@ export class Terrain {
     }
     return null;
   }
+  /**
+   * The height the coarse world SHOWS at a point (the morph source of a detail tile): C11 for a D14 tile when one is
+   * attached there (its water offset), else the L1 / L0 mesh height (coarse water sits 4 m under its depth).
+   */
+  coarseHeightAt(lat, lon, z = 14) {
+    if (z === 14 && this.wtiles && !this.inLayer(1, lat, lon)) { const c = this.wtiles.heightAtC11(lat, lon); if (c != null) return c < 0 ? c - 2.5 : c; }
+    const h = this.layerHeightAt(lat, lon, false);
+    return h == null ? null : h < 0 ? h - 4 : h;
+  }
   dispose() {
+    this.wtiles?.dispose();
     for (const id of [...this.patches.keys()]) this.removePatch(id, false);
     for (const [key, t] of [...this.tiles]) this.dropTile(key, t);
     this.scene.remove(this.group); this.mat.dispose();

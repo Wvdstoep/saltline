@@ -157,6 +157,7 @@ class App {
     switch (m.t) {
       case 'welcome': this.onWelcome(m); break;
       case 'snap': this.onSnap(m); break;
+      case 'wt': this.terrain.wtiles?.onPush(m); break;                 // WORLD TILES: a tile near us changed revision → refetch (ETag)
       case 'ais': try { this.aisLayer.ingest(m.ships || [], m.time); } catch (e) { console.warn('[ais] ingest failed', e); } break;
       case 'you': this.onYou(m.you, false, !!m.correction, !!m.switched); break;
       case 'fleet': this.fleetUi?.onFleet(m.fleet); this.hq?.onFleet(m.fleet); break;
@@ -1160,7 +1161,7 @@ class App {
     const ashore = !!this.ashore?.active;
     if (!ashore) this.simulate(dt); // ashore the ship lies moored: nothing to integrate, no helm
     this.recentre(false);
-    if (now - this.lastTerrainUpdate > 500) { this.lastTerrainUpdate = now; this.terrain.update(this.ship.lat, this.ship.lon); this.updateScenery(); }
+    if (now - this.lastTerrainUpdate > 500) { this.lastTerrainUpdate = now; this.terrain.update(this.ship.lat, this.ship.lon, this.camera); this.updateScenery(); this.hud.setWorldDetail?.(this.terrain.wtiles?.attribution(), this.terrain.wtiles?.loading() || 0); }   // WORLD TILES: focus = where the camera looks; credit + loading dot
     const mp = toLocal(this.ship.lat, this.ship.lon, this.origin);
     if (this.terrain.version !== this.depthVersion) { this.depthVersion = this.terrain.version; this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), true); }
     else this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), false);

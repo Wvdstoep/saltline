@@ -14,13 +14,28 @@ const MAX_ITER = 4;
 
 const states = new WeakMap(); // ship object -> per-ship contact bookkeeping
 
+// World detail tiles (docs/WORLD-DETAIL-STREAMING.md §3.6.3): outside every harbour patch the D14 tile under the hull
+// answers (quays, piers, breakwaters, buildings and the real coast). wtiles.js registers its WorldTileSet here.
+let worldTiles = null;
+/** Register (or clear with null) the WorldTileSet whose sdfAt / entryNear back up the harbour patches. */
+export function setWorldTiles(ws) { worldTiles = ws && typeof ws.sdfAt === 'function' ? ws : null; }
+/** geoms.sdfAt(…) ?? worldTiles.sdfAt(…) — patches keep precedence inside their footprint. */
+function withTiles(geoms) {
+  if (!worldTiles) return geoms;
+  return {
+    size: (geoms?.size || 0) + 1,
+    entryNear: (lat, lon, m) => geoms?.entryNear?.(lat, lon, m) || worldTiles.entryNear(lat, lon, m),
+    sdfAt: (lat, lon) => geoms?.sdfAt?.(lat, lon) ?? worldTiles.sdfAt(lat, lon),
+  };
+}
+
 function stateOf(ship) {
   let st = states.get(ship);
   if (!st) { st = { contact: false, clearT: 0, lastWater: null, ships: new Map() }; states.set(ship, st); }
   return st;
 }
 
-/** Deepest hull penetration into harbour obstacles. Returns null when no patch is near, else {d, gx, gz, mask, px, pz}. */
+/** Deepest hull penetration into harbour obstacles (and D14 tile obstacles outside the patches). Returns null when no patch is near, else {d, gx, gz, mask, px, pz}. */
 function deepestPenetration(ship, L, B, geoms, mLat, mLon) {
   const h = ship.hdg * D2R, fx = Math.sin(h), fz = -Math.cos(h), rx = Math.cos(h), rz = Math.sin(h);
   let worst = null;
@@ -63,6 +78,7 @@ function obbSeparation(ax, az, ahdg, aL, aB, bx, bz, bhdg, bL, bB) {
  * @returns {{hit: boolean, speedKn: number, kind: 'quay'|'breakwater'|'ship'|null, contact: boolean, mask: number|null}}
  */
 export function resolveShip(ship, cls, geoms, dt, others) {
+  geoms = withTiles(geoms);
   const C = (typeof cls === 'string' ? SHIP_CLASSES[cls] : cls) || SHIP_CLASSES.coaster;
   const L = C.length || 30, B = C.beam || 8;
   const st = stateOf(ship);
@@ -163,4 +179,4 @@ export function resolveShip(ship, cls, geoms, dt, others) {
 }
 
 /** Hull-contact helper for callers that only want to know whether a point is on an obstacle. */
-export function pointBlocked(geoms, lat, lon) { const s = geoms?.sdfAt?.(lat, lon); return !!s && s.d < 0 && isObstacle(s.mask); }
+export function pointBlocked(geoms, lat, lon) { const s = withTiles(geoms)?.sdfAt?.(lat, lon); return !!s && s.d < 0 && isObstacle(s.mask); }

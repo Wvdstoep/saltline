@@ -384,6 +384,20 @@ export class Hud {
     const max = this.touch ? 3 : 7;
     while (this.logEntries.length > max) this.logEntries.shift().el.remove();
   }
+  /** World detail tiles (docs/WORLD-STREAMING-CLIENT-HOOKS.md): map-data credit + an amber "coast detail loading" dot. */
+  setWorldDetail(attribution, loading) {
+    if (!this.wdEl) {
+      this.wdEl = document.createElement('div');
+      this.wdEl.id = 'wdCredit';
+      this.wdEl.style.cssText = 'position:fixed;right:8px;bottom:calc(4px + env(safe-area-inset-bottom));z-index:4;font:10px/1.3 system-ui,sans-serif;color:rgba(255,255,255,.75);text-shadow:0 1px 2px rgba(0,0,0,.8);pointer-events:none;max-width:62vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      if (matchMedia('(max-width: 700px)').matches) this.wdEl.style.bottom = 'calc(64px + env(safe-area-inset-bottom))';   // phone: above the tab bar
+      document.body.appendChild(this.wdEl);
+    }
+    const dot = loading > 0 ? '<span title="Loading coast detail" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#f5b942;box-shadow:0 0 4px #f5b942;margin-right:5px;vertical-align:-1px"></span>' : '';
+    const text = attribution ? String(attribution).replace(/&/g, '&amp;').replace(/</g, '&lt;') : '';
+    const html = dot + text;
+    if (html !== this.wdHtml) { this.wdHtml = html; this.wdEl.innerHTML = html; }
+  }
   tickLog(now) {
     for (const e of [...this.logEntries]) {
       const age = now - e.t;
