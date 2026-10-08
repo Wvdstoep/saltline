@@ -993,10 +993,22 @@ export class Hud {
         <div class="tools"><span class="chip">${jobs.length} on the board</span></div></div>
       ${jobs.length ? `<div class="cards">${jobs.map((j) => this.jobCard(j, h, you, C, mass, false)).join('')}</div>` : `<div class="empty">${ic('contract')}<span>The board is empty right now — new contracts are posted every hour.</span></div>`}
       <h3 class="subHead">${ic('list')}Your contracts${mine.length ? ` · ${fmt(mine.reduce((s, j) => s + j.pay, 0))} cr outstanding` : ''}</h3>
-      ${mine.length ? `<div class="mineList">${mine.map((j) => `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · ${this.deadline(j)} left</small></div><span class="p">${fmt(j.pay)} cr</span><button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`).join('')}</div>`
+      ${mine.length ? `<div class="mineList">${mine.map((j) => { const st = this.mineStatus(j, you); return `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · ${this.deadline(j)} left${st.text ? ` · <span class="${st.ready ? 'up' : 'down'}">${esc(st.text)}</span>` : ''}</small></div><span class="p">${fmt(j.pay)} cr</span>${st.here ? `<button class="small primary" data-act="deliver" data-job="${esc(j.id)}">Deliver</button>` : ''}<button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`; }).join('')}</div>`
         : `<div class="empty">${ic('crate')}<span>No contracts aboard. Take one above, or look at every harbour's board in <i>Job boards</i>.</span></div>`}`;
   }
 
+  /** One line on an accepted contract: can it be delivered here, and what is still missing. */
+  mineStatus(j, you) {
+    const here = !!you.docked && j.to === you.docked;
+    if (j.type === 'fishing') {
+      const have = (you.cargo || []).filter((c) => c.good === 'fish' && c.caught && !c.jobId).reduce((s, c) => s + (+c.qty || 0), 0);
+      const ready = have >= j.qty * 0.25;
+      return { here, ready, text: `${fmt1(Math.min(have, j.qty))} of ${fmtT(j.qty)} caught${ready && here ? ' — ready to deliver' : ''}` };
+    }
+    if (j.type === 'tow') return { here, ready: you.towing === j.id, text: you.towing === j.id ? 'in tow' : 'casualty not picked up yet' };
+    if (j.type === 'supply') return { here: false, ready: false, text: `deliver at ${j.platformName || 'the platform'} (at sea)` };
+    return { here, ready: here, text: here ? 'ready to deliver' : '' };
+  }
   // -------- job boards (every harbour)
   tabBoards(you, C) {
     const data = cachedJobs();
@@ -1234,6 +1246,7 @@ export class Hud {
     switch (act) {
       case 'tab': return this.showTab(el.dataset.tab);
       case 'accept': return net.action('accept_job', { jobId: el.dataset.job });
+      case 'deliver': net.action('deliver_jobs'); return;
       case 'abandon': if (confirm('Abandon this contract? Cargo is returned or dumped and a 10 % fee is charged.')) net.action('abandon_job', { jobId: el.dataset.job }); return;
       case 'fuel': return net.action('buy_fuel', { tonnes: +el.dataset.t });
       case 'fuelBuy': { const v = +($('fuelSlider')?.value || 0); if (v > 0) net.action('buy_fuel', { tonnes: v }); else this.event({ kind: 'warn', text: 'Slide to choose how much fuel to bunker.' }); return; }
@@ -1244,7 +1257,12 @@ export class Hud {
       case 'qty': { const i = qtyInput(el.dataset.good); if (i) { i.value = String(Math.max(1, Math.round((+i.value || 0) + +el.dataset.d))); this.sheetInput(i); } return; }
       case 'qtySet': { const i = qtyInput(el.dataset.good); if (i) { i.value = String(Math.max(1, Math.floor(+el.dataset.v || 1))); this.sheetInput(i); } return; }
       case 'buy': { const q = Math.floor(+(qtyInput(el.dataset.good)?.value || 0)); if (q > 0) net.action('buy_goods', { good: el.dataset.good, qty: q }); return; }
-      case 'sell': { const q = Math.floor(+(qtyInput(el.dataset.good)?.value || 0)); if (q > 0) net.action('sell_goods', { good: el.dataset.good, qty: q }); return; }
+      case 'sell': {
+        const q = Math.floor(+(qtyInput(el.dataset.good)?.value || 0)); if (!(q > 0)) return;
+        const fj = el.dataset.good === 'fish' ? (this.app.you?.jobs || []).find((x) => x.type === 'fishing') : null;
+        if (fj && !confirm(`This fish is for your contract "${fj.title}" (deliver it with the Deliver button under Contracts). Sell it on the market anyway?`)) return;
+        net.action('sell_goods', { good: el.dataset.good, qty: q }); return;
+      }
       case 'look': return net.action('lookaround');
       case 'yardMode': this.yardMode = el.dataset.mode; this.yardCat = 'all'; return this.renderTab('shipyard');
       case 'yardCat': this.yardCat = el.dataset.cat; return this.renderTab('shipyard');

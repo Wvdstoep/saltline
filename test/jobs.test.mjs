@@ -150,3 +150,21 @@ test('sea routes: straight over open water, along the lanes round the land, ever
     assert.ok(r.distM > haversine(from.lat, from.lon, to.lat, to.lon), 'a detour is longer than the crow flies');
   }
 });
+
+test('an emergency tow into the contract port delivers like any arrival; the Deliver button says what is missing', () => {
+  const g = mkGame(); const { p, ws } = join(g, 'Wim');
+  g.harbors.rotterdam.jobs.push({ id: 'jfw', type: 'fishing', from: 'rotterdam', to: 'rotterdam', ground: 'southern_bight', groundName: 'Southern Bight', good: 'fish', qty: 100, pay: 95000, deadline: g.simTime + 86400, contraband: false, title: 'Catch 100 t' });
+  g.onAction(p, { action: 'accept_job', jobId: 'jfw' });
+  // nothing caught yet: Deliver explains instead of silently doing nothing
+  g.onAction(p, { action: 'deliver_jobs' });
+  assert.equal(p.jobs.length, 1);
+  assert.match(events(ws).at(-1), /caught yourself aboard \(you have 0 t/);
+  g.onAction(p, { action: 'undock' });
+  Object.assign(p.ship, { lat: 52.3, lon: 3.1, spd: 0 }); p.lastValid = { lat: 52.3, lon: 3.1 };
+  p.cargo.push({ good: 'fish', qty: 107, contraband: false, jobId: null, caught: true });
+  p.money = 50000; const m = p.money;
+  g.onAction(p, { action: 'tow' });              // "Call tow" back to Rotterdam
+  assert.equal(p.docked, 'rotterdam');
+  assert.equal(p.jobs.length, 0, events(ws).slice(-4).join(' | '));
+  assert.ok(p.money > m, 'the contract paid on arrival');
+});

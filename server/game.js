@@ -472,6 +472,7 @@ export class Game {
         case 'buy_kit': return this.buyKit(p);
         case 'accept_job': return this.acceptJob(p, m.jobId);
         case 'abandon_job': return this.abandonJob(p, m.jobId);
+        case 'deliver_jobs': return this.deliverHere(p);
         case 'buy_goods': return this.tradeGoods(p, m.good, +m.qty, true);
         case 'sell_goods': return this.tradeGoods(p, m.good, +m.qty, false);
         case 'dump_cargo': return this.dumpCargo(p, m.good);
@@ -774,7 +775,27 @@ export class Game {
     this.event(p, 'warn', `Abandoned: ${j.title}. Cancellation fee ${fmt(penalty)} cr.`);
     this.sendYou(p);
   }
+  /** The harbour sheet's Deliver button: hand over what this port is waiting for, or say why a contract cannot be. */
+  deliverHere(p) {
+    if (!p.docked) return this.event(p, 'warn', 'Moor in the destination harbour to deliver.');
+    const h = harborById(p.docked); if (!h) return;
+    const n = this.deliverJobs(p, h);
+    if (!n) {
+      const here = p.jobs.filter((j) => j.to === h.id);
+      if (!here.length) this.event(p, 'info', `No contract of yours ends at ${h.name}.`);
+      for (const j of here) this.event(p, 'warn', `${j.title}: ${this.whyNotDeliverable(p, j)}`);
+    }
+    this.sendYou(p); this.sendHarbor(p);
+  }
+  whyNotDeliverable(p, j) {
+    if (j.type === 'fishing') { const have = p.cargo.filter((c) => c.good === 'fish' && c.caught && !c.jobId).reduce((s, c) => s + c.qty, 0); return `needs at least ${Math.ceil(j.qty * 0.25)} t of fish you caught yourself aboard (you have ${Math.floor(have * 10) / 10} t; bought fish does not count).`; }
+    if (j.type === 'tow') return p.towing === j.id ? 'the tow is still on the line.' : 'pick up the casualty first.';
+    if (j.type === 'supply') return `the supplies go to ${j.platformName} at sea.`;
+    if (j.qty && !p.cargo.some((c) => c.jobId === j.id)) return 'the contract cargo is no longer aboard.';
+    return 'not deliverable here.';
+  }
   deliverJobs(p, harbor) {
+    let delivered = 0;
     for (const j of [...p.jobs]) {
       if (j.to !== harbor.id) continue;
       let ok = false, frac = 1;
@@ -795,8 +816,9 @@ export class Game {
         if (stack) { ok = true; frac = Math.min(1, stack.qty / j.qty); p.cargo = p.cargo.filter((c) => c !== stack); }
       }
       if (!ok) continue;
-      this.payJob(p, j, frac, harbor);
+      this.payJob(p, j, frac, harbor); delivered++;
     }
+    return delivered;
   }
   // Pay a finished contract (late = half pay; a port short of the good pays a demand bonus and restocks) and drop it.
   payJob(p, j, frac, harbor) {
@@ -906,7 +928,7 @@ export class Game {
     const cost = Math.min(p.money, 3000 + Math.round(units * 2));
     p.money -= cost; p.hail = null; p.assist = null; this.setDocked(p, harbor.id, null);
     this.event(p, 'warn', `Towed to ${harbor.name} for ${fmt(cost)} cr.`);
-    this.sendYou(p); this.sendHarbor(p);
+    this.finishDock(p, harbor); // an arrival like any other: contracts for this port are delivered
   }
   grounding(p) {
     const now = Date.now();
