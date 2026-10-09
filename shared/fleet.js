@@ -71,6 +71,10 @@ export function defaultShipName(taken) {
   return 'Vessel';
 }
 export function homeAllowed(h) { return !!h && FLEET.HOME_SIZES.includes(h.size); }
+/** Ships plus open newbuild orders: both count toward FLEET.MAX_VESSELS (SHIPYARD Q3). */
+export function vesselSlotsUsed(p) {
+  return (p?.fleet?.length || 0) + (p?.office?.orders || []).filter((o) => o && ['ordered', 'building', 'launched', 'ready'].includes(o.state)).length;
+}
 export function stateOf(v) {
   if (v.status === 'laidup') return 'laid_up';
   if (v.docked) return 'docked';

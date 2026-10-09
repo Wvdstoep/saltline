@@ -32,6 +32,7 @@
   "vesselName": "Sea Bee",
   "home": "rotterdam",
   "homeName": "Rotterdam (Maasvlakte)",
+  "livery": null,
   "fleet": {
    "n": 4,
    "atSea": 2,

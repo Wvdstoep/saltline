@@ -52,7 +52,7 @@ test('refusals: fleet full (8), unpaid bills, not enough cash, at sea, unknown c
   assert.equal(p.fleet[1].name, 'Kittiwake', 'a name already in the fleet → the next default');
   assert.equal(p.fleet[2].name, 'North Star', 'an invalid name → the next default');
   const m = p.money; f.buyNew(p, { cls: 'pilot' });
-  assert.equal(p.money, m); assert.equal(events(ws).at(-1), 'Your fleet is full (8 ships). Sell or trade in a ship first.');
+  assert.equal(p.money, m); assert.equal(events(ws).at(-1), 'Your fleet is full (8 ships and orders). Sell or trade in a ship first.');   // SHIPYARD Q3: open orders count
   const { p: q, ws: qs, f: f2 } = rich();
   q.office.owed = 30; f2.buyNew(q, { cls: 'trawler' });
   assert.equal(q.fleet.length, 1); assert.match(events(qs).at(-1), /unpaid bills first \(30 cr\)/);

@@ -42,9 +42,9 @@ const SRC = [
   ['tug16', 'tug', 'tug', 'Line-handling pusher tug 16 m', 'Pusher tug', 'BP 14 t', 16, 6.4, 2.2, 20, 60, 'BP 14 t', 10, 9, 900, '2x HS diesel', 215, 2, 2, 1.8, { Cb: 0.5 }, 800,
     { bp: 14, cap: 10, pax: 2, bm: 5, b: 'tug', depth: 2.8, eq: ['towHook'], hand: [], color: 0x1b1b1b, desc: 'Small harbour pusher: line handling, barges and the odd small tow.' }],
   ['tug24', 'tug', 'tug', 'ASD harbour tug 24 m', 'ASD tug', 'BP 70 t', 24.5, 11.3, 5.0, 140, 250, 'BP 70 t', 12.5, 11, 4480, '2x MS diesel, azimuth', 205, 3, 4, 8.0, { Cb: 0.5 }, 2000,
-    { bp: 70, cap: 30, pax: 4, bm: 7, b: 'tug', depth: 4.6, eq: ['towWinch', 'fifi'], hand: [], color: 0x1b1b1b, desc: 'Compact azimuth-stern-drive tug, the standard harbour assist tug of the world.' }],
+    { bp: 70, cap: 30, pax: 4, bm: 7, b: 'tug', depth: 4.6, draftHull: 3.5, eq: ['towWinch', 'fifi'], hand: [], color: 0x1b1b1b, desc: 'Compact azimuth-stern-drive tug, the standard harbour assist tug of the world.' }],
   ['tug', 'tug', 'tug', 'ASD tug 32 m (legacy "Harbour tug")', 'Harbour tug', 'BP 80 t', 32, 11, 5, 200, 480, 'BP 80 t', 13, 11.5, 5300, '2x MS diesel, azimuth', 205, 4, 6, 10, { legacy: 1 }, 2500,
-    { bp: 80, bm: 7, b: 'tug', depth: 5.2, eq: ['towWinch', 'fifi'], hand: [] }],
+    { bp: 80, bm: 7, b: 'tug', depth: 5.2, draftHull: 4.1, eq: ['towWinch', 'fifi'], hand: [] }],
   ['oceantug60', 'tug', 'tug', 'Ocean towing & salvage tug 60 m', 'Ocean tug', 'BP 150 t', 60, 16.5, 6.2, 1500, 2100, 'BP 150 t', 16, 13, 10000, '2x MS diesel, CP props', 195, 10, 14, 35, { Cb: 0.6 }, 12000,
     { bp: 150, cap: 600, pax: 6, bm: 14, b: 'tug', depth: 7.8, eq: ['towWinch', 'sternRoller', 'fifi', 'salvage'], hand: ['deck'], color: 0xb01e1e, desc: 'Deep-sea towing and salvage: rigs, dead ships and casualties across oceans.' }],
   // ---------------------------------------------------------------- pilot
@@ -330,7 +330,8 @@ function build(row) {
   const m = {
     ...g,
     type, gen, base: leg ? id : null, refName, short, size, era: leg ? 'classic' : 'eco',
-    depth: x.depth ?? null, airDraft: null, dwt, gt, capText, kW, sfoc, svcKn, crew: { min: crewMin, opt: crewOpt },
+    depth: x.depth ?? null, draftHull: x.draftHull ?? null, airDraft: null,   // draftHull: hull-body draught when `draft` is navigational (ASD tugs: the Z-drives reach below the hull)
+    dwt, gt, capText, kW, sfoc, svcKn, crew: { min: crewMin, opt: crewOpt },
     engine: eng, usdM, buildMonths: x.bm, rangeNm: range, Cb: hull.Cb ?? null,
     units, eq: x.eq || [], handling: x.hand || [], bp: x.bp || 0, ice,
     stats: null, options: null, defaults, builders: [x.b], minPort: minPortOf(L), tags: [], hidden: false, verify: true,

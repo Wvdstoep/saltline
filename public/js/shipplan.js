@@ -19,6 +19,11 @@
 // }
 import { deckOutlineHalf, yachtDims, structures as yachtStructures, deckOf as yachtDeckOf } from './yachtlooks.js';   // sailing yachts (docs/SAILING-CONTRACT.md §4.5)
 import { rigOf } from '../../shared/sail/rigs.js';
+import { planFromGA } from './gaplan.js';                                             // SHIPYARD H10 (docs/SHIPS-LANEC-PHASE2.md)
+import { generalArrangement, outlineHalf as gaOutlineHalf } from '../../shared/ships/ga.js';
+import { gaReady } from '../../shared/ships/index.js';
+/** True when this class (catalogue model / variant id) is planned from its general arrangement (Lane C). */
+export const gaPlanned = (cls) => gaReady(cls);
 export const R = 0.25;          // walker radius: keeps the body off walls, rails and furniture
 export const STEP = 0.32;       // the largest height change the walker takes in one sub-step (stairs are ramps)
 const EDGE = 0.45;              // walk margin inside the hull outline at deck level
@@ -40,6 +45,7 @@ function quadPts(p0, p1, p2, n, out) {
 /** Starboard half of the deck outline as [x, z] from the stern (z = +L/2) to the bow tip (z = −L/2). */
 export function outlineHalf(cls, L, B) {
   if (cls === 'sloop' || cls === 'ketch' || cls === 'schooner') return deckOutlineHalf(cls, 40);   // the lofted yacht hulls (yachtlooks.js)
+  if (gaPlanned(cls)) { const ga = generalArrangement(cls); if (ga && ga.gen !== 'sail') return gaOutlineHalf(ga, 72); }   // SHIPYARD H10
   const hb = B / 2, hl = L / 2, pts = [];
   const m = MERCHANT_HULL[cls];
   if (m) {
@@ -966,7 +972,10 @@ const MOTOR = new Set(['pilot', 'cruiser', 'myacht']);
  * Build the walkable plan for a ship class. C = SHIP_CLASSES[cls]; ud = the ship mesh's userData (length, beam,
  * freeboard, deckY) so the plan matches the model the player sees.
  */
-export function buildPlan(cls, C, ud = {}) {
+export function buildPlan(cls, C, ud = {}, opts = {}) {
+  // Lane C: catalogue models whose gen is GA-ready get the general-arrangement plan (same record as the exterior);
+  // opts.deck picks the deck of a cruise ship / big ro-pax (one deck plus the stair landings of its neighbours)
+  if (gaPlanned(cls)) { const p = planFromGA(cls, { deck: opts.deck || null }); if (p) return p; }
   const d = shipDims(C, ud);
   const P = new Plan(cls, C, d);
   if (HOUSE[cls]) planHouse(P, HOUSE[cls]);

@@ -8,6 +8,7 @@ import { WebSocketServer } from 'ws';
 import { World, DATA_DIR } from './server/world.js';
 import { carvingsForWorld, HARBORS } from './server/harbors.js';
 import { Game } from './server/game.js';
+import { yardsFor, parseVariant } from './shared/ships/index.js';   // SHIPYARD: yard list for one design (no politics: per-player blocks come with harbor.yard)
 import { SIM, PATCH, SHIP_CLASSES } from './shared/constants.js';
 import * as harborgeom from './server/harborgeom.js';
 import { WeatherService } from './server/weather.js';
@@ -233,6 +234,11 @@ app.get('/api/osm', (req, res) => {
   res.setHeader('Content-Type', 'application/json'); fs.createReadStream(f).pipe(res);
 });
 app.get('/api/jobs', (req, res) => res.json(game.publicJobs()));
+app.get('/api/yard/quote', (req, res) => {   // SHIPYARD §4.7: [{ yardId, name, cc, price, hours, specialist, schedule }]
+  const variant = String(req.query.variant || '').slice(0, 96);
+  if (!parseVariant(variant)) return res.status(400).json({ error: 'unknown design' });
+  res.json(yardsFor(variant, { harbor: typeof req.query.harbor === 'string' ? req.query.harbor.slice(0, 64) : null }));
+});
 // Sea route planner v2 (docs/V6-QUICK-CONTRACTS.md §4.5): over water deep enough for the class's draught at low water,
 // out of / into built harbour patches along the fairway, the Dover TSS lanes the right way, round the given storm discs.
 // /api/route?from=lat,lon&to=lat,lon[&harbor=id][&cls=class][&wp=lat,lon;…][&avoid=lat,lon,radiusKm[,name];…]

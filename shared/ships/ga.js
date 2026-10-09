@@ -159,10 +159,11 @@ function baseGA(m, pv, opts) {
   let D = m.depth || T / (RULES.DEPTH_RATIO[gen] || 0.7);
   const small = L < 40;
   const fMin = gen === 'tug' ? (L < 20 ? 0.8 : 1.0) : gen === 'motor_yacht' || gen === 'small_fast' ? (L < 12 ? 0.6 : 0.8) : gen === 'fishing' ? 1.2 : Math.max(1.5, L * 0.015);
-  if (D - T < fMin) D = T + fMin;
-  const F = r2(D - T);
+  const Th = m.draftHull > 0 && m.draftHull < T ? m.draftHull : T;   // ASD tugs: hull-body draught (catalogue draftHull); T stays the navigational draught over the drives
+  if (D - Th < fMin) D = Th + fMin;
+  const F = r2(D - Th);
   // keel depth of the moulded hull (tug and small-craft draughts include drives and skegs)
-  const Tk = r2(gen === 'tug' ? Math.min(T, D * 0.62) : gen === 'small_fast' || gen === 'motor_yacht' ? Math.min(T, D * 0.55) : T);
+  const Tk = r2(Th < T ? Th : gen === 'tug' ? Math.min(T, D * 0.62) : gen === 'small_fast' || gen === 'motor_yacht' ? Math.min(T, D * 0.55) : T);
   const hk = HULL_KIND[gen] || HULL_KIND.special;
   const bowFrac = gen === 'tug' ? 0.3 : gen === 'motor_yacht' ? 0.38 : gen === 'small_fast' ? 0.4 : clamp(0.42 - 0.3 * Cb, 0.12, 0.32);
   const aftRun = gen === 'tug' ? 0.22 : gen === 'motor_yacht' || gen === 'small_fast' ? 0.12 : clamp(0.3 - 0.25 * Cb, 0.06, 0.24);

@@ -139,6 +139,8 @@ class App {
     this.fleetUi = null; this.hq = null;
     import('./fleet.js').then((m) => { this.fleetUi = new m.FleetUi(this); }).catch((e) => console.warn('[fleet] unavailable', e));
     import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
+    this.yardUi = null;   // SHIPYARD H13: the shipyard screen (yardui.js); harbour sheet → Shipyard tab (hud.js H5)
+    if (new URLSearchParams(location.search).get('yard') !== '0') import('./yardui.js').then((m) => { this.yardUi = new m.YardUi(this); }).catch((e) => console.warn('[yard] unavailable', e));
     this.touchHelm = null;
     // sailing (docs/SAILING-CONTRACT.md §5): instruments + sail panel / phone sheet. Rig commands are applied locally at once
     // (optimistic) and sent at ≤ 4 Hz with a trailing send for sliders (rigCommand)
@@ -245,7 +247,7 @@ class App {
       if (hard) { this.input.throttleCmd = you.docked ? 0 : s.throttle; this.input.rudderCmd = 0; this.selfSamples = []; }
       if (!this.myMesh || prev?.ship.cls !== s.cls || prev?.aboard !== you.aboard) {
         if (this.myMesh) { if (this.interior.active) this.interior.exit(); this.drop(this.myMesh); }
-        this.myMesh = buildShip(s.cls, you.name, 7); this.scene.add(this.myMesh);
+        this.myMesh = buildShip(s.cls, you.name, 7, { livery: you.livery || undefined }); this.scene.add(this.myMesh);   // SHIPYARD H9: own livery (vessel.spec)
         this.sailHud?.setClass(s.cls); this.touchHelm?.setButtons?.(rigOf(s.cls) ? ['stop', 'auto', 'sails', 'tack'] : ['stop', 'auto']);
         this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false);
         // a new hull: chase camera sized to it (docs/V4-CONTRACTS.md §4)
@@ -633,7 +635,8 @@ class App {
         if (this.interior.active && this.interior.handleKey(e)) return;
         if (this.hud.transientOpen()) this.hud.closeOverlays(); else if (this.hud.harborOpen()) this.hud.hideHarbor(); return; // chart/ships/help first, harbour panel next
       }
-      if (k === 'g') return this.toggleAshore();
+      if (this.yardUi && this.hud.harborOpen() && this.hud.harborTab === 'shipyard' && this.yardUi.key(e)) { e.preventDefault(); return; }   // SHIPYARD H13: N / U / O sections, [ ] rotate the preview
+      if (k === 'g') { if (this.interior.active && this.interior.openGoto?.()) return; return this.toggleAshore(); }   // SHIPYARD (Lane C): G opens the Go-to list while walking a GA ship
       if (k === 'y' && !this.interior.active && !this.ashore?.active) { this.sound?.unlock(); this.sound?.horn(e.shiftKey ? 'short' : 'long'); return; }
       if (k === 'u' && !this.interior.active && !this.ashore?.active) { this.toggleMute(); return; }
       if (k === 'i') return this.toggleInterior();

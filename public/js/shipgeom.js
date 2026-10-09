@@ -63,6 +63,7 @@ export function hullForm(ga) {
   const sheerFwd = Math.max(0, H.sheerFwd || 0), sheerAft = Math.max(0, H.sheerAft || 0);
   const flare = clamp(0, 1, H.flare ?? 0.3);
   const planing = bow === 'planing';
+  const gaHalf = !twin && typeof H.halfAt === 'function' ? H.halfAt : null;   // ga.js hullHalf (public/js/gaext.js): the walkable plan's deck edge is the plating
   const hf = (y) => (y < 0 ? Math.max(-1, y / T) : Math.min(1, y / F));
   // longitudinal coordinate xi: 0 = stern end, 1 = bow end (deck LOA)
   const xiOf = (z) => (L / 2 - z) / L;
@@ -112,6 +113,7 @@ export function hullForm(ga) {
   function halfBreadth(z, y) {
     const p = plan(z, y);
     if (p <= 0) return 0;
+    if (gaHalf) return clamp(0, B / 2, gaHalf(z, y));   // SHIPYARD H9: the GA's own hull lines inside the stem / stern contour
     let sec = 1;
     if (y < 0) {
       const s = Math.min(1, -y / T);

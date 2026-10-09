@@ -14,6 +14,9 @@ import { PartBuilder, noiseTexture } from './models.js';
 import { surfaceHeightAt, oceanState } from './ocean2.js';
 import { buildYacht } from './rigmesh.js';                      // sailing yachts (docs/SAILING-CONTRACT.md §4)
 import { autoTrimView } from './sailshared.js';
+import { buildFromGA } from './shipgen.js';                                      // SHIPYARD H9 (docs/SHIPS-LANEB-PHASE2.md)
+import { exteriorGA } from './gaext.js';                                          // Lane C's shared/ships/ga.js in shipgen's shape
+import { gaReady, baseOf, defaultLivery } from '/shared/ships/index.js';
 
 // ----------------------------------------------------------------------------------------------- wear shader
 // shipPos: per-vertex position in the SHIP group's frame, baked at build time (fixed to the plating, y = up, so the
@@ -127,6 +130,24 @@ function extrudeHull(shape, depth, mats, y0, bevel = false) {
   return m;
 }
 function detRand(seed) { let s = seed * 9301 + 49297; return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; }; }
+/** SHIPYARD H9: build the exterior from the general arrangement (shipgen.js) into ship.js' ctx, with wear materials */
+function genBuilder(ctx, cls, opts = {}) {
+  const ga = exteriorGA(cls, { livery: opts.livery || defaultLivery(cls), stage: opts.stage ?? 1 });
+  if (!ga) throw new Error(`no general arrangement for ${cls}`);
+  const touch = typeof window !== 'undefined' && (('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0);
+  const wear = {};
+  const makeMat = (kind, color, p) => {
+    if (!['hull', 'boot', 'band', 'deck', 'house'].includes(kind)) return new THREE.MeshStandardMaterial({ color, roughness: p.roughness ?? 0.6, metalness: p.metalness ?? 0.2, vertexColors: !!p.vertexColors, map: p.map || null, emissive: p.emissive ?? 0x000000, emissiveIntensity: p.emissiveIntensity ?? 0 });
+    return (wear[kind] = makeWearMaterial(color, { roughness: p.roughness, metalness: p.metalness, extra: { map: p.map || null, vertexColors: !!p.vertexColors } }));
+  };
+  const r = buildFromGA(ga, { seed: ctx.seed ?? 1, phone: touch && window.innerWidth < 900, stage: opts.stage ?? 1, makeMat, decals: false });
+  r.group.userData.shipgen = true;                 // interior.js keeps its hull plating visible while you walk the deck plan
+  ctx.g.add(r.group);
+  Object.assign(ctx, { deckY: ga.deckY, freeboard: ga.deckY, bowFrac: ga.hull.bowFrac, lights: r.info.lights, windowMat: r.mats.glass, shipgen: r });
+  ctx.mats = Object.values(wear);                    // setWear / setFlood / setWaterY reach the generated hull, deck and houses
+  ctx.crewSpots.push(...r.info.crewSpots);
+  return r.info.labelY;
+}
 
 // ----------------------------------------------------------------------------------------------- wake system
 const WAKE_VERT = /* glsl */`
@@ -846,13 +867,15 @@ function yachtBuilder(ctx) {
 }
 // ----------------------------------------------------------------------------------------------- buildShip
 /** Build a ship. Returns a THREE.Group with the userData API (see the contract §6). */
-export function buildShip(cls, name, seed = 1) {
-  const C = SHIP_CLASSES[cls] || EXTRA_CLASSES[cls] || SHIP_CLASSES.coaster;
-  const key = BUILDERS[cls] ? cls : 'coaster';
+export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: opts { livery, stage, shipgen }
+  const C = SHIP_CLASSES[cls] || EXTRA_CLASSES[cls] || SHIP_CLASSES[baseOf(cls)] || SHIP_CLASSES.coaster;   // H1 resolves model and variant ids
+  const useGen = !BUILDERS[cls] && (gaReady(cls) || (opts.shipgen === true && !!exteriorGA(cls)));               // §6.1: generator once its gen passed its tests
+  const key = BUILDERS[cls] ? cls : BUILDERS[baseOf(cls)] ? baseOf(cls) : 'coaster';                            // interim: the base builder at the model's own dimensions
   const g = new THREE.Group();
   const ctx = makeCtx(g, C, cls, seed);
+  ctx.seed = seed;
   let labelY;
-  try { labelY = BUILDERS[key](ctx); } catch (e) { console.warn('[ship] builder failed for', cls, e); labelY = ctx.deckY + 20; }
+  try { labelY = useGen ? genBuilder(ctx, cls, opts) : BUILDERS[key](ctx); } catch (e) { console.warn('[ship] builder failed for', cls, e); labelY = ctx.deckY + 20; }
   const { L, B, draft, freeboard } = ctx;
   // crew-sized scale reference (one per spot, at most three; none on derelicts / the helicopter)
   if (!ctx.lightsOff && key !== 'helicopter') for (const [x, y, z] of ctx.crewSpots.slice(0, 3)) { try { ctx.crew(x, y, z); } catch { /* decoration only */ } }

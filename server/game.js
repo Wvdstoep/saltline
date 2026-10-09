@@ -25,6 +25,8 @@ import { estimateJob, fmtShipH } from '../shared/jobtime.js';            // V6 i
 import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; // V7 step 0: express arrives on safe open water
 import { lowWaterAt } from '../shared/tide.js';
 import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
+import { Yard } from './yard.js';                               // SHIPYARD (docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §4)
+import { compactOrder as compactOrderView, healHarborYard } from '../shared/ships/index.js';   // SHIPYARD §7.3 / §8
 import { quayQuery, quayDock, quayDockNearest, quayTugs, quayAssistDone, quayUndock, quayGate, quayMigrate, quayPublic, quayHarbourInfo } from './quaygame.js'; // DOCK ANYWHERE
 import { ACTION_SERVICE } from '../shared/quayrules.js';
 import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
@@ -87,6 +89,7 @@ export class Game {
     this.rigLimits = new WeakMap();                  // sailing: per-person rig command rate limit + rig_event times (never saved)
     this.rigViews = new WeakMap();                   // sailing: the rv each online skipper last sent (never saved)
     this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
+    this.yard = new Yard(this);                     // SHIPYARD: orders, stock, second-hand market (before loadState)
     this.loadState();
     this.initHarbors();
     this.initCutters();
@@ -173,6 +176,7 @@ export class Game {
       if (!st) st = this.harbors[h.id] = { jobs: [], market: {}, contact: null, lastRegen: -1e9, ...initEconomy(h, this.rnd) };
       // Old state files carry a flat price table only: give them stock/target and derive the prices from it.
       if (!st.stock || !st.target) Object.assign(st, initEconomy(h, this.rnd));
+      healHarborYard(st);                              // SHIPYARD §8: the new second-hand market regenerates at the first visit
       refreshPrices(h, st);
       // V6 item 5: board offers from before ship-hour budgets (no `hours`) are withdrawn; the regen refills the board.
       // v7 world coverage: offers from the old generator (before JOB_GEN 7, North-Sea-weighted destinations) too.
@@ -353,6 +357,7 @@ export class Game {
     return {
       id: p.id, name: p.name, ship: { ...p.ship }, cond: p.cond, flooding: p.flooding, fuel: p.fuel, cargo: p.cargo.map((c) => (c.caught ? { ...c, qty: Math.round(c.qty * 10) / 10 } : c)),
       money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs, convoyId: p.convoyId, docked: p.docked,
+      orders: (p.office?.orders || []).map((o) => compactOrderView(o, this.simTime)),   // SHIPYARD §7.3 you.orders
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
       weather: this.weatherFor(p), tide: this.tideFor(p.ship.lat, p.ship.lon),
@@ -423,6 +428,7 @@ export class Game {
         jobs: st.jobs, market: st.market, econ: this.harborEcon(st), contact: p.contactSeen === h.id && st.contact ? st.contact : null, contactLooked: p.contactSeen === h.id,
         shipyard: Object.values(SHIP_CLASSES).filter((c) => c.price > 0).map((c) => ({ id: c.id, name: c.name, cat: c.cat, price: c.price, desc: c.desc, tradeIn: shipValue(p.ship.cls, p.cond), specs: shipSpecs(c.id) })),
         used: st.used || [], tradeIn: shipValue(p.ship.cls, p.cond), sellValue: p.ship.cls === 'pilot' ? 0 : shipValue(p.ship.cls, p.cond),
+        yard: this.yard.view(p, h),                  // SHIPYARD §7.3: newbuild/stock/used/orders (old shipyard/used kept one release)
         berths: geom ? geom.berths || [] : [], anchor: { lat: anchor.lat, lon: anchor.lon }, geomSource: geom ? geom.source : null, berth: p.berth || null,
         tugCost: tugCostFor(p.ship.cls), fees: this.feesFor(p, h), serviceDue: p.serviceDue,
         dockedPlayers: [...this.byId.values()].filter((o) => o.online && o.docked === h.id && o.id !== p.id).map((o) => ({ id: o.id, name: o.name })),
@@ -573,6 +579,9 @@ export class Game {
         case 'sell_goods': return this.tradeGoods(p, m.good, +m.qty, false);
         case 'dump_cargo': return this.dumpCargo(p, m.good);
         case 'buy_ship': return this.fleet.buyShip(p, m);   // v6: tradeIn !== false → today's buyShip
+        case 'yard_order': case 'yard_pay': case 'yard_cancel': case 'yard_deliver': case 'yard_buy_stock':
+        case 'yard_inspect': case 'yard_buy_used': case 'yard_repaint': case 'yard_rename':
+          this.yard.action(p, m); this.sendYou(p); return this.sendHarbor(p);   // SHIPYARD §7.3 (YARD_ACTIONS)
         case 'patch': return this.patch(p);
         case 'fish': return this.setFishing(p, !!m.on);
         case 'tow': return this.tow(p);
@@ -1334,6 +1343,7 @@ export class Game {
       if (p.wanted > 0 && this.simTime - p.wantedAt > LAW.WANTED_DECAY_SIM_HOURS * 3600) { p.wanted--; p.wantedAt = this.simTime; this.event(p, 'law', `Wanted level dropped to ${p.wanted}.`); }
     }
     this.fleet.tick(dt);                              // v6: drift booking, owed bills, captains, storage, `fleet` pushes
+    this.yard.tick(this.simTime);                     // SHIPYARD: instalments, milestones, delays, delivery (runs once per sim second)
     this.updateCutters(dt);
     // Job boards regen lazily on dock; markets drift every minute; wrecks expire.
     if (Date.now() - this.lastEcon > 60000) this.driftMarkets();

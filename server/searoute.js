@@ -578,7 +578,7 @@ export function parseRouteQuery(query = {}) {
   }
   let cls = null;
   if (q.cls != null && q.cls !== '') {
-    if (typeof q.cls !== 'string' || !Object.prototype.hasOwnProperty.call(SHIP_CLASSES, q.cls)) return { ok: false, error: 'unknown ship class' };
+    if (typeof q.cls !== 'string' || q.cls.length > 64 || typeof SHIP_CLASSES[q.cls] !== 'object' || !(SHIP_CLASSES[q.cls]?.length > 0)) return { ok: false, error: 'unknown ship class' };   // SHIPYARD: catalogue model / variant ids resolve through H1 (not own keys)
     cls = q.cls;
   }
   const wp = [];

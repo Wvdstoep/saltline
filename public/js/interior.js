@@ -14,6 +14,8 @@ import { PartBuilder } from './models.js';
 import { makeAvatar } from './avatar.js';
 import { buildPlan } from './shipplan.js';
 import { WalkMap, stairEnds } from './walker.js';
+import { drawGAProp, GA_PROP_KINDS, buildZoned, gaInteract, gaZoneUpdate, openGotoMenu } from './gaprops.js';   // SHIPYARD H11 (docs/SHIPS-LANEC-PHASE2.md)
+import { baseOf } from '/shared/ships/index.js';
 
 const EYE = 1.65;
 const WALK = 1.7, RUN = 3.3;
@@ -64,6 +66,10 @@ export class Interior {
     this.viewBtn.style.cssText = 'position:fixed;right:16px;top:calc(64px + env(safe-area-inset-top));z-index:16;min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid rgba(140,190,230,.45);background:rgba(4,12,20,.8);color:#dbe9f4;font:14px "Segoe UI",system-ui,sans-serif;display:none;cursor:pointer';
     this.viewBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleView(); this.viewBtn.blur(); });
     document.body.appendChild(this.viewBtn);
+    this.gotoBtn = document.createElement('button'); this.gotoBtn.id = 'interiorGotoBtn'; this.gotoBtn.type = 'button'; this.gotoBtn.textContent = 'Go to…';   // SHIPYARD (Lane C): quick travel on GA ships
+    this.gotoBtn.style.cssText = this.viewBtn.style.cssText.replace('top:calc(64px', 'top:calc(116px');
+    this.gotoBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openGoto(); this.gotoBtn.blur(); });
+    document.body.appendChild(this.gotoBtn);
     this.hiddenMat = new THREE.MeshBasicMaterial({ visible: false });
     this.bind();
   }
@@ -103,7 +109,7 @@ export class Interior {
     this.updateViewBtn();
     this.app.hud.event?.({ kind: 'info', text: this.view === 'third' ? 'Third-person view: you see yourself walking through the ship.' : 'First-person view.' });
   }
-  updateViewBtn() { const k = this.isTouch ? '' : ' (V)'; this.viewBtn.textContent = this.view === 'third' ? `👁 First person${k}` : `🧍 Third person${k}`; this.viewBtn.style.display = this._active ? 'block' : 'none'; }
+  updateViewBtn() { const k = this.isTouch ? '' : ' (V)'; this.viewBtn.textContent = this.view === 'third' ? `👁 First person${k}` : `🧍 Third person${k}`; this.viewBtn.style.display = this._active ? 'block' : 'none'; if (this.gotoBtn && !this._active) this.gotoBtn.style.display = 'none'; }
   /**
    * Phones: the top bar wraps to two or three rows, taller than the --top-h the HUD assumes, so the walking HUD (Stop
    * walking / view buttons, room hint) and the message log under it are kept below the bar's real bottom edge while
@@ -137,6 +143,10 @@ export class Interior {
         continue;
       }
       if (c.userData.keepWhileWalking) continue;
+      if (c.userData.shipgen) {   // SHIPYARD: a generated ship (THREE.LOD): only the hull plating stays, every level
+        for (const lv of c.children) for (const k of lv.children) if (k.name !== 'hull' && k.visible) { k.visible = false; this.hidden.push(k); }
+        continue;
+      }
       if (c.userData.yacht || String(c.name || '').startsWith('yacht:')) {   // sailing yachts (rigmesh.js): the plan draws deck + houses; hull and rig stay
         for (const k of c.children) if (k.userData.walkHide && k.visible) { k.visible = false; this.hidden.push(k); }
         continue;
@@ -244,12 +254,15 @@ export class Interior {
   engineText() {
     const app = this.app, you = app.you, C = SHIP_CLASSES[you?.ship.cls] || SHIP_CLASSES.coaster;
     const s = app.ship || you.ship, thr = s.throttle || 0;
-    const rpm = Math.round(rpmFraction(thr) * (RPM[you.ship.cls] || 900) * (you.fuelEmpty ? 0 : 1));
+    const rpm = Math.round(rpmFraction(thr) * (RPM[you.ship.cls] || RPM[baseOf(you.ship.cls)] || 900) * (you.fuelEmpty ? 0 : 1));
     return `Engine: ${rpm} rpm${thr < -0.005 ? ' astern' : ''} · ${orderLabel(thr)} (${Math.round(thr * 100)} %) · fuel ${(you.fuel || 0).toFixed(1)} / ${C.fuelCap} t · hull ${Math.round(you.cond)} % · ${you.flooding > 0.01 ? `flooding ${Math.round(you.flooding * 100)} % — pumps running` : 'bilges dry'}${you.fuelEmpty ? ' · NO FUEL' : ''}`;
   }
+  /** G / Go-to button: the quick-travel list of this ship (L > 60 m). False when the ship has none. */
+  openGoto() { if (!this._active || this.atHelm || !this.plan?.goto?.length) return false; return openGotoMenu(this); }
   interact() {
     if (this.atHelm) { this.leaveHelm(); return; }
     const h = this.nearHotspot; if (!h) return;
+    if (gaInteract(this, h)) return;   // ladder climb, Go-to / lift, telegraph, thrusters, whistle, GMDSS, ECR, info points
     const app = this.app, you = app.you;
     switch (h.kind) {
       case 'helm': {
@@ -316,6 +329,9 @@ export class Interior {
       this.curRoom = room;
       this.app.hud.setInteriorHint?.(`${room.name} — ${this.isTouch ? 'stick to walk · tap to use' : 'WASD walk · Shift runs · E use · V view · I stop walking'}`);
     }
+    // ---- zone streaming (GA plans): the zone you stand in and its neighbours; a tower landing of a neighbour deck
+    // reloads that deck's plan (cruise ships, big ro-pax)
+    if (this.zoneGroups) gaZoneUpdate(this, this.isTouch || window.innerWidth < 900);
     // ---- hotspots
     let best = null, bd = 1e9;
     for (const h of this.hotspots) {
@@ -382,7 +398,7 @@ export class Interior {
     this.mats = null;
     this.avatar = null; this.plan = null; this.map = null;
     this.rooms = []; this.hotspots = []; this.gauge = null; this.radarTex = null; this.wheel = null; this.lever = null;
-    this.builtFor = null; this.builtCls = null;
+    this.builtFor = null; this.builtCls = null; this.zoneGroups = null;
   }
   build() {
     const app = this.app; const mesh = app.myMesh; if (!mesh) return;
@@ -391,20 +407,25 @@ export class Interior {
     const cls = app.you?.ship.cls || mesh.userData.cls || 'coaster';
     const C = SHIP_CLASSES[cls] || SHIP_CLASSES.coaster;
     let plan;
-    try { plan = buildPlan(cls, C, mesh.userData); } catch (e) { console.warn('[interior] plan failed, using the coaster plan', e); plan = buildPlan('coaster', SHIP_CLASSES.coaster, {}); }
+    if (this.deckCls !== cls) { this.deck = null; this.deckCls = cls; }   // a new ship starts on its bridge deck
+    try { plan = buildPlan(cls, C, mesh.userData, { deck: this.deck }); } catch (e) { console.warn('[interior] plan failed, using the coaster plan', e); plan = buildPlan('coaster', SHIP_CLASSES.coaster, {}); }
     this.plan = plan; this.map = new WalkMap(plan);
     this.rooms = plan.rooms; this.hotspots = plan.hotspots.map((h) => ({ ...h }));
     const g = new THREE.Group(); g.name = 'interior'; g.visible = false;
     this.mats = this.makeMaterials(plan.style);
-    this.pb = new PartBuilder();
-    const ctx = { g, M: this.mats, pb: this.pb, plan };
-    this.drawDeck(ctx);
-    this.drawRooms(ctx);
-    this.drawStairs(ctx);
-    for (const p of plan.props) { try { this.drawProp(ctx, p); } catch (e) { console.warn('[interior] prop', p.t, e); } }
-    for (const r of plan.rails) this.drawRail(ctx, r.pts, r.y);
-    this.pb.build(g);
-    this.pb = null;
+    this.zoneGroups = null;
+    if (plan.zones?.length) this.zoneGroups = buildZoned(this, plan, g);   // GA plans: one group per zone (§6.6 streaming)
+    else {
+      this.pb = new PartBuilder();
+      const ctx = { g, M: this.mats, pb: this.pb, plan };
+      this.drawDeck(ctx);
+      this.drawRooms(ctx);
+      this.drawStairs(ctx);
+      for (const p of plan.props) { try { this.drawProp(ctx, p); } catch (e) { console.warn('[interior] prop', p.t, e); } }
+      for (const r of plan.rails) this.drawRail(ctx, r.pts, r.y);
+      this.pb.build(g);
+      this.pb = null;
+    }
     mesh.add(g);
     this.group = g; this.builtFor = mesh; this.builtCls = cls;
   }
@@ -572,6 +593,7 @@ export class Interior {
 
   // ------------------------------------------------------------------ props
   drawProp(ctx, p) {
+    if (GA_PROP_KINDS.has(p.t) && drawGAProp(ctx, p)) return;   // Lane C prop kinds (consoles, ME, winches, cranes …)
     const { g, pb, M, plan } = ctx;
     const lbox = (w, h, d, mat, lx, ly, lz, rotY, ox, oy, oz) => { const c = Math.cos(rotY), s = Math.sin(rotY); pb.box(w, h, d, mat, ox + lx * c + lz * s, oy + ly, oz - lx * s + lz * c, 0, rotY, 0); };
     switch (p.t) {
@@ -764,7 +786,7 @@ export class Interior {
   drawGauges() {
     const G = this.gauge; if (!G) return;
     const { ctx: c, cv } = G, app = this.app, you = app.you, s = app.ship || you?.ship || { throttle: 0 };
-    const C = SHIP_CLASSES[you?.ship.cls] || SHIP_CLASSES.coaster, rpmMax = RPM[you?.ship.cls] || 900;
+    const C = SHIP_CLASSES[you?.ship.cls] || SHIP_CLASSES.coaster, rpmMax = RPM[you?.ship.cls] || RPM[baseOf(you?.ship.cls)] || 900;
     const thr = s.throttle || 0, rf = rpmFraction(thr) * (you?.fuelEmpty ? 0 : 1);
     const t = performance.now() / 1000;
     const dials = [

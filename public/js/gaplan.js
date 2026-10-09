@@ -713,7 +713,12 @@ function planEngineRoom(P, ga, er, { entranceRoom = null } = {}) {
       const yLow = er.levels[i], yHigh = i < n - 1 ? er.levels[i + 1] : er.top;
       const foot = roomOfAt(i, col.runZ1 + 0.5), head = i < n - 1 ? roomOfAt(i + 1, col.runZ0 - 0.5) : entranceRoom;
       P.stair({ id: `er-flight-${i}`, x0: col.x0, x1: col.x1, z0: col.runZ0, z1: col.runZ1, yLow, yHigh, up: 'n', foot: foot ? foot.id : null, head: head ? head.id : null, kind: 'steep' });
-      if (foot) P.sign(col.x1 + 0.9, yLow + 1.8, col.runZ1 + LAND * 0.6, -Math.PI / 2, [i === 0 ? 'ENGINE ROOM' : `ER LEVEL ${i + 1}`, i < n - 1 ? '▲ platforms   ▲ deck' : '▲ deck / accommodation']);
+      if (foot) { // the landing sign stands clear of machinery (the main engine or a genset can sit beside the column) and inside the landing room
+        const zS = col.runZ1 + LAND * 0.6;
+        const clear = (x) => x > foot.x0 + 0.1 && x < foot.x1 - 0.1 && !P.solidsNear(x - 1.3, x + 1.3, zS - 1.3, zS + 1.3).some((q) => q.y < yLow + 2.3 && q.y + q.h > yLow + 1.2 && x > q.x0 - 1.2 && x < q.x1 + 1.2 && zS > q.z0 - 1.2 && zS < q.z1 + 1.2);
+        const xs = [col.x1 + 0.9, col.x0 - 0.9].find(clear), x = xs ?? col.x1 + 0.06;
+        P.sign(x, yLow + 1.8, zS, xs === col.x0 - 0.9 ? Math.PI / 2 : -Math.PI / 2, [i === 0 ? 'ENGINE ROOM' : `ER LEVEL ${i + 1}`, i < n - 1 ? '▲ platforms   ▲ deck' : '▲ deck / accommodation']);
+      }
     }
   }
   // open plan: the strips of one level are one space — no walls (and no wall margin) where a strip only meets other strips
@@ -1809,7 +1814,14 @@ function cabinBlock(P, ga, d, z0, z1, hw, bi, link, out) {
         }
       }
     });
-    if (cen > 0.6) { const sv = P.room({ id: id('service'), kind: 'store', use: 'service', name: 'Service core (linen, pantry, crew passage)', x0: r2(-cen), x1: r2(cen), z0, z1, y, h, walk: false }); out.push(sv); }
+    if (cen > 0.6) { // the service core between the inner cabins: a crew passage from tower to tower, stores either side
+      const pw = Math.min(cen, 1.0), nd = P.doors.length;
+      const sv = P.room({ id: id('service'), kind: 'passage', use: 'service', name: 'Crew service passage', x0: r2(-pw), x1: r2(pw), z0, z1, y, h, floor: 'lino', wall: 'white' });
+      link(sv, z0, 'n'); link(sv, z1, 's');
+      if (P.doors.length === nd) { sv.walk = false; sv.name = 'Service core (linen, pantry)'; }   // no tower at either end: a closed store
+      out.push(sv);
+      if (cen - pw > 0.6) for (const s of [-1, 1]) out.push(P.room({ id: id(`store-${s < 0 ? 'p' : 's'}`), kind: 'store', use: 'service', name: s < 0 ? 'Linen & laundry store' : 'Pantry & provisions store', x0: r2(s < 0 ? -cen : pw), x1: r2(s < 0 ? -pw : cen), z0, z1, y, h, walk: false }));
+    }
   } else {
     const corr = mk('cor', -cw / 2, cw / 2, z0, z1, `Corridor (${d.name})`, 'passage', 'corridor');
     out.push(corr); link(corr, z0, 'n'); link(corr, z1, 's');

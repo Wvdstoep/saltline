@@ -905,7 +905,7 @@ export class Hud {
     if (!wasOpen) { this.closeOverlays(); $('harborWrap').classList.remove('hidden'); this.hydrateIcons($('harborWrap')); }
     this.renderHarborTabs();
   }
-  hideHarbor() { $('harborWrap').classList.add('hidden'); $('compareWrap')?.classList.add('hidden'); }
+  hideHarbor() { $('harborWrap').classList.add('hidden'); $('compareWrap')?.classList.add('hidden'); this.app.yardUi?.close(); }   // SHIPYARD H5: frees the turntable's GL context
   harborOpen() { return !$('harborWrap').classList.contains('hidden'); }
   /** Open the harbour sheet at a section (also from the ashore world: harbourmaster → 'jobs', shipyard → 'shipyard', …). */
   openHarborTab(tab) {
@@ -1216,6 +1216,7 @@ export class Hud {
       </div></article>`;
   }
   tabShipyard(h, you, C) {
+    if (this.app.yardUi && h.yard) return this.app.yardUi.html(h, you);   // SHIPYARD H5: the new shipyard (yardui.js); old payloads keep the legacy tab
     const tradeIn = Number.isFinite(h.tradeIn) ? h.tradeIn : h.shipyard?.[0]?.tradeIn ?? 0;
     const sellValue = Number.isFinite(h.sellValue) ? h.sellValue : tradeIn;
     const yard = h.shipyard || [], used = h.used || [];
@@ -1365,7 +1366,8 @@ export class Hud {
   }
 
   // -------- delegated actions and live inputs
-  sheetAction(act, el) {
+  sheetAction(act, el, e) {
+    if (act && act.startsWith('yard-') && this.app.yardUi) return this.app.yardUi.action(act, el, e);   // SHIPYARD H5
     const a = this.app, net = a.net, you = a.you, root = $('harborWrap');
     const qtyInput = (g) => root.querySelector(`input[data-qty="${CSS.escape(g)}"]`);
     switch (act) {

@@ -13,8 +13,16 @@ export { YARDS, YARD_IDS, YARD_COUNTRIES, YARD, SCHEDULES, MILESTONE_AT, BUILD_S
 export { OPTIONS, variantId, parseVariant, defaultOpts } from './options.js';
 export { classRow, priceBasis } from './rows.js';
 
-/** Set of gen keys whose generator passed its tests (Lanes B/C flip entries). Empty until phase 3. */
-export const GA_READY = new Set();
+/** Set of gen keys whose generator passed its tests (Lanes B/C flip entries): exterior (shipgen + gaext), GA, deck plan and
+ *  walk suites are green for all 13 (test/shipviz-*.test.mjs, test/interiors2-*.test.mjs, test/ships-integration.test.mjs). */
+export const GA_READY = new Set(['aft_house_dry', 'aft_house_tanker', 'container', 'tug', 'small_fast', 'offshore', 'fishing', 'ferry', 'roro_pctc', 'lng', 'motor_yacht', 'special', 'cruise']);
+/** True when this class is drawn and walked from its general arrangement: its gen is GA-ready and it is not one of the
+ *  17 legacy ids as such (old saves keep today's models and deck plans; catalogue models and option variants use the GA). */
+export function gaReady(cls) {
+  const pv = parseVariant(cls);
+  if (!pv || (!pv.tokens.length && LEGACY_ROWS[pv.model])) return false;
+  return GA_READY.has(MODELS[pv.model].gen);
+}
 
 const round1000 = (v) => Math.round(v / 1000) * 1000;
 const r2 = (v) => Math.round(v * 100) / 100;
