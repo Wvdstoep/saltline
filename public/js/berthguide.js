@@ -528,8 +528,8 @@ export class BerthGuide {
     set(K.steer, info.departing ? `bears ${pad3(nb.brg ?? info.steer)}°` : `${this.app.hud?.touch ? '' : 'steer '}${pad3(info.steer)}° · ${turnTxt}`);
     K.arrow.style.transform = `rotate(${info.departing ? 0 : t}deg)`;
     K.arrow.classList.toggle('ok', Math.abs(t) < 5);
-    const water = info.water, okDepth = water == null || water >= info.draft + 0.3;
-    set(K.facts, `${water == null ? 'Depth —' : `Water ${water.toFixed(1)} m`} · you draw ${info.draft} m${okDepth ? '' : ' — too shallow'}${Number.isFinite(nb.length) ? ` · ${Math.round(nb.length)} m quay` : ''}`);
+    const water = info.water, okDepth = water == null || water >= info.draft + (nb.mh ? Math.max(0.1, 0.05 * info.draft) : 0.3);   // marinas: small-craft clearance (shared/mharbour.js ukcFor)
+    set(K.facts, `${water == null ? 'Depth —' : `Water ${water.toFixed(1)} m${nb.depthSrc === 'est.' ? ' (est.)' : ''}`} · you draw ${info.draft} m${okDepth ? '' : ' — too shallow'}${nb.box ? ` · ${nb.box.len} × ${nb.box.w} m box` : Number.isFinite(nb.length) ? ` · ${Math.round(nb.length)} m quay` : ''}${nb.mh && nb.fee ? ` · ${nb.fee} cr/night` : ''}`);
     K.facts.classList.toggle('bad', !okDepth);
     // advice: the one thing to do now
     let adv, cls;
@@ -566,6 +566,22 @@ export class BerthGuide {
         x.imageSmoothingEnabled = ext > e.n * e.res * 0.4;
         x.drawImage(base, cx0, cz0, cx1 - cx0, cz1 - cz0, dx0, dz0, dx1 - dx0, dz1 - dz0);
       }
+    } else {
+      // no harbour patch (inland harbours, quays): land from the world tiles in memory, re-rastered at most once a second
+      const land = this.tileLand(cx, cz, ext);
+      if (land) { x.imageSmoothingEnabled = false; x.drawImage(land, 0, 0, W, W); }
+    }
+    // inland harbours (mharbour.js): pontoons, finger piers, quays and gangways at their real width
+    const segs = this.app.mharbour?.segmentsNear?.(s.lat, s.lon, ext) || [];
+    if (segs.length) {
+      x.save(); x.lineCap = 'butt';
+      for (const g of segs) {
+        const a = this.xz(g.a[0], g.a[1]), b = this.xz(g.b[0], g.b[1]);
+        x.strokeStyle = g.k === 'quay' ? `rgb(${PLAN_COL.quay.join(',')})` : g.k === 'gang' ? '#a89c84' : '#d8d2c4';
+        x.lineWidth = Math.max(g.k === 'finger' ? 0.6 : 1.2, g.w * k);
+        x.beginPath(); x.moveTo(X(a.x), Z(a.z)); x.lineTo(X(b.x), Z(b.z)); x.stroke();
+      }
+      x.restore();
     }
     // leading line
     const P = this.plan;
@@ -593,6 +609,27 @@ export class BerthGuide {
     x.fillText(bar >= 1000 ? `${bar / 1000} km` : `${bar} m`, W / 20, W - W / 12);
   }
 
+  /** 64 × 64 land / water raster of the plan's view from the world tiles (app.terrain.wtiles.maskAt), cached ~1 s. */
+  tileLand(cx, cz, ext) {
+    const wt = this.app.terrain?.wtiles; if (!wt?.maskAt || !this.frame) return null;
+    const now = performance.now(), key = `${Math.round(cx / 20)}|${Math.round(cz / 20)}|${Math.round(ext / 20)}`;
+    if (this._land && (this._land.key === key || now - this._land.at < 1000)) return this._land.cv;
+    const N = 64, cv = this._land?.cv || document.createElement('canvas'); cv.width = N; cv.height = N;
+    const g = cv.getContext('2d'), img = g.createImageData(N, N), f = this.frame;
+    let known = 0;
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const px = cx - ext / 2 + ((i + 0.5) * ext) / N, pz = cz - ext / 2 + ((j + 0.5) * ext) / N;
+      let m = null; try { m = wt.maskAt(f.lat - pz / GEO.M_PER_DEG_LAT, f.lon + px / f.k); } catch { m = null; }
+      const o = (j * N + i) * 4;
+      if (m == null) { img.data[o + 3] = 0; continue; }
+      known++;
+      const c = m === 0 || m === 5 || m === 6 || m === 7 || m === 8 || m === 9 ? (m === 5 ? PLAN_COL.fairway : PLAN_COL.water) : m === 2 || m === 3 ? PLAN_COL.quay : m === 4 ? PLAN_COL.pontoon : PLAN_COL.land;
+      img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    this._land = { key, at: now, cv };
+    return known ? cv : null;
+  }
   /** Debug / test hook: the current plan in lat/lon plus timings. */
   debug() {
     const P = this.plan, f = this.frame; if (!f) return null;

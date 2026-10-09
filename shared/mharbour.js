@@ -9,7 +9,7 @@
 // Record (≈ 1 KB, what server/minorharbours.js keeps in memory; berths are generated on demand from `pont` / `quay`):
 //   { id: 'mh:osm:w123' | 'mh:fis:42', name, tier, lat, lon, src: 'osm'|'fis'|'fis+osm', e: 0|1|2, sq: 'x12/y12',
 //     cc: 'NL'|null, places, cap, depth, depthSrc, maxL, maxB, maxT, vhf, vhfSim, svc: {…flags}, pont: [[la0,lo0,la1,lo1,lenM]],
-//     quay: [[la0,lo0,la1,lo1,lenM]], sub: {id, name, dKm}|null, link: {id, dKm}|null, osm: [ids], fis: id|null, inferred? }
+//     quay: [[la0,lo0,la1,lo1,lenM]] (optional 6th pontoon field `sides`: 1 | -1 = boxes on that side only), sub: {id, name, dKm}|null, link: {id, dKm}|null, osm: [ids], fis: id|null, inferred? }
 import { QUAY, SERVICE_TIERS, distM, serviceTier, linkHarbour } from './quayrules.js';
 import { FEES } from './constants.js';
 
@@ -183,7 +183,7 @@ export function boxLenFor(k, n, size = 'medium') {
 }
 /** Pontoon axes of a harbour sorted longest first (ties by position): [{ a, b, lenM, k }]. */
 function pontoonsOf(h) {
-  return (h.pont || []).map((p, k) => ({ a: [p[0], p[1]], b: [p[2], p[3]], lenM: p[4], k })).sort((x, y) => y.lenM - x.lenM || x.a[0] - y.a[0] || x.a[1] - y.a[1]);
+  return (h.pont || []).map((p, k) => ({ a: [p[0], p[1]], b: [p[2], p[3]], lenM: p[4], k, sides: p[5] || 0 })).sort((x, y) => y.lenM - x.lenM || x.a[0] - y.a[0] || x.a[1] - y.a[1]);
 }
 /**
  * The berths of a harbour, generated on demand (deterministic). Marina: numbered boxes on both sides of each pontoon.
@@ -206,6 +206,7 @@ export function berthsOf(h, { limit = 600 } = {}) {
     ps.forEach((p, k) => {
       const len = boxLenFor(k, ps.length, size), w = boxWidth(len), n = Math.floor((p.lenM + 1e-9) / w);
       for (const side of [1, -1]) {
+        if (p.sides && side !== p.sides) continue;          // boxes on one side only (6th pontoon field: 1 right, -1 left; shared/mhgeo.js)
         for (let j = 0; j < n; j++) {
           total++;
           sizes.set(len, (sizes.get(len) || 0) + 1);
@@ -224,7 +225,7 @@ export function berthsOf(h, { limit = 600 } = {}) {
     const lenM = q[4], rafts = h.tier === 'passant' ? MH.RAFT_ABREAST : 1;
     const places = Math.max(1, Math.floor(lenM / MH.RAFT_SLOT_M)) * rafts;
     total += places;
-    if (out.length < limit) out.push({ id: `${h.id}#${src[0]}${k}`, kind: 'side', src, lenM: r1(lenM), places, raft: h.tier === 'passant', lat: r5((q[0] + q[2]) / 2), lon: r5((q[1] + q[3]) / 2), hdg: r1(bearingOf([q[0], q[1]], [q[2], q[3]])) });
+    if (out.length < limit) out.push({ id: `${h.id}#${src[0]}${k}`, kind: 'side', src, lenM: r1(lenM), places, raft: h.tier === 'passant', lat: r5((q[0] + q[2]) / 2), lon: r5((q[1] + q[3]) / 2), hdg: r1(bearingOf([q[0], q[1]], [q[2], q[3]])), a: [q[0], q[1]], b: [q[2], q[3]], ...(q[5] ? { side: q[5] } : {}) });
   }
   return { kind: 'side', total, list: out, sizes: [] };
 }

@@ -177,6 +177,28 @@ export function placeLabels(items, { mode = 'auto', rr = 100, small = false } = 
   return out;
 }
 
+// ------------------------------------------------------------------------------------------------ vector structures
+export const SEG_STYLE = { quay: { color: 'rgb(176,180,170)', min: 1.4 }, deck: { color: 'rgb(214,226,236)', min: 1.2 }, gang: { color: 'rgb(170,160,140)', min: 0.8 }, finger: { color: 'rgb(190,204,214)', min: 0.6 } };
+/**
+ * Draw structure outlines ({ a: [lat, lon], b, w, k }) north-up around `me` at k px per metre (the caller has rotated the
+ * context). Width = the real width at this scale, at least SEG_STYLE.min px; segments wholly outside the radius rr are
+ * skipped; finger piers only when they are at least 0.35 px wide (close ranges). Returns how many were drawn.
+ */
+export function drawSegments(ctx, me, segs, k, rr = Infinity) {
+  let n = 0;
+  ctx.lineCap = 'butt';
+  for (const s of segs) {
+    const st = SEG_STYLE[s.k] || SEG_STYLE.deck;
+    if (s.k === 'finger' && s.w * k < 0.35) continue;
+    const a = toEN(me.lat, me.lon, s.a[0], s.a[1]), b = toEN(me.lat, me.lon, s.b[0], s.b[1]);
+    const ax = a.e * k, ay = -a.n * k, bx = b.e * k, by = -b.n * k;
+    if (Math.min(Math.hypot(ax, ay), Math.hypot(bx, by)) > rr + 4 && Math.hypot((ax + bx) / 2, (ay + by) / 2) > rr + 4) continue;
+    ctx.strokeStyle = st.color; ctx.lineWidth = Math.max(st.min, (s.w || 1) * k);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); n++;
+  }
+  return n;
+}
+
 function polarOf(me, c) {
   if (c.polar) return { brg: c.polar.brg, d: c.polar.d };
   const p1 = me.lat * D2R, p2 = c.lat * D2R, dl = (c.lon - me.lon) * D2R;
@@ -256,6 +278,10 @@ export class RadarMap {
     ctx.imageSmoothingEnabled = true;
     ctx.globalAlpha = 0.9;
     ctx.drawImage(this.canvas, -off.e * k - size / 2, off.n * k - size / 2, size, size);
+    ctx.globalAlpha = 1;
+    // inland harbours (public/js/mharbour.js): pontoons, finger piers, quays and gangways as crisp vectors — a 2.4 m pontoon
+    // is far below one grid cell at any radar range
+    try { drawSegments(ctx, me, this.app?.mharbour?.segmentsNear?.(me.lat, me.lon, rangeM * 1.5) || [], k, rr); } catch { /* cosmetic */ }
     ctx.restore();
   }
 

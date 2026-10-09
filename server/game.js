@@ -29,6 +29,7 @@ import { wireJob, isRunnerJob, payOf, migrateActor } from '../shared/jobs/types.
 import { canDo, jobtimeHooks } from '../shared/jobs/eligibility.js';
 import { canLoad } from '../shared/cargo.js';                                                  // YARD lane D H7
 const JOBS_PHASE = 2;   // YARD §12: phase-2 families only; 4 = every family
+const EVENT_DEDUPE_MS = 4000;   // an identical contract warning ({ dedupe }) to the same skipper within this is dropped (log spam)
 import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; // V7 step 0: express arrives on safe open water
 import { lowWaterAt } from '../shared/tide.js';
 import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
@@ -55,7 +56,8 @@ import { waterLevelAt } from '../shared/waterlevel.js';
 import { WT, WT_NAVIGABLE } from '../shared/wtformat.js';
 import LEVELS_NL from './waterworks/levels-nl.json' with { type: 'json' };
 import { createRadio } from './vhf.js';                                                   // VHF radio (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6)
-import { createMinorHarbours, diskOverlayReader, tileDepthSampler, squaresUnder } from './minorharbours.js';   // inland harbours (§7)
+import { createMinorHarbours, diskOverlayReader, tileDepthSampler, squaresUnder } from './minorharbours.js';
+import { mhNearBerth, mhDock } from './mhmoor.js';                                  // inland harbours: boxes / visitor berths (guidance + mooring)   // inland harbours (§7)
 import { boardFor as mhBoardFor, INLAND_TERMINALS } from './inlandjobs.js';
 import { loadLaneA, stubLaneA } from './inlandlink.js';
 import { buildGraph as buildInlandGraph } from './inland.js';
@@ -145,8 +147,9 @@ export class Game {
     this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
     this.jobsx = new JobsX({                                                   // YARD lane D: runner for JOB_GEN 8 families
       now: () => this.simTime, harborById,
-      event: (a, kind, text) => this.event(a, kind, text),
-      pay: (a, cr, j) => { a.money += cr; if (a.stats) { a.stats.delivered++; a.stats.earned += cr; } this.sendYou?.(a); },
+      harborName: (id) => harborById(id)?.name || this.mh?.get?.(id)?.name || null,   // minor harbours ('mh:…') too
+      event: (a, kind, text) => this.event(a, kind, text, kind === 'warn' ? { dedupe: true } : {}),
+      pay: (a, cr, j, text, o) => { a.money += cr; if (a.stats) { if (!o?.partial) a.stats.delivered++; a.stats.earned += cr; } this.sendYou?.(a); },   // partial: a COA lifting
       charge: (a, cr) => { if (!(a.money >= cr)) return false; a.money -= cr; return true; },
       ctx: (a) => this.jobsCtx(a),
       windKn: (a) => (this.weatherAt(a.ship.lat, a.ship.lon)?.wind?.spd ?? 0) / GEO.KN_TO_MS,
@@ -426,6 +429,14 @@ export class Game {
   // Berth guidance target (V5-PLAN item 2): the nearest berth of the nearest harbour that FITS the ship (free ones first,
   // sticky so the leading line does not jump), within NEAR_BERTH_RANGE_U; else the nearest one with `why` it does not fit.
   nearBerthFor(p) {
+    const named = this.namedNearBerthFor(p);
+    if (!this.mh || p.docked) return named;
+    let mhb = null; try { mhb = mhNearBerth(this, p); } catch (e) { this.log(`[mh] near berth failed: ${e.stack || e}`); mhb = null; }
+    // an inland harbour's box / visitor berth wins when it is nearer than the big harbour's berth (or that one does not fit)
+    if (mhb && (!named || mhb.distM < named.distM || (named.fits === false && mhb.fits))) return mhb;
+    return named;
+  }
+  namedNearBerthFor(p) {
     if (!this.geom || p.docked) { p.guideBerth = null; return null; }
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     const geom = harbor && units <= NEAR_BERTH_RANGE_U + 4000 ? this.harborGeom(harbor.id) : null;
@@ -464,7 +475,7 @@ export class Game {
     { const rig = this.rigFor(p); if (rig) p.sailsUp = anyHoisted(rig); }   // sailing: a yacht just bought / switched to gets her rig (moored: sails down) before `you` carries it
     return {
       id: p.id, name: p.name, ship: { ...p.ship }, cond: p.cond, flooding: p.flooding, fuel: p.fuel, cargo: p.cargo.map((c) => (c.caught ? { ...c, qty: Math.round(c.qty * 10) / 10 } : c)),
-      money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs.map(wireJob), convoyId: p.convoyId, docked: p.docked,
+      money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs.map((j) => this.wireMine(p, j)), convoyId: p.convoyId, docked: p.docked,
       orders: (p.office?.orders || []).map((o) => compactOrderView(o, this.simTime)),   // SHIPYARD §7.3 you.orders
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
@@ -538,6 +549,7 @@ export class Game {
   }
   event(p, kind, text, extra = {}) {
     if (p.isActor) return this.fleet.actorEvent(p, kind, text, extra);   // v6: a captain's lines go to the owner's ships' log
+    if (extra.dedupe) { if (this.dupWarn(p, text)) return; extra = { ...extra }; delete extra.dedupe; }   // contract buttons: the same line again within a few seconds: once
     const ev = { t: 'event', id: this.eventSeq++, kind, text, time: Date.now(), ...extra };
     p.log = (p.log || []).slice(-30).concat([{ kind, text, time: ev.time }]);
     this.send(p, ev);
@@ -546,6 +558,16 @@ export class Game {
     const s = JSON.stringify(msg);
     for (const [id, ws] of this.sockets) if (id !== except && ws.readyState === 1) ws.send(s);
   }
+  /** True when `text` was said to `p` with { dedupe } less than EVENT_DEDUPE_MS ago (button mashing, several hooks saying the same). */
+  dupWarn(p, text) {
+    const now = Date.now(), seen = this.warnSeen || (this.warnSeen = new WeakMap());
+    let m = seen.get(p); if (!m) seen.set(p, (m = new Map()));
+    const last = m.get(text); m.set(text, now);
+    if (m.size > 40) for (const [k, t] of m) if (now - t > EVENT_DEDUPE_MS) m.delete(k);
+    return last != null && now - last < EVENT_DEDUPE_MS;
+  }
+  /** An accepted job on the wire: runner jobs carry `stepInfo` (the current step: what, where, can it be done now). */
+  wireMine(p, j) { const w = wireJob(j); return isRunnerJob(j) && j.prog ? { ...w, stepInfo: this.jobsx.stepInfo(p, j) } : w; }
   sendYou(p, extra) { if (p.isActor) return; this.send(p, { t: 'you', you: this.privateState(p), ...(extra || {}) }); }
   sendHarbor(p) {
     if (p.isActor) return;
@@ -721,9 +743,9 @@ export class Game {
         case 'repair': return this.repair(p);
         case 'buy_kit': return this.buyKit(p);
         case 'accept_job': return this.acceptJob(p, m.jobId);
-        case 'job_step': { if (!this.jobsx.onAction(p, 'job_step', String(m.jobId ?? ''))) this.event(p, 'warn', 'Not now — get on the spot and slow down.'); return this.sendYou(p); }
+        case 'job_step': return this.runnerStep(p, String(m.jobId ?? ''));
         case 'abandon_job': return this.abandonJob(p, m.jobId);
-        case 'deliver_jobs': return this.deliverHere(p);
+        case 'deliver_jobs': return this.deliverHere(p, m.jobId != null ? String(m.jobId) : null);
         case 'buy_goods': return this.tradeGoods(p, m.good, +m.qty, true);
         case 'sell_goods': return this.tradeGoods(p, m.good, +m.qty, false);
         case 'dump_cargo': return this.dumpCargo(p, m.good);
@@ -800,6 +822,7 @@ export class Game {
   dock(p) {
     if (p.docked) return this.sendHarbor(p);
     if (p.assist) return this.event(p, 'info', 'The tugs have you. Hold on.');
+    if (this.mh) { try { if (mhDock(this, p)) return; } catch (e) { this.log(`[mh] dock failed: ${e.stack || e}`); } }   // a box / visitor berth of an inland harbour within 60 m
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     if (!harbor || units > DOCK_SEARCH_RANGE_U) { if (quayDockNearest(this, p)) return; return this.event(p, 'warn', 'No harbour within docking range. Quays near you: Q.'); }
     const geom = this.harborGeom(harbor.id);
@@ -1106,7 +1129,7 @@ export class Game {
       const r = this.jobsx.accept(p, job);
       if (!r.ok) return this.event(p, 'warn', r.why || 'Not possible with this ship.');
       if (fromContact) st.contact.jobs = st.contact.jobs.filter((j) => j.id !== jobId); else st.jobs = st.jobs.filter((j) => j.id !== jobId);
-      this.event(p, 'info', `Contract signed: ${job.title} — ${fmt(payOf(r.job))} cr, ${fmtShipH(r.job.hours)} of ship time. ${r.job.steps[r.job.prog.i]?.label || ''}`.trim());
+      this.event(p, 'info', `Contract signed: ${job.title} — ${fmt(payOf(r.job))} cr, ${fmtShipH(r.job.hours)} of ship time.${this.jobsx.stepInfo(p, r.job) ? ` Next: ${this.jobsx.stepInfo(p, r.job).text}.` : ''}`);
       this.sendYou(p); this.sendHarbor(p); return;
     }
     if ((job.gen || 0) >= JOB_GEN) {                                           // YARD §5.8: gen-8 legacy families are checked too
@@ -1158,18 +1181,37 @@ export class Game {
     this.sendYou(p);
   }
   /** The harbour sheet's Deliver button: hand over what this port is waiting for, or say why a contract cannot be. */
-  deliverHere(p) {
+  // `jobId` (the button of one contract): a step-runner job runs its current step (load, discharge, embark, land, drill).
+  deliverHere(p, jobId = null) {
+    const rj = jobId ? p.jobs.find((j) => j.id === jobId && isRunnerJob(j) && j.prog) : null;
+    if (rj) return this.runnerStep(p, rj.id);
     if (!p.docked) return this.event(p, 'warn', 'Moor in the destination harbour to deliver.');
     const h = harborById(p.docked); if (!h) return;
     const n = this.deliverJobs(p, h);
-    if (!n) {
-      const here = p.jobs.filter((j) => j.to === h.id);
-      if (!here.length) this.event(p, 'info', `No contract of yours ends at ${h.name}.`);
-      for (const j of here) this.event(p, 'warn', `${j.title}: ${this.whyNotDeliverable(p, j)}`);
+    let moved = 0;
+    const said = new Set(), warn = (t) => { if (!said.has(t)) { said.add(t); this.event(p, 'warn', t, { dedupe: true }); } };
+    for (const j of [...p.jobs]) {                                             // runner jobs whose current step is in this port
+      if (!isRunnerJob(j) || !j.prog || this.jobsx.stepInfo(p, j)?.at !== h.id) continue;
+      const r = this.jobsx.tryStep(p, j);
+      if (r.ok) moved++; else warn(`${j.title}: ${r.why}`);
+    }
+    if (!n && !moved) {
+      const here = p.jobs.filter((j) => j.to === h.id && !(isRunnerJob(j) && this.jobsx.stepInfo(p, j)?.at === h.id));
+      if (!here.length && !said.size) this.event(p, 'info', `No contract of yours ends at ${h.name}.`);
+      for (const j of here) warn(`${j.title}: ${this.whyNotDeliverable(p, j)}`);
     }
     this.sendYou(p); this.sendHarbor(p);
   }
+  /** The current step of runner job `jobId` from a button (Deliver in the harbour sheet, the contract card's J). */
+  runnerStep(p, jobId) {
+    const j = p.jobs.find((x) => x.id === jobId && isRunnerJob(x) && x.prog);
+    if (!j) { this.event(p, 'warn', 'No such contract.'); return this.sendYou(p); }
+    const r = this.jobsx.tryStep(p, j);
+    if (!r.ok) this.event(p, 'warn', `${j.title}: ${r.why}`, { dedupe: true });
+    this.sendYou(p); if (p.docked) this.sendHarbor(p);
+  }
   whyNotDeliverable(p, j) {
+    if (isRunnerJob(j) && j.prog) return this.jobsx.why(p, j);   // the runner's own step: load first, discharges at X …
     if (j.type === 'fishing') { const have = p.cargo.filter((c) => c.good === 'fish' && c.caught && !c.jobId).reduce((s, c) => s + c.qty, 0); return `needs at least ${Math.ceil(j.qty * 0.25)} t of fish you caught yourself aboard (you have ${Math.floor(have * 10) / 10} t; bought fish does not count).`; }
     if (j.type === 'tow') return p.towing === j.id ? 'the tow is still on the line.' : 'pick up the casualty first.';
     if (j.type === 'supply') return `the supplies go to ${j.platformName} at sea.`;

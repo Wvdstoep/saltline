@@ -141,6 +141,8 @@ class App {
     // v6 fleet (fleet.js, hq.js): harbour Office tab, fleet dialogs, the top-bar chip and the Fleet HQ (O)
     this.fleetShips = new Map();   // snap.fleet (FleetPublic): fleet ships near you, drawn like AI traffic
     this.fleetUi = null; this.hq = null;
+    this.mharbour = null;                                                  // inland harbours in 3D (mharbour.js): pontoons, boxes, quays, hut, fuel berth near the ship
+    import('./mharbour.js').then((m) => { if (this.ready && !this.world.ww) return; this.mharbour = new m.MHarbour(this, { phone: isTouch() }); }).catch((e) => console.warn('[mh] 3D unavailable', e));
     this.mhLayer = null;                                                   // inland harbours (§7.5): chart layer + harbour cards
     import('./mhchart.js').then((m) => { if (this.ready && !this.world.ww) return; this.mhLayer = new m.MHChartLayer(this, { fetchImpl: (u) => fetch(u + (u.includes('/api/mh/') ? `?player=${encodeURIComponent(this.you?.id || '')}` : '')).then((r) => r.json()) }); }).catch((e) => console.warn('[mh] unavailable', e));
     import('./fleet.js').then((m) => { this.fleetUi = new m.FleetUi(this); }).catch((e) => console.warn('[fleet] unavailable', e));
@@ -226,6 +228,7 @@ class App {
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
       case 'harbor': this.politics?.onHarbor(m.harbor); this.hud.showHarbor(m.harbor); break;
       case 'quays': this.quayUi?.onQuays(m); break;                       // DOCK ANYWHERE
+      case 'mh_moored': if (this.quayUi) { this.quayUi.open = false; this.quayUi.mooredOpen = true; this.quayUi.render(true); } break;   // moored in an inland harbour: the fee / services panel
       case 'vhf': case 'vhf_st': this.vhf?.onMessage(m); break;          // VHF transmissions and station lists
       case 'ww_static': this.wwMesh?.setStatics(m.objects || []); this.terrain.wtiles?.setSkipIds?.(this.wwMesh?.knownIds?.() || []); break;  // bridges & locks near us (§8.2)
       case 'ww': this.wwMesh?.applyDelta(m); break;                       // span / chamber state, signals, outages
@@ -245,7 +248,8 @@ class App {
     if (!this.world.ww) {   // the server runs without bridges, locks and radio (SALTLINE_WW_OFF=1): none of their UI either
       try { this.vhf?.mini?.remove(); this.vhf?.ticker?.remove(); this.vhf?.panel?.remove(); } catch { /* best effort */ }
       try { this.wwHud?.dispose(); this.wwMesh?.dispose(); this.wwMesh?.group?.removeFromParent?.(); } catch { /* best effort */ }
-      this.vhf = null; this.wwHud = null; this.wwMesh = null; this.mhLayer = null;
+      try { this.mharbour?.dispose(); } catch { /* best effort */ }
+      this.vhf = null; this.wwHud = null; this.wwMesh = null; this.mhLayer = null; this.mharbour = null;
       document.querySelectorAll('.ww-only').forEach((el) => el.classList.add('hidden'));
     }
     if (m.storms) this.storms = m.storms;
@@ -854,7 +858,7 @@ class App {
     const s = this.ship; if (!s || !t || !Number.isFinite(t.lat)) return;
     let to = { lat: t.lat, lon: t.lon };
     if (t.kind === 'ground' && t.distM > t.rangeM) to = destination(t.lat, t.lon, bearing(t.lat, t.lon, s.lat, s.lon), Math.max(0, t.rangeM - 2000)); // the near edge of the bank
-    const harbor = t.kind === 'harbor' ? t.job.to : null;
+    const harbor = t.kind === 'harbor' ? (t.job.stepInfo?.at || t.job.to) : null;   // runner jobs: the current step's port
     // route planner v2 for this hull's draught; the crew steers it at sea (any helm input takes over again)
     const engage = !this.you?.docked;
     if (!this.politics || t.kind !== 'harbor') return this.pilot.planTo({ lat: to.lat, lon: to.lon, harbor, label: t.name || 'contract', engage });
@@ -1141,7 +1145,8 @@ class App {
    */
   keelCheck(s, C, pLat, pLon) {
     const hh = this.terrain.heightAt(s.lat, s.lon);
-    if (hh == null || -hh + this.tideLevel >= C.draft) return null;
+    const mhd = hh == null ? null : this.mharbour?.depthAt?.(s.lat, s.lon);   // inside an inland harbour: its charted depth (the tiles' bathymetry is too coarse for small basins)
+    if (hh == null || Math.max(-hh + this.tideLevel, mhd ?? -Infinity) >= C.draft) return null;
     const hPrev = this.terrain.heightAt(pLat, pLon);
     if (hPrev != null && hh <= hPrev) return null;
     s.lat = pLat; s.lon = pLon;
@@ -1398,6 +1403,7 @@ class App {
     try { this.quayUi?.update(dt, now); } catch (e) { if (!this.quayUiWarned) { this.quayUiWarned = true; console.warn('[quayui] update failed', e); } }
     try { this.tugLayer?.update(dt, now); } catch (e) { if (!this.tugLayerWarned) { this.tugLayerWarned = true; console.warn('[tugs] update failed', e); } }
     try { this.wwMesh?.update(dt, { lat: this.ship.lat, lon: this.ship.lon }); } catch (e) { if (!this.wwWarned) { this.wwWarned = true; console.warn('[ww] update failed', e); } }
+    try { this.mharbour?.update(dt, now); } catch (e) { if (!this.mhWarned) { this.mhWarned = true; console.warn('[mh] update failed', e); } }
     if (this.wwMesh && now - (this.lastCut || 0) > 500) { this.lastCut = now; try { this.ocean.setCutouts?.(this.wwMesh.cutouts().map((c) => c.ring.map(([la, lo]) => { const p = toLocal(la, lo, this.origin); return [p.x, p.z]; }))); } catch { /* cut-outs are cosmetic */ } }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
     // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views
@@ -1479,7 +1485,7 @@ class App {
     for (const c of this.aisLayer.contacts()) contacts.push({ ...c, kind: 'ai', color: c.color || '#9aa3ab' });
     for (const r of this.rescues.values()) contacts.push({ kind: 'rescue', lat: r.cur.lat, lon: r.cur.lon, hdg: r.cur.hdg, color: '#ff8c42', label: r.kind === 'helicopter' ? 'SAR heli' : 'Lifeboat' });
     if (this.you?.nearBerth) { const b = this.you.nearBerth; if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) contacts.push({ kind: 'berth', lat: b.lat, lon: b.lon, hdg: b.hdg, color: '#58d68d', label: b.name }); }
-    for (const t of this.jobTargets || []) contacts.push({ kind: 'job', lat: t.lat, lon: t.lon, color: t.color, label: t.kind === 'casualty' ? 'Casualty' : t.name, radiusU: t.kind === 'ground' ? t.rangeM / GEO.SCALE : 0 });
+    for (const t of this.jobTargets || []) if (t.kind !== 'here') contacts.push({ kind: 'job', lat: t.lat, lon: t.lon, color: t.color, label: t.kind === 'casualty' ? 'Casualty' : t.name, radiusU: t.kind === 'ground' ? t.rangeM / GEO.SCALE : 0 });
     this.route.forEach((p, i) => contacts.push({ kind: 'wp', lat: p.lat, lon: p.lon, color: i === 0 ? '#f2b134' : 'rgba(242,177,52,0.55)', label: String(i + 1) }));
     this.hud.drawRadar(s, contacts, now);
   }

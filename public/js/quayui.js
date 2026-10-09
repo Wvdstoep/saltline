@@ -83,6 +83,7 @@ export class QuayUI {
     if (q === 'moor' && this.sel) return app.net?.action?.('quay_dock', { id: this.sel.id });
     if (q === 'tugs' && this.sel) return app.net?.action?.('quay_tugs', { id: this.sel.id });
     if (q === 'castoff') return app.net?.action?.('undock');
+    if (q === 'mhcard') return app.hud?.openMinorHarbour?.(app.you?.berth?.mh);   // inland harbour: its card (fees, services, VHF)
     if (q.startsWith('tab:')) return app.hud?.openHarborTab?.(q.slice(4));
   }
 

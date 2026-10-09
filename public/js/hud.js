@@ -756,6 +756,7 @@ export class Hud {
     setText(txt, `${nearBerth.name || nearBerth.id} · ${nearBerth.distM >= 1000 ? (nearBerth.distM / 1000).toFixed(1) + ' km' : Math.round(nearBerth.distM) + ' m'} · ${pad3(nearBerth.brg ?? 0)}° · depth ${Number.isFinite(nearBerth.depth) ? nearBerth.depth.toFixed(0) + ' m' : '—'}${Number.isFinite(nearBerth.length) ? ` · ${Math.round(nearBerth.length)} m quay` : ''}`);
     moor.classList.remove('hidden'); moor.disabled = !inRange; moor.title = inRange ? 'Make fast at this berth' : 'Within 60 m and under 2 kn';
     setText(moor, this.touch ? 'Moor' : 'Moor (T)');
+    if (nearBerth.mh) { tugs.classList.add('hidden'); moor.title = inRange ? `Make fast${nearBerth.fee ? ` · ${fmt(nearBerth.fee)} cr per night` : ''}` : 'Within 60 m of the berth and under 2 kn'; return; }   // inland harbours: no tugs, you moor yourself
     tugs.classList.remove('hidden'); tugs.disabled = !tugRange || !!you?.hail; setText(tugs, `Tugs · ${fmt(tugCost)} cr`); tugs.title = tugRange ? 'Tugs take you alongside in 45 s' : 'Within 1.5 km of the harbour, under 6 kn';
   }
   /**
@@ -1134,12 +1135,15 @@ export class Hud {
         <div class="tools"><span class="chip">${jobs.length} on the board</span></div></div>
       ${jobs.length ? `<div class="cards">${jobs.map((j) => this.jobCard(j, h, you, C, mass, false)).join('')}</div>` : `<div class="empty">${ic('contract')}<span>The board is empty right now — new contracts are posted every hour.</span></div>`}`}
       <h3 class="subHead">${ic('list')}Your contracts${mine.length ? ` · ${fmt(mine.reduce((s, j) => s + j.pay, 0))} cr outstanding` : ''}</h3>
-      ${mine.length ? `<div class="mineList">${mine.map((j) => { const st = this.mineStatus(j, you); return `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · <span class="${this.deadlineSec(j) < 0 ? 'down' : ''}" title="Counted on your ship's clock">${this.deadline(j)}${this.deadlineSec(j) < 0 ? ' — half pay' : ' left (ship time)'}</span>${st.text ? ` · <span class="${st.ready ? 'up' : 'down'}">${esc(st.text)}</span>` : ''}</small></div><span class="p">${fmt(j.pay)} cr</span>${st.here ? `<button class="small primary" data-act="deliver" data-job="${esc(j.id)}">Deliver</button>` : ''}<button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`; }).join('')}</div>`
+      ${mine.length ? `<div class="mineList">${mine.map((j) => { const st = this.mineStatus(j, you); return `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · <span class="${this.deadlineSec(j) < 0 ? 'down' : ''}" title="Counted on your ship's clock">${this.deadline(j)}${this.deadlineSec(j) < 0 ? ' — half pay' : ' left (ship time)'}</span>${st.text ? ` · <span class="${st.ready ? 'up' : 'down'}">${esc(st.text)}</span>` : ''}</small></div><span class="p">${fmt(j.pay)} cr</span>${st.here ? `<button class="small primary" data-act="deliver" data-job="${esc(j.id)}">${esc(st.btn || 'Deliver')}</button>` : ''}<button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`; }).join('')}</div>`
         : `<div class="empty">${ic('crate')}<span>No contracts aboard. Take one above, or look at every harbour's board in <i>Job boards</i>.</span></div>`}`;
   }
 
   /** One line on an accepted contract: can it be delivered here, and what is still missing. */
   mineStatus(j, you) {
+    const si = j.stepInfo;
+    if (si) return { here: !!si.can, ready: !!si.can, text: si.text, btn: si.btn };   // step-runner jobs: the server's current step
+    if (Array.isArray(j.steps) && j.steps.length && (j.gen || 0) >= 8) return { here: false, ready: false, text: j.steps[j.prog?.i ?? 0]?.label || '' };
     const here = !!you.docked && j.to === you.docked;
     if (j.type === 'fishing') {
       const have = (you.cargo || []).filter((c) => c.good === 'fish' && c.caught && !c.jobId).reduce((s, c) => s + (+c.qty || 0), 0);
@@ -1406,7 +1410,7 @@ export class Hud {
         // V6 item 5: a contract your ship cannot make in time is still yours to take — after one honest question
         if (el.dataset.slow && !confirm(`Your ship needs ~${el.dataset.need}, the contract allows ${el.dataset.budget} h of ship time. Late delivery pays half. Accept anyway?`)) return;
         return net.action('accept_job', { jobId: el.dataset.job });
-      case 'deliver': net.action('deliver_jobs'); return;
+      case 'deliver': net.action('deliver_jobs', el.dataset.job ? { jobId: el.dataset.job } : {}); return;
       case 'abandon': if (confirm('Abandon this contract? Cargo is returned or dumped and a 10 % fee is charged.')) net.action('abandon_job', { jobId: el.dataset.job }); return;
       case 'fuel': return net.action('buy_fuel', { tonnes: +el.dataset.t });
       case 'fuelBuy': { const v = +($('fuelSlider')?.value || 0); if (v > 0) net.action('buy_fuel', { tonnes: v }); else this.event({ kind: 'warn', text: 'Slide to choose how much fuel to bunker.' }); return; }

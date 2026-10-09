@@ -89,6 +89,17 @@ export function jobTargets(app) {
         toHarbor();
         t.step = `Land ${fmtT(Math.min(have, j.qty))} of fish at ${t.name}`;
       }
+    } else if (j.stepInfo) {                                   // step-runner jobs (JOB_GEN 8): the server says where and what
+      const si = j.stepInfo;
+      const sh = si.at ? harbors.find((h) => h.id === si.at) : null;
+      if (sh) { const a = app.harborAnchor ? app.harborAnchor(sh) : sh; t.kind = 'harbor'; t.lat = a.lat; t.lon = a.lon; t.name = shortName(sh.name); }
+      else if (si.spot && Number.isFinite(si.spot.lat)) { t.kind = 'spot'; t.lat = si.spot.lat; t.lon = si.spot.lon; t.rangeM = si.spot.rM || 0; t.name = si.label || 'Work site'; }
+      else { t.kind = 'here'; t.lat = s.lat; t.lon = s.lon; t.name = si.label || ''; }
+      t.step = si.text;
+      if (si.act === 'job_step') {
+        const near = !si.spot || haversine(s.lat, s.lon, si.spot.lat, si.spot.lon) <= (si.spot.rM || 500), slow = si.maxKn == null || spd <= si.maxKn;
+        t.action = { id: 'job_step', label: si.btn || 'Confirm', enabled: near && slow, why: !near ? `${fmtD(haversine(s.lat, s.lon, si.spot.lat, si.spot.lon) - (si.spot.rM || 500))} to go` : !slow ? `slow below ${si.maxKn} kn` : '' };
+      }
     } else {
       toHarbor();
       const step = Array.isArray(j.steps) ? j.steps[j.prog?.i ?? 0] : null;   // step-runner jobs: the current step's own label
@@ -122,6 +133,8 @@ export function fmtLeft(sec, warp = 1) {
 /** Distance and bearing to the target ('' on a fishing bank you are already on). */
 export function jobWhere(t) {
   if (!Number.isFinite(t.distM)) return '';
+  if (t.kind === 'here') return '';
+  if (t.kind === 'spot' && t.distM <= t.rangeM) return 'on the spot';
   if (t.kind === 'ground') return t.distM > t.rangeM ? `${fmtD(t.distM - t.rangeM)} · ${pad3(t.brg)}°` : 'on the bank';
   return `${fmtD(t.distM)} · ${pad3(t.brg)}°`;
 }
@@ -217,6 +230,7 @@ export class JobLayer {
     for (const tg of this.targets) {
       const key = `${tg.job.id}:${tg.kind}`;
       if (tg.kind === 'ground' && tg.distM <= tg.rangeM) continue;          // on the bank: the HUD says so
+      if (tg.kind === 'here') continue;                                      // a runner step with no place (hire hours, drills): no beacon
       if (tg.distM > BEACON_MAX_M || (tg.kind === 'harbor' && tg.distM < 1200)) continue; // berth guidance takes over
       seen.add(key);
       let b = this.beacons.get(key);

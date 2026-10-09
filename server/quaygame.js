@@ -16,6 +16,7 @@ import { QUAY, ACTION_SERVICE, SERVICE_TIERS, quayDenies, quaySurcharge, service
 import { queryQuays, dockCheck, tugCheck, quayBerth, quayUndockPoint, collectOccupants, makeSampler, quayName } from './quays.js';
 import { HARBORS, harborById } from './harbors.js';
 import { portDues, pilotageFee } from './economy.js';
+import { mhDenies, mhSurcharge } from '../shared/mhgeo.js';   // inland harbour berths (server/mhmoor.js): the harbour's own services on top of the tier
 
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
 const ASK_MS = 1000;
@@ -192,7 +193,8 @@ export function quayUndock(game, p) {
   if (!p.docked || !b || !b.quay) return false;
   const secs = Math.max(0, game.simTime - (b.since ?? p.dockedAt ?? game.simTime));
   const due = balanceDue(b.perDay, secs, b.paid), days = daysAlongside(secs);
-  if (due > 0) { p.money = Math.max(0, p.money - due); game.event(p, 'info', `Quay fee: ${days} day${days > 1 ? 's' : ''} alongside at ${fmt(b.perDay)} cr, ${fmt(due)} cr still due — paid.`); }
+  if (due > 0) { p.money = Math.max(0, p.money - due); game.event(p, 'info', b.mh ? `Harbour dues ${b.mhName || ''}: ${days} night${days > 1 ? 's' : ''} at ${fmt(b.perDay)} cr, ${fmt(due)} cr still due — paid.` : `Quay fee: ${days} day${days > 1 ? 's' : ''} alongside at ${fmt(b.perDay)} cr, ${fmt(due)} cr still due — paid.`); }
+  else if (b.mh) game.event(p, 'info', `Harbour dues ${b.mhName || ''}: ${days} night${days > 1 ? 's' : ''}, paid when you moored.`);
   const spawn = quayUndockPoint(b);
   p.docked = null; p.contactSeen = null; p.berth = null; p.dockedAt = null;
   p.ship.lat = spawn.lat; p.ship.lon = spawn.lon; if (Number.isFinite(spawn.hdg)) p.ship.hdg = spawn.hdg;
@@ -212,19 +214,19 @@ export function quayGate(game, p, action, m, run) {
   const service = ACTION_SERVICE[action] || null;
   if (!b || !b.quay || !service) return run();
   const h = harborById(b.harbor);
-  const why = quayDenies(b, service, h?.name || 'the harbour');
+  const why = b.mh ? mhDenies(b, service, h?.name || 'the harbour') : quayDenies(b, service, h?.name || 'the harbour');
   if (why) return game.event(p, 'warn', why);
-  if (service === 'fuel') {
+  if (service === 'fuel' && !(b.mh && b.svc?.from?.fuel === 'minor')) {   // a marina's own fuel berth has no truck limit
     const cap = SERVICE_TIERS[b.tier]?.maxFuelT ?? null;
     if (cap != null && m) m.tonnes = Math.min(Number.isFinite(+m.tonnes) ? +m.tonnes : cap, cap);
   }
   const before = p.money;
   const out = run();
   const moved = Math.abs((Number(p.money) || 0) - (Number(before) || 0));
-  const fee = quaySurcharge(b.tier, service, moved);
+  const fee = b.mh ? mhSurcharge(b, service, moved) : quaySurcharge(b.tier, service, moved);
   if (fee > 0) {
     p.money = Math.max(0, p.money - fee);
-    game.event(p, 'info', `${service === 'market' ? 'Trucking' : service === 'fuel' ? 'Fuel truck' : 'Call-out'} to ${b.name}: ${fmt(fee)} cr.`);
+    game.event(p, 'info', `${service === 'market' ? 'Trucking' : service === 'fuel' ? (b.mh && b.svc?.from?.fuel === 'minor' ? 'Fuel berth surcharge' : 'Fuel truck') : b.mh && b.svc?.from?.repair === 'minor' ? 'Yard surcharge' : 'Call-out'} to ${b.name}: ${fmt(fee)} cr.`);
     game.sendYou(p);
   }
   return out;
@@ -240,7 +242,7 @@ export function quayPublic(p) { return p.docked && p.berth?.quay ? { name: p.ber
 /** The harbour sheet's extra field: which tabs and services this quay reaches (hud gating). */
 export function quayHarbourInfo(p) {
   const b = p.berth; if (!b || !b.quay) return null;
-  return { name: b.name, tier: b.tier, hdKm: b.hdKm, perDay: b.perDay, since: b.since, paid: b.paid };
+  return { name: b.name, tier: b.tier, hdKm: b.hdKm, perDay: b.perDay, since: b.since, paid: b.paid, ...(b.mh ? { mh: b.mh, mhName: b.mhName, mhTier: b.mhTier, svc: b.svc } : {}) };
 }
 /** Is ashore (the harbour walk) possible from here? (never from a quay: the walk is built around the harbour) */
 export function quayAllowsAshore(p) { return !(p.berth && p.berth.quay); }
