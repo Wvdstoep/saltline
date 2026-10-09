@@ -79,7 +79,7 @@ export class RoutePlanner {
     if (this.closed) return;
     this.ready = false;
     let w;
-    try { w = new Worker(new URL('./routeworker-thread.js', import.meta.url), { workerData: this.workerData || {} }); }
+    try { w = new Worker(new URL('./routeworker-thread.js', import.meta.url), { workerData: this.workerData || {}, resourceLimits: { maxOldGenerationSizeMb: Number(process.env.SALTLINE_ROUTE_WORKER_HEAP_MB) || 256 } }); }   // a hard cap: a runaway plan kills the worker, not the pod
     catch (e) { this.log('[route] worker failed to start — planning inline', e.message); this.goInline(); return; }
     this.worker = w;
     w.on('message', (m) => this.onMessage(w, m));

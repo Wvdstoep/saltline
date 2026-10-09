@@ -11,6 +11,7 @@ import { HARBORS, harborById } from './harbors.js';
 import { DATA_DIR } from './world.js';
 import * as osm from './osm.js';
 import * as bigports from './bigports.js';
+import { ByteLRU } from './bytelru.js';
 import { WT, cellOf as wtCellOf, tileFToLatLon, tileSizeM, tileHeightAt, tileMaskAt, tilesInRadius } from '../shared/wtformat.js';
 
 export const GEOM_VERSION = 6;          // v4/v5: street layer (features.roads / areas / rails / pois / places); v6: built from world tiles
@@ -37,8 +38,27 @@ const OSM_BACKOFF_MS = 30 * 60e3, NET_DOWN_MS = 10 * 60e3;
 // Module state
 // ---------------------------------------------------------------------------------------------------------------
 let world = null;
-const entries = new Map();          // id → entry
+/** Memory budget (MB) of the built patches kept in memory (SALTLINE_PATCH_MEM_MB): ≈ 1 MB each (patch + SDF + JSON). */
+export const DEFAULT_PATCH_MEM_MB = 48;
+/** Patch bytes + geometry read for a caller that only needs those (route planner, HUD), without the SDF (MB). */
+export const LIGHT_PATCH_MEM_MB = 12;
+// id → entry, bounded in bytes. Patches near an active ship (setResident) are pinned; the others are dropped least
+// recently used first and re-read from data/geom on the next query (lazy reload), so callers see the same answers.
+const resident = new Set();
 let entryList = [];                 // same entries as an array (fast iteration in landPenetration)
+let entryListDirty = false;
+const entries = new ByteLRU({
+  maxBytes: (Number(process.env.SALTLINE_PATCH_MEM_MB) || DEFAULT_PATCH_MEM_MB) * 1048576,
+  sizeOf: (e) => (e.buffer?.length || 0) + (e.sdf?.byteLength || 0) + (e.geomBytes || 0) + 2048,
+  pinned: (id) => resident.has(id),
+  onEvict: () => { entryListDirty = true; lazyStats.evicted++; },
+});
+const lazyStats = { loads: 0, misses: 0, evicted: 0, light: 0 };
+// id → { buffer, geom } read from data/geom for getHarborPatch / getHarborGeom when the full entry is not in memory:
+// no SDF, no distance transform, never counted as built (landPenetration only uses full entries).
+const light = new ByteLRU({ maxBytes: LIGHT_PATCH_MEM_MB * 1048576, sizeOf: (l) => l.buffer.length + l.geomBytes + 1024 });
+const anchors = new Map();          // id → { lat, lon } of every built patch seen (memory or disk), never evicted (tiny)
+const lazyMiss = new Map();         // id → time a lazy reload found nothing usable (retried after 60 s)
 const building = new Map();         // id → Promise<geom|null>
 const osmFailedAt = new Map();      // id → Date.now() of the last failed / unusable OSM attempt
 let netFailures = 0, netDownUntil = 0;
@@ -51,6 +71,7 @@ const cfg = {
   preload: !process.env.NODE_TEST_CONTEXT,
   log: (...a) => console.log(new Date().toISOString(), ...a),
   wt: null,             // WORLD TILES: server/worldtiles.js instance (server.js), patches are built from its D14 tiles
+  lazyLoad: !process.env.NODE_TEST_CONTEXT,   // re-read an evicted patch from data/geom on a query
 };
 
 /** Test / CLI hook: `{dataDir, offline, fetchImpl, timeoutMs, radiusM, log, preload}`. Clears the in-memory cache when the data dir changes. */
@@ -63,9 +84,11 @@ export function configure(opts = {}) {
   if (typeof opts.log === 'function') cfg.log = opts.log;
   if (typeof opts.preload === 'boolean') cfg.preload = opts.preload;
   if ('wt' in opts) cfg.wt = opts.wt || null;
+  if (typeof opts.lazyLoad === 'boolean') cfg.lazyLoad = opts.lazyLoad;
+  if (Number.isFinite(opts.patchMemMB)) { entries.maxBytes = opts.patchMemMB * 1048576; trimPatches(); }
   netFailures = 0; netDownUntil = 0; osmFailedAt.clear();
 }
-export function resetCache() { entries.clear(); entryList = []; building.clear(); osmFailedAt.clear(); }
+export function resetCache() { anchors.clear(); light.clear(); entries.clear(); entryList = []; entryListDirty = false; building.clear(); osmFailedAt.clear(); lazyMiss.clear(); resident.clear(); }
 const geomDir = () => path.join(cfg.dataDir, 'geom');
 /** A harbour, or one of the extra patches of a big port (server/bigports.js: {id, lat, lon, sub: true, parent}). */
 export function geomHarbor(id) { return harborById(id) || bigports.subPatchById(id, HARBORS); }
@@ -82,7 +105,9 @@ export function init(w) {
       try {
         while (k < list.length) {
           const h = list[k++];
-          if (entries.has(h.id)) continue;
+          if (entries.has(h.id) || anchors.has(h.id)) continue;
+          // over the memory budget only the anchor is kept (the patch loads lazily when a query needs it)
+          if (entries.bytes >= entries.maxBytes * 0.8) { const m = readGeomMeta(h.id); if (m && Number.isFinite(m.meta.geom.anchor?.lat)) anchors.set(h.id, { lat: m.meta.geom.anchor.lat, lon: m.meta.geom.anchor.lon }); break; }
           const e = loadGeomCache(h.id);
           if (e) { setEntry(e); break; }
         }
@@ -1946,7 +1971,9 @@ function sdfFromMask(mask, n, res) {
   for (let i = 0; i < n * n; i++) { const d = ((IS_OBSTACLE[mask[i]] ? dWat[i] : dObs[i]) - 0.5) * res; const s = IS_OBSTACLE[mask[i]] ? -(d < 0 ? 0 : d) : d < 0 ? 0 : d; out[i] = clamp(Math.round(s * 4), -32000, 32000); }
   return out;
 }
-function makeEntry(harbor, build, source, builtAt = Date.now()) {
+/** Rough heap cost of a parsed geometry JSON (≈ 3 × its text). */
+function geomBytesOf(g) { try { return JSON.stringify(g).length * 3; } catch { return 1048576; } }
+function makeEntry(harbor, build, source, builtAt = Date.now(), geomBytes = null) {
   const n = build.geom.n, res = build.geom.res;
   const buffer = encodePatch({ n, res, originLat: harbor.lat, originLon: harbor.lon, synthetic: source === 'synthetic', heights: build.heights, mask: build.mask });
   const dec = decodePatch(buffer);
@@ -1957,9 +1984,63 @@ function makeEntry(harbor, build, source, builtAt = Date.now()) {
     halfLat: (n * res) / 2 / GEO.M_PER_DEG_LAT, halfLon: (n * res) / 2 / frame.kLon,
     buffer, heights: dec.heights, mask: dec.mask,
     sdf: build.sdf instanceof Float32Array ? sdfToInt16(build.sdf) : build.sdf, berthsXZ, source, builtAt,
+    geomBytes: geomBytes ?? geomBytesOf(build.geom),
   };
 }
-function setEntry(e) { entries.set(e.id, e); entryList = [...entries.values()]; }
+function setEntry(e) { lazyMiss.delete(e.id); light.delete(e.id); if (e.geom?.anchor) anchors.set(e.id, { lat: e.geom.anchor.lat, lon: e.geom.anchor.lon }); entries.set(e.id, e); entryList = [...entries.values()]; entryListDirty = false; }
+function liveList() { if (entryListDirty) { entryList = [...entries.values()]; entryListDirty = false; } return entryList; }
+/** The entry of `id`: in memory (made most recent), else re-read from the disk cache when lazy loading is on. */
+function entryFor(id) {
+  const e = entries.get(id);
+  if (e) { entries.touch(id); return e; }
+  if (!cfg.lazyLoad || typeof id !== 'string') return null;
+  const t = lazyMiss.get(id);
+  if (t && Date.now() - t < 60_000) return null;
+  const d = loadGeomCache(id);
+  if (!d) { lazyMiss.set(id, Date.now()); if (lazyMiss.size > 2000) lazyMiss.delete(lazyMiss.keys().next().value); lazyStats.misses++; return null; }
+  lazyStats.loads++;
+  setEntry(d);
+  return d;
+}
+/** { buffer, geom } of `id` without building a full entry (memory → light cache → disk). */
+function lightFor(id) {
+  const e = entries.get(id);
+  if (e) { entries.touch(id); return e; }
+  if (!cfg.lazyLoad || typeof id !== 'string') return null;
+  const l = light.get(id);
+  if (l) { light.touch(id); return l; }
+  const t = lazyMiss.get(id);
+  if (t && Date.now() - t < 60_000) return null;
+  try {
+    const m = readGeomMeta(id);
+    const buf = m ? fs.readFileSync(m.b) : null, dec = buf ? decodePatch(buf) : null;
+    if (!dec || dec.n !== PATCH_N || Math.abs(dec.originLat - m.harbor.lat) > 1e-9 || Math.abs(dec.originLon - m.harbor.lon) > 1e-9) { lazyMiss.set(id, Date.now()); lazyStats.misses++; return null; }
+    const r = { buffer: buf, geom: m.meta.geom, geomBytes: m.textLen * 3 };
+    if (m.meta.geom?.anchor) anchors.set(id, { lat: m.meta.geom.anchor.lat, lon: m.meta.geom.anchor.lon });
+    light.set(id, r); lazyStats.light++;
+    return r;
+  } catch { return null; }
+}
+/**
+ * Patches that must stay in memory (harbours near an online ship / a ship under way): pinned against eviction and
+ * loaded now when on disk (at most `maxLoads` per call, the rest on the next call). Returns the number loaded.
+ */
+export function setResident(ids, { maxLoads = 2 } = {}) {
+  resident.clear();
+  let loaded = 0;
+  for (const id of ids || []) {
+    resident.add(id);
+    if (!entries.has(id) && loaded < maxLoads && cfg.lazyLoad) { if (entryFor(id)) loaded++; }
+  }
+  trimPatches();
+  return loaded;
+}
+/** Trim the patch cache to `maxBytes` (default its budget; 0 = keep only resident patches). Returns the count dropped. */
+export function trimPatches(maxBytes = entries.maxBytes) {
+  const n = entries.trim(maxBytes, maxBytes < entries.maxBytes ? (id) => !resident.has(id) : null);
+  if (n) entryListDirty = true;
+  return n;
+}
 function saveGeomCache(e) {
   try {
     const dir = geomDir();
@@ -1971,12 +2052,13 @@ function saveGeomCache(e) {
     return true;
   } catch (err) { cfg.log('[geom] cache write failed', e.id, err?.message || err); return false; }
 }
-function loadGeomCache(id) {
+/** The validated JSON of a cached patch → { meta, harbor, b (bin path) }, or null when it would not be loaded. */
+function readGeomMeta(id) {
   try {
     const dir = geomDir();
     const j = path.join(dir, `${id}.json`), b = path.join(dir, `${id}.bin`);
     if (!fs.existsSync(j) || !fs.existsSync(b)) return null;
-    const meta = JSON.parse(fs.readFileSync(j, 'utf8'));
+    const text = fs.readFileSync(j, 'utf8'), meta = JSON.parse(text);
     if (!meta || !(meta.version === GEOM_VERSION || GEOM_STALE_OK.has(meta.version)) || !meta.geom || !Array.isArray(meta.geom.berths)) return null;
     // the street layer is required (v4+), except for a tile-built patch without a cached Overpass answer
     if (!Array.isArray(meta.geom.features?.pois) || (!meta.geom.features.pois.length && !meta.geom.sub && meta.source !== 'tiles') || !Array.isArray(meta.geom.features.roads)) return null;
@@ -1985,11 +2067,18 @@ function loadGeomCache(id) {
     // built without (this) big-port data: rebuilt when a rebuild can use OSM (network, or an OSM cache on disk), so an
     // offline box without OSM keeps its real geometry rather than falling back to the port data alone
     if (port && meta.geom.bigport !== bigports.geomStamp(port) && (networkAllowed() || osm.loadCachedOSM(id) || harbor.sub)) return null;
+    return { meta, harbor, b, textLen: text.length };
+  } catch { return null; }
+}
+function loadGeomCache(id) {
+  try {
+    const m = readGeomMeta(id); if (!m) return null;
+    const { meta, harbor, b, textLen } = m;
     const buf = fs.readFileSync(b);
     const dec = decodePatch(buf);
     if (!dec || dec.n !== PATCH_N || Math.abs(dec.originLat - harbor.lat) > 1e-9 || Math.abs(dec.originLon - harbor.lon) > 1e-9) return null;
     const sdf = sdfFromMask(dec.mask, dec.n, dec.res);
-    const e = makeEntry(harbor, { geom: meta.geom, heights: dec.heights, mask: dec.mask, sdf }, ['osm', 'tiles'].includes(meta.source) ? meta.source : 'synthetic', meta.builtAt || Date.now());
+    const e = makeEntry(harbor, { geom: meta.geom, heights: dec.heights, mask: dec.mask, sdf }, ['osm', 'tiles'].includes(meta.source) ? meta.source : 'synthetic', meta.builtAt || Date.now(), textLen * 3);
     if (meta.version !== GEOM_VERSION) e.stale = true;   // served until rebuildFromTiles replaces it
     return e;
   } catch { return null; }
@@ -1998,11 +2087,15 @@ function loadGeomCache(id) {
 // ---------------------------------------------------------------------------------------------------------------
 // Public queries (sync, fast, never throw)
 // ---------------------------------------------------------------------------------------------------------------
-export function getHarborGeom(id) { const e = entries.get(id); return e ? e.geom : null; }
-export function getHarborPatch(id) { const e = entries.get(id); return e ? e.buffer : null; }
+export function getHarborGeom(id) { const e = lightFor(id); return e ? e.geom : null; }
+export function getHarborPatch(id) { const e = lightFor(id); return e ? e.buffer : null; }
+/** True when a built patch exists for `id` (in memory, or on disk and seen since start). Never loads anything. */
+export function isBuilt(id) { return entries.has(id) || anchors.has(id); }
 export function harborAnchor(id) {
   const e = entries.get(id);
   if (e) return { lat: e.geom.anchor.lat, lon: e.geom.anchor.lon };
+  const a = anchors.get(id);
+  if (a) return { lat: a.lat, lon: a.lon };
   const h = harborById(id);
   return h ? { lat: h.lat, lon: h.lon } : null;
 }
@@ -2023,8 +2116,9 @@ const covers = (e, lat, lon) => { const dl = lat - e.originLat, dn = lon - e.ori
 export function landPenetration(lat, lon) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   let found = false, best = 0;
-  for (let k = 0; k < entryList.length; k++) {
-    const e = entryList[k];
+  const list = liveList();
+  for (let k = 0; k < list.length; k++) {
+    const e = list[k];
     if (!covers(e, lat, lon)) continue;
     found = true;
     const d = sampleEntrySdf(e, lat, lon);
@@ -2034,14 +2128,14 @@ export function landPenetration(lat, lon) {
 }
 /** Mask code (PATCH.MASK) of a built harbour patch at lat/lon, or null outside it / when not built. */
 export function maskAt(id, lat, lon) {
-  const e = entries.get(id);
+  const e = entryFor(id);
   if (!e || !Number.isFinite(lat) || !Number.isFinite(lon) || !covers(e, lat, lon)) return null;
   const i = Math.floor(((lon - e.originLon) * e.kLon) / e.res + e.n / 2), j = Math.floor((-(lat - e.originLat) * GEO.M_PER_DEG_LAT) / e.res + e.n / 2);
   if (i < 0 || j < 0 || i >= e.n || j >= e.n) return null;
   return e.mask[j * e.n + i];
 }
 export function sdfAt(id, lat, lon) {
-  const e = entries.get(id);
+  const e = entryFor(id);
   if (!e || !Number.isFinite(lat) || !Number.isFinite(lon) || !covers(e, lat, lon)) return null;
   return sampleEntrySdf(e, lat, lon);
 }
@@ -2050,8 +2144,9 @@ export function sdfAt(id, lat, lon) {
 export function patchHeightAt(lat, lon) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   let best = null;
-  for (let k = 0; k < entryList.length; k++) {
-    const e = entryList[k];
+  const list = liveList();
+  for (let k = 0; k < list.length; k++) {
+    const e = list[k];
     if (!covers(e, lat, lon) || !e.heights) continue;
     const n = e.n;
     const u = ((lon - e.originLon) * e.kLon) / e.res + n / 2 - 0.5, v = (-(lat - e.originLat) * GEO.M_PER_DEG_LAT) / e.res + n / 2 - 0.5;
@@ -2064,7 +2159,7 @@ export function patchHeightAt(lat, lon) {
   return best;
 }
 export function nearestBerth(harborId, lat, lon) {
-  const e = entries.get(harborId);
+  const e = entryFor(harborId);
   if (!e || !e.berthsXZ.length || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   const x = (lon - e.originLon) * e.kLon, z = -(lat - e.originLat) * GEO.M_PER_DEG_LAT;
   let best = -1, bd = Infinity;
@@ -2184,10 +2279,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));   // not unref'd: a
 async function entryFromTiles(h, { prio = 0, timeoutMs = 8000 } = {}) {
   try {
     const wt = cfg.wt;
-    const r = await wt.ensureAround(h.lat, h.lon, PATCH_TILE_RADIUS_M, prio, { timeoutMs });
-    if (!r || !r.total || r.ready < r.total) return null;
-    const tiles = new Map();
-    for (const t of tilesInRadius(WT.Z_DETAIL, h.lat, h.lon, PATCH_TILE_RADIUS_M)) { const d = wt.get(WT.Z_DETAIL, t.x, t.y); if (!d) return null; tiles.set(`${t.x}/${t.y}`, d); }
+    let tiles = null;
+    if (typeof wt.collect === 'function') tiles = await wt.collect(h.lat, h.lon, PATCH_TILE_RADIUS_M, prio, { timeoutMs });   // held here only, not in the tile cache
+    else {
+      const r = await wt.ensureAround(h.lat, h.lon, PATCH_TILE_RADIUS_M, prio, { timeoutMs });
+      if (!r || !r.total || r.ready < r.total) return null;
+      tiles = new Map();
+      for (const t of tilesInRadius(WT.Z_DETAIL, h.lat, h.lon, PATCH_TILE_RADIUS_M)) { const d = wt.get(WT.Z_DETAIL, t.x, t.y); if (!d) return null; tiles.set(`${t.x}/${t.y}`, d); }
+    }
+    if (!tiles) return null;
     await new Promise((res) => setImmediate(res));
     const t0 = Date.now();
     const build = buildFromTiles(h, tiles, osm.loadCachedOSM(h.id), world);
@@ -2228,9 +2328,9 @@ export function rebuildFromTiles(opts = {}) {
         for (const h of pending) {
           if (run.stopped) break;
           if (!tilesUsable()) { run.stopped = true; break; }
-          const cur = entries.get(h.id) || loadGeomCache(h.id);
-          if (cur && !entries.has(h.id)) setEntry(cur);
-          if (cur && cur.source === 'tiles' && !cur.stale) { st.done++; continue; }
+          // done already? (the disk JSON answers without loading the patch into memory)
+          const cur = entries.get(h.id) || null;
+          if (cur ? cur.source === 'tiles' && !cur.stale : (() => { const m = readGeomMeta(h.id); return !!m && m.meta.source === 'tiles' && m.meta.version === GEOM_VERSION; })()) { st.done++; continue; }
           if (building.has(h.id) || busy(h)) { st.busy++; later.push(h); continue; }
           // wait for a healthy source and an idle server (bounded: the harbour moves to the next pass)
           let waited = 0;
@@ -2238,10 +2338,10 @@ export function rebuildFromTiles(opts = {}) {
           if (run.stopped) break;
           if (!cfg.wt.healthy() || !idle()) { later.push(h); continue; }
           const p = entryFromTiles(h, { prio: opts.prio ?? 4, timeoutMs: opts.timeoutMs ?? 120_000 });
-          building.set(h.id, p.then((e) => (e ? e.geom : cur ? cur.geom : null)));
+          building.set(h.id, p.then((e) => (e ? e.geom : entryFor(h.id)?.geom ?? null)));
           let e = null;
           try { e = await p; } finally { building.delete(h.id); }
-          if (e && !busy(h)) { setEntry(e); saveGeomCache(e); st.rebuilt++; log(`[geom] ${h.id}: rebuilt from tiles (${describe(e)})`); }
+          if (e && !busy(h)) { saveGeomCache(e); if (entries.has(h.id) || resident.has(h.id)) setEntry(e); else { lazyMiss.delete(h.id); if (e.geom?.anchor) anchors.set(h.id, { lat: e.geom.anchor.lat, lon: e.geom.anchor.lon }); } st.rebuilt++; log(`[geom] ${h.id}: rebuilt from tiles (${describe(e)})`); }
           else if (e) { st.busy++; later.push(h); }
           else { st.failed++; if (pass === 0) later.push(h); }
           await sleep(delayMs);
@@ -2304,5 +2404,5 @@ export async function prefetchAll(opts = {}) {
 }
 
 /** Introspection for tests / the CLI. */
-export function stats() { return { built: entries.size, building: building.size, offline: cfg.offline, netDownUntil, tiles: [...entries.values()].filter((e) => e.source === 'tiles').length, stale: [...entries.values()].filter((e) => e.stale).length, rebuild: rebuildRun ? { ...rebuildRun.stats } : null, entries: [...entries.values()].map((e) => ({ id: e.id, source: e.source, builtAt: e.builtAt })) }; }
+export function stats() { return { built: entries.size, known: anchors.size, memMB: Math.round(entries.bytes / 1048576 * 10) / 10, budgetMB: Math.round(entries.maxBytes / 1048576), resident: resident.size, lazy: { ...lazyStats }, lightMB: Math.round(light.bytes / 1048576 * 10) / 10, building: building.size, offline: cfg.offline, netDownUntil, tiles: [...entries.values()].filter((e) => e.source === 'tiles').length, stale: [...entries.values()].filter((e) => e.stale).length, rebuild: rebuildRun ? { ...rebuildRun.stats } : null, entries: [...entries.values()].map((e) => ({ id: e.id, source: e.source, builtAt: e.builtAt })) }; }
 export { decodePatchHeight };

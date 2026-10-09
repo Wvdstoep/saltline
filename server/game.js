@@ -267,7 +267,7 @@ export class Game {
     if (this.geom) {
       try {
         const a = this.geom.harborAnchor(h.id);
-        if (a && Number.isFinite(a.lat) && Number.isFinite(a.lon)) return { lat: a.lat, lon: a.lon, built: !!this.geom.getHarborGeom(h.id) };
+        if (a && Number.isFinite(a.lat) && Number.isFinite(a.lon)) return { lat: a.lat, lon: a.lon, built: typeof this.geom.isBuilt === 'function' ? this.geom.isBuilt(h.id) : !!this.geom.getHarborGeom(h.id) };   // isBuilt never loads a patch
       } catch (e) { this.log(`[game] harborAnchor ${h.id} failed: ${e.message}`); }
     }
     return { lat: h.lat, lon: h.lon, built: false };

@@ -153,6 +153,14 @@ In `saveAll(why)` add `try { wt.flushIndex(); } catch { /* best effort */ }`, an
 | `SALTLINE_OFFLINE=1` | off | implies `SALTLINE_WT_OFFLINE=1` (and harborgeom never builds from tiles) |
 | `SALTLINE_WT_REBUILD=0` | on | skip the phase 1b background rebuild of harbour patches from tiles |
 | `SALTLINE_WT_OFM_BASE`, `SALTLINE_WT_TERRARIUM_BASE`, `SALTLINE_WT_OVERPASS` | public hosts | upstream base URLs (local stub / mirror; boot checks against `test/fixtures/wt`) |
+| `SALTLINE_MEM_LIMIT_MB` | cgroup `memory.max` → v1 `limit_in_bytes` → `os.totalmem()` | memory limit the guard (`server/memguard.js`) measures rss against: ≥ 50 % no warm-up / patch rebuild, ≥ 65 % P3 paused, ≥ 75 % decoded tiles + patches away from ships dropped (+ `gc()`), ≥ 85 % only P0; `/api/health` → `mem` |
+| `SALTLINE_WT_MEM_MB` | 64 | byte budget of decoded D14/C11 tiles in memory (only P0–P2 work fills it; P3/P4 go to disk only) |
+| `SALTLINE_PATCH_MEM_MB` | 48 | byte budget of built harbour patches in memory; patches within 15 km of an active ship are pinned, the rest reload from `data/geom` on demand |
+| `SALTLINE_WT_WORKER_HEAP_MB` / `SALTLINE_ROUTE_WORKER_HEAP_MB` | 96 / 256 | `resourceLimits` heap caps of the converter / route-planner workers (an OOM kills the worker, which restarts) |
+| `SALTLINE_WT_WARM_MS`, `SALTLINE_WT_REBUILD_MS`, `SALTLINE_WT_REBUILD_START_MS` | 15 s, 30 s, 180 s | gap between warm-up harbours (one at a time, one sweep / 24 h), between patch rebuilds, delay before the first rebuild |
+| `SALTLINE_MEMLOG_MS` | 10 min | period of the `[mem]` summary log line |
+
+`npm start` runs `MALLOC_ARENA_MAX=2 node --max-old-space-size=448 --expose-gc server.js` (main-thread V8 heap capped for a 1 GiB pod; `gc` for the guard; 2 glibc malloc arenas: ≈ 40 MB less rss with the worker threads in the soak, no effect on musl).
 
 ### 1.9 After deploy (phase 0 leftovers on production)
 

@@ -6,7 +6,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "MALLOC_ARENA_MAX=2 node --max-old-space-size=448 --expose-gc server.js",
     "build-world": "node scripts/build-world.mjs",
     "test": "node --test test/*.test.mjs"
   },

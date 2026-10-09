@@ -76,19 +76,25 @@ export function encodeTile(t) {
   dv.setUint32(32, fnv1a(out.subarray(WT.HEADER_BYTES)), true);
   return out;
 }
-export function decodeTile(buf) {
+export function decodeTile(buf, { lazyVectors = false } = {}) {
   const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf), dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   if (u8.length < WT.HEADER_BYTES || dv.getUint32(0, true) !== WT.MAGIC) throw new Error('not an SLWT tile');
   if (dv.getUint16(4, true) !== WT.FORMAT) throw new Error('SLWT format ' + dv.getUint16(4, true));
   const flags = dv.getUint8(7), n = dv.getUint16(16, true), uni = (flags & WT.FLAG.UNIFORM) !== 0, body = uni ? 0 : 2 * n * n;
   const vecBytes = dv.getUint32(28, true), o = WT.HEADER_BYTES;
-  return {
+  const parseVectors = () => (vecBytes ? JSON.parse(new TextDecoder().decode(u8.subarray(o + body, o + body + vecBytes))) : null);
+  const t = {
     z: dv.getUint8(6), x: dv.getUint32(8, true), y: dv.getUint32(12, true), flags, n, rev: dv.getUint16(18, true),
     srcHash: dv.getUint32(20, true), builtAt: dv.getUint32(24, true), contentHash: dv.getUint32(32, true),
     uniformH: dv.getInt16(36, true) / 10,
     mask: uni ? null : u8.subarray(o, o + n * n), height: uni ? null : u8.subarray(o + n * n, o + body),
-    vectors: vecBytes ? JSON.parse(new TextDecoder().decode(u8.subarray(o + body, o + body + vecBytes))) : null,
+    vectors: null,
   };
+  // lazyVectors (server memory cache): the vectors stay as bytes in `buf` and are parsed on each read of `vectors`
+  // (the patch builder / debug route only), so a cached tile costs its raw bytes and nothing more.
+  if (lazyVectors) Object.defineProperty(t, 'vectors', { get: parseVectors, enumerable: true, configurable: true });
+  else t.vectors = parseVectors();
+  return t;
 }
 /** Bilinear height (m) inside one decoded tile at continuous cell coords; edges clamp. */
 export function tileHeightAt(t, u, v) {

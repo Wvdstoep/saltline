@@ -19,6 +19,7 @@ import { RouteTable } from './server/routetable.js';                            
 import { PriceHistory, cachedSnapshot, routesHandler, historyAnswer } from './server/market.js'; // MARKET
 import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
+import v8 from 'node:v8';
 import { getTile } from './server/maptiles.js';
 import { LiveAis } from './server/ais/index.js';
 import * as worldtiles from './server/worldtiles.js';                                   // WORLD TILES (docs/WORLD-STREAMING-WIRING.md)
@@ -27,11 +28,18 @@ import { startPrefetch } from './server/wtprefetch.js';
 import { tileFToLatLon } from './shared/wtformat.js';
 import { haversine } from './shared/geo.js';
 import { pruneRasterCache } from './server/world.js';
+import { createMemGuard, LEVEL } from './server/memguard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+// MEMORY GUARD (server/memguard.js): rss against the container limit every 2 s. ≥ 50 % no background warm-up / patch
+// rebuild, ≥ 65 % P3 paused, ≥ 75 % decoded tiles and harbour patches away from ships dropped (+ gc), ≥ 85 % only P0
+// tile fetches. /api/health → mem. The tile, bathy and patch caches have fixed byte budgets on top of that.
+const memGuard = createMemGuard({ log });
+memGuard.start();
+log(`[mem] limit ${Math.round(memGuard.limitBytes / 1048576)} MB (${memGuard.limitSource}), heap limit ${Math.round(v8.getHeapStatistics().heap_size_limit / 1048576)} MB, gc ${typeof globalThis.gc === 'function' ? 'exposed' : 'not exposed'}`);
 const world = new World().load(carvingsForWorld(), log);
 harborgeom.init(world);
 // WORLD TILES: D14 / C11 detail from OpenFreeMap (docs/WORLD-DETAIL-STREAMING.md). `stack` answers like World from the
@@ -41,7 +49,7 @@ harborgeom.init(world);
 // SALTLINE_WT_OFFLINE=1 never fetch (tiles already on disk keep serving). Cache: <data>/world, SALTLINE_WT_CACHE_MB (600).
 const WT_ON = process.env.SALTLINE_WT !== '0';
 const WT_OFFLINE = process.env.SALTLINE_OFFLINE === '1' || process.env.SALTLINE_WT_OFFLINE === '1';
-const wt = WT_ON ? worldtiles.init({ offline: WT_OFFLINE, log: (...a) => log('[wt]', ...a) }) : worldtiles.disabledTiles();
+const wt = WT_ON ? worldtiles.init({ offline: WT_OFFLINE, guard: memGuard, log: (...a) => log('[wt]', ...a) }) : worldtiles.disabledTiles();
 if (WT_ON) harborgeom.configure({ wt });
 const stack = WT_ON ? createWorldStack(world, { geom: harborgeom, wt }) : world;
 const geom = WT_ON ? geomFacade(harborgeom, wt) : harborgeom;
@@ -79,15 +87,44 @@ if (WT_ON) {
       }
     } catch (e) { log('[wt] swap handler failed', e.message); }
   });
-  wtPrefetch = startPrefetch({ game, wt, harbors: HARBORS, routePlanner, log });
+  wtPrefetch = startPrefetch({ game, wt, harbors: HARBORS, routePlanner, log, guard: memGuard });
   // Phase 1b: harbour patches rebuilt from the tiles (GEOM_VERSION 6) in the background, one harbour every 30 s, never
   // under a ship of an online player or a sailing fleet ship; the old patch serves until then. SALTLINE_WT_REBUILD=0 skips.
   if (!WT_OFFLINE && process.env.SALTLINE_WT_REBUILD !== '0') {
     const busy = (h) => shipsOf(game).some(({ s, online, v, docked }) => (online || (v && !docked)) && haversine(s.lat, s.lon, h.lat, h.lon) < 6000);
-    const idle = () => wt.queued() === 0 && (wtPrefetch?.stats().lagMs ?? 0) <= 50;
-    setTimeout(() => { if (wt.healthy()) harborgeom.rebuildFromTiles({ delayMs: 30_000, busy, idle }).catch(() => {}); }, 180_000).unref?.();
+    const idle = () => memGuard.allowBackground() && wt.queued() === 0 && (wtPrefetch?.stats().lagMs ?? 0) <= 50;   // memory < 50 % only
+    setTimeout(() => { if (wt.healthy()) harborgeom.rebuildFromTiles({ delayMs: Number(process.env.SALTLINE_WT_REBUILD_MS) || 30_000, busy, idle }).catch(() => {}); }, Number(process.env.SALTLINE_WT_REBUILD_START_MS) || 180_000).unref?.();
   }
 }
+// Harbour patches near ships that need them (online players, ships under way, sailing fleet ships) stay in memory and
+// are loaded ahead; every other patch is evicted past its byte budget and re-read from disk when a query needs it.
+const PATCH_NEAR_M = 15000;
+const activeShips = () => shipsOf(game).filter(({ online, v, voyage, docked }) => online || (!docked && (v || voyage))).map(({ s }) => s);
+const onlineShips = () => shipsOf(game).filter(({ online }) => online).map(({ s }) => s);
+function patchResidency() {
+  try {
+    const ships = activeShips(), ids = [];
+    if (ships.length) for (const h of harborgeom.patchList()) { for (const s of ships) if (Math.abs(s.lat - h.lat) < 0.2 && haversine(s.lat, s.lon, h.lat, h.lon) <= PATCH_NEAR_M) { ids.push(h.id); break; } }
+    harborgeom.setResident(ids);
+  } catch (e) { log('[geom] residency failed', e.message); }
+}
+setInterval(patchResidency, 10_000).unref?.();
+memGuard.onShed(({ mode }) => {
+  try {
+    const keep = (mode === 'critical' ? onlineShips() : activeShips()).map((s) => ({ lat: s.lat, lon: s.lon }));
+    const r = wt.shed ? wt.shed({ keep, keepM: 6000 }) : null;
+    patchResidency();
+    const n = harborgeom.trimPatches(0);
+    log(`[mem] shed (${mode}): ${r ? r.dropped : 0} decoded tiles, ${n} harbour patches dropped; keeping ${keep.length} ships' surroundings`);
+  } catch (e) { log('[mem] shed failed', e.message); }
+});
+function memReport() {
+  const m = process.memoryUsage(), mb = (b) => Math.round(b / 1048576);
+  const w = wt.stats(), g = harborgeom.stats();
+  return { ...memGuard.stats(), heapUsedMB: mb(m.heapUsed), heapTotalMB: mb(m.heapTotal), externalMB: mb(m.external), arrayBuffersMB: mb(m.arrayBuffers), wtMemMB: w.memMB ?? 0, wtMemBudgetMB: w.memBudgetMB ?? 0, wtTiles: w.memTiles ?? 0, wtQueue: w.queue ?? 0, bathyMB: w.bathyMB ?? 0, patchesMB: g.memMB, patches: g.built, patchBudgetMB: g.budgetMB, converter: w.converter || null };
+}
+const MEMLOG_MS = Number(process.env.SALTLINE_MEMLOG_MS) || 10 * 60e3;
+setInterval(() => { try { const r = memReport(); log(`[mem] ${r.level} rss ${r.rssMB}/${r.limitMB} MB · heap ${r.heapUsedMB} MB · ext ${r.externalMB} MB · tiles ${r.wtTiles} (${r.wtMemMB} MB) · patches ${r.patches} (${r.patchesMB} MB) · queue ${r.wtQueue}`); } catch { /* never */ } }, MEMLOG_MS).unref?.();
 const AIS_NEAR_M = 40000, AIS_NEAR_LIMIT = 200, AIS_PUSH_MS = 2000;
 if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 1500 }).catch((e) => log('[geom] prefetch failed', e.message));
 
@@ -99,7 +136,7 @@ app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
-app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576) }); });
+app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576), mem: memReport() }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
