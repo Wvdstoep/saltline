@@ -20,6 +20,8 @@ import { rigOf } from '../shared/sail/rigs.js';                              // 
 import { ensureRig, normalizeRig, anyHoisted, packRigView } from '../shared/sail/state.js';
 import { bindPlayer, takeVesselFields, makeActor } from './vessel.js';
 import * as captain from './captain.js';
+import { healShipsVessel, healOrders, marketValue } from '../shared/ships/index.js';   // SHIPYARD H8
+import { vesselSlotsUsed } from '../shared/fleet.js';                                  // SHIPYARD H8c
 
 const SERVICE_INTERVAL_S = FEES.SERVICE_INTERVAL_DAYS * 86400;
 const START_HARBOR = 'rotterdam';
@@ -93,6 +95,7 @@ export class Fleet {
       lastValid: { lat: f.ship.lat, lon: f.ship.lon }, guideBerth: null, lowFuelWarned: false, condWarned: false, floodWarned: false,
       serviceWarned: false, fullWarned: false, shipTime: f.shipTime ?? sim, voyageEnd: null,
       orders: null, cap: null, pay: { rem: 0 }, laidUpAt: 0, storagePaidTo: 0, stats: newStats(),
+      spec: f.spec ?? null, hist: f.hist ?? null,   // SHIPYARD §4.6 (server/yard.js fills both at delivery; healVessel heals null)
     };
   }
   /** Sailing (§3.6): create/repair ship.rig (a newer schema or a class change → a default rig). At sea the sails stay
@@ -125,6 +128,7 @@ export class Fleet {
     if (v.voyageEnd === undefined) v.voyageEnd = null;
     if (v.status === 'laidup') { v.orders = null; v.cap = null; }
     if (v.ship && typeof v.ship === 'object' && (rigOf(v.ship.cls) || v.ship.rig !== undefined)) v.sailsUp = this.sailRig(v.ship, !v.docked && v.status !== 'laidup', v.sailsUp);   // sailing: save migration (§3.6); engine-class records stay byte-identical
+    healShipsVessel(v, sim);                        // SHIPYARD §8: spec + hist (estimated: value unchanged); never touches cls or money
     return v;
   }
   healOffice(o, rec) {
@@ -151,6 +155,7 @@ export class Fleet {
     }
     const rem = Number(out.book && out.book.rem);
     out.book = { days, rem: Number.isFinite(rem) && Math.abs(rem) < 1 ? rem : 0 };
+    healOrders(out);                                // SHIPYARD §8: office.orders = [] on old saves
     void sim; void rec;
     return out;
   }
@@ -200,6 +205,7 @@ export class Fleet {
         if (v.voyageEnd === undefined) v.voyageEnd = null;
         v.fishing = false;
       } else v = this.starterVessel(rec, home, null, id);
+      healShipsVessel(v, sim);                      // SHIPYARD §8: the migrated ship gets spec + hist now, so a second load is identical
       rec.fleet = [v]; rec.aboard = v.id; rec.office = newOffice(home);
     }
     bindPlayer(rec, this);
@@ -417,11 +423,12 @@ export class Fleet {
   }
   /** §5.1 tradeIn === false: a new (or second-hand) ship delivered in this harbour; the aboard one is not touched. */
   buyNew(p, m, used = false) {
+    if (!used && m && typeof m.stockId === 'string' && this.game.yard) return this.game.yard.action(p, { ...m, action: 'yard_buy_stock' });   // SHIPYARD H8
     const g = this.game;
     if (!p.docked) return this.warn(p, 'Moor in a harbour to buy a ship.');
     const h = harborById(p.docked), st = g.harbors[h.id];
     if (p.office.owed > 0) return this.warn(p, `Settle the office's unpaid bills first (${fmt(p.office.owed)} cr).`);
-    if (p.fleet.length >= FLEET.MAX_VESSELS) return this.warn(p, `Your fleet is full (${FLEET.MAX_VESSELS} ships). Sell or trade in a ship first.`);
+    if (vesselSlotsUsed(p) >= FLEET.MAX_VESSELS) return this.warn(p, `Your fleet is full (${FLEET.MAX_VESSELS} ships and orders). Sell or trade in a ship first.`);
     let cls, price, cond = 100, listing = null;
     if (used) {
       listing = (st?.used || []).find((x) => x && x.id === m.listingId);
@@ -429,7 +436,7 @@ export class Fleet {
       cls = listing.cls; price = Math.round(listing.price); cond = listing.cond;
     } else {
       cls = typeof m.cls === 'string' ? m.cls : '';
-      if (!SHIP_CLASSES[cls] || !(SHIP_CLASSES[cls].price > 0)) return this.warn(p, 'The yard does not build that.');
+      if (!Object.prototype.hasOwnProperty.call(SHIP_CLASSES, cls) || !(SHIP_CLASSES[cls].price > 0)) return this.warn(p, 'The yard does not build that.');   // SHIPYARD: catalogue models are ordered at a yard (H1 resolves them, the legacy buy path does not sell them)
       price = SHIP_CLASSES[cls].price;
     }
     const C = clsOf(cls);
@@ -468,7 +475,7 @@ export class Fleet {
       const days = Math.max(1, Math.ceil((g.simTime - (v.dockedAt || g.simTime)) / 86400));
       this.charge(p, v.id, 'port', days * berthFeePerDay(v.ship.cls));
     }
-    const value = shipValue(v.ship.cls, v.cond);
+    const value = v.ship.cls === 'coaster' && !(SHIP_CLASSES.coaster.price > 0) ? 0 : marketValue(v, harborById(v.docked)?.country ?? null, Math.floor(g.simTime));   // SHIPYARD §4.5
     if (value > 0) this.book(p, v.id, 'ships', value);
     this.removeVessel(p, v, value > 0 ? 'sold' : 'scrapped');
     this.tell(p, 'info', value > 0 ? `Sold ${v.name} (${C.name}, ${Math.round(v.cond)} %) for ${fmt(value)} cr.` : `Scrapped ${v.name} (the yard pays nothing for ${aName(C.name.toLowerCase())}).`);
@@ -736,7 +743,12 @@ export class Fleet {
       if (![lat, lon, radiusKm, intensity].every(Number.isFinite)) return this.warn(p, 'storm: lat, lon, radiusKm, intensity');
       const now = g.simTime;
       g.storms.push({ id: 's' + crypto.randomBytes(4).toString('hex'), lat, lon, radiusKm, peak: intensity, intensity, driftDir: 0, driftMs: 0, born: now - 3600, dies: now + 7200, region: false, name: typeof m.name === 'string' && m.name.trim() ? m.name.trim().slice(0, 20) : 'Debug' });
-    } else return this.warn(p, 'fleet_debug: money | place | advance | storm');
+    } else if (op === 'give') {   // SHIPYARD (debug): a finished catalogue ship at the harbour you are moored in
+      const h = harborById(p.docked);
+      if (!h || !g.yard || typeof m.variant !== 'string' || !SHIP_CLASSES[m.variant]?.length || vesselSlotsUsed(p) >= FLEET.MAX_VESSELS) return this.warn(p, 'give: moored, variant, fleet room');
+      const yr = new Date(g.simTime * 1000).getUTCFullYear(), cc = h.country || 'XX';
+      g.yard.createVessel(p, h, { variant: m.variant, name: m.name, price: 0, yardId: null, builtIn: cc, hist: { v: 1, built: yr, builtAt: g.simTime, yard: null, builtIn: cc, hull: 'DBG', class: 'LR', owners: 1, lastDock: g.simTime, nextSpecial: yr + 5, incidents: [], runHours: 0, estimated: false, jonesLost: false, rebuiltAbroad: false, warrantyTo: 0, specialist: false } });
+    } else return this.warn(p, 'fleet_debug: money | place | advance | storm | give');
     this.sendFleet(p);
   }
   /** Test / debug helper: step her captain in `step`-second steps for `seconds` of world time (awaits route plans). */
@@ -1048,6 +1060,7 @@ export class Fleet {
     const fl = p.fleet || [], h = harborById(p.office?.home);
     return {
       aboard: p.aboard, vesselName: p.vessel?.name ?? null, home: p.office?.home ?? null, homeName: h ? h.name : null,
+      livery: p.vessel?.spec?.livery ?? null,         // SHIPYARD H9: the own ship is drawn in her livery
       fleet: { n: fl.length, atSea: fl.filter((v) => v.status === 'active' && !v.docked).length, laidUp: fl.filter((v) => v.status === 'laidup').length, owed: p.office?.owed || 0, unread: p.office?.unread || 0 },
     };
   }
@@ -1059,7 +1072,7 @@ export class Fleet {
       office: { isHome: o.home === h.id, home: o.home, homeName: home ? home.name : o.home, slots: o.slots, slotsMax: FLEET.SLOTS_MAX, slotPrice: FLEET.SLOT_PRICE,
         used: this.laidUpCount(p), storagePerDay: this.storagePerDay(p), homeMove: { allowed: hm.allowed, cost: hm.cost } },
       fleetHere: here.map((v) => this.vesselView(p, v)),
-      fleetFull: p.fleet.length >= FLEET.MAX_VESSELS, fleetN: p.fleet.length,
+      fleetFull: vesselSlotsUsed(p) >= FLEET.MAX_VESSELS, fleetN: p.fleet.length,
     };
   }
   storagePerDay(p) { return (p.fleet || []).filter((v) => v.status === 'laidup').reduce((s, v) => s + storageFeePerDay(v.ship.cls), 0); }

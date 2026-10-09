@@ -6,6 +6,7 @@ import { HARBORS, FISHING_GROUNDS, PLATFORMS, harborById } from './harbors.js';
 import { RATES } from '../shared/rates.js';
 import { JOBTIME, refClassFor, budgetFor } from '../shared/jobtime.js'; // V6 item 5: contract hours rated for a reference ship
 import { payOf, payInfoOf } from '../shared/jobs/types.js';   // YARD lane D: runner jobs carry pay as { cr, … }
+import { shipValueCompat, modelOf } from '../shared/ships/index.js';   // SHIPYARD H8b
 
 export const PAY_PER_T_KM = 0.08;
 export const SMUGGLE_MULT = 5;
@@ -349,7 +350,7 @@ export function generateUsedShips(harbor, rnd) {
   return out;
 }
 
-export function shipValue(cls, cond) { return Math.round((SHIP_CLASSES[cls]?.price || 0) * 0.55 * (0.3 + 0.7 * (cond / 100))); }
+export function shipValue(cls, cond) { return shipValueCompat(cls, cond, SHIP_CLASSES); }   // SHIPYARD H8b: same numbers for every legacy id
 /** The starter coaster is maintained like a 120k hull; everything else by its price. */
 export function hullBasis(cls) { return Math.max(120000, (SHIP_CLASSES[cls] || SHIP_CLASSES.coaster).price); }
 export function repairCostFor(cls, cond) {
@@ -366,7 +367,10 @@ export function serviceWearMul(serviceDue, simTime) {
 /** Spec sheet shown in the shipyard and used by the chart's job boards. */
 export function shipSpecs(cls) {
   const C = SHIP_CLASSES[cls]; if (!C) return null;
-  return { length: C.length, beam: C.beam, draft: C.draft, maxKn: C.maxKn, capacity: C.capacity, pax: C.pax, fuelCap: C.fuelCap, burn: C.burn, crewCost: C.crewCost, price: C.price, displacement: C.displacement, sail: !!C.sail, towPower: C.towPower || 0 };
+  const m = modelOf(cls);
+  return { length: C.length, beam: C.beam, draft: C.draft, maxKn: C.maxKn, capacity: C.capacity, pax: C.pax, fuelCap: C.fuelCap, burn: C.burn, crewCost: C.crewCost, price: C.price, displacement: C.displacement, sail: !!C.sail, towPower: C.towPower || 0,
+    ...(m ? { model: m.id, type: m.type, era: m.era, refName: m.refName, dwt: m.dwt, gt: m.gt, depth: m.depth, draftHull: m.draftHull ?? null, airDraft: C.airDraft ?? m.airDraft, kW: m.kW, engine: m.engine.label, svcKn: m.svcKn,
+      crew: m.crew, usdM: m.usdM, units: m.units, handling: m.handling, eq: m.eq, eco: C.eco ?? m.stats.eco, verify: m.verify } : {}) };   // SHIPYARD §4.7 spec sheet
 }
 
 // ------------------------------------------------------------------------------------------ harbour fees

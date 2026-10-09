@@ -5,6 +5,7 @@
 import { ic } from './icons.js';
 import * as F from './fleetfmt.js';
 import { cardHTML, esc } from './fleet.js';
+import { orderBookHTML } from './yardui.js';   // SHIPYARD H13b
 
 function ensureCss(id, href) {
   if (document.getElementById(id)) return;
@@ -161,7 +162,7 @@ export class Hq {
   shipsHTML(v) {
     const ctx = this.ctx();
     return `<div class="hqSec"><div class="hqSecH"><h2>${ic('ship')} Ships <small class="muted">${v.n} of ${v.max}</small></h2><span class="muted small">running now ${F.fmtN(v.costPerH)} cr/h${v.storagePerDay ? ` · storage ${F.fmtN(v.storagePerDay)} cr/day` : ''}</span></div>
-      <div class="flCards">${v.vessels.map((x) => cardHTML(x, ctx)).join('')}</div></div>`;
+      <div class="flCards">${v.vessels.map((x) => cardHTML(x, ctx)).join('')}</div>${orderBookHTML(this.app.you?.orders, this.now())}</div>`;   // SHIPYARD H13b: the order book
   }
   mapSideHTML(v, now) {
     const s = this.sel && v.vessels.find((x) => x.id === this.sel);

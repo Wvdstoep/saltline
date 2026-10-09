@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { buildShip } from './ship.js';
 
-const VERSION = 'v4.2';
+const VERSION = 'v5.0';   // SHIPYARD H9b: key includes variant + livery
 const SS_PREFIX = 'saltline.thumb.';
 const ANGLES = {
   // direction FROM the ship TO the camera, ship frame (forward = -z, starboard = +x, up = +y)
@@ -31,7 +31,7 @@ let raf = 0;
 let R = null;                // { renderer, scene, camera, water, lights } (lazy)
 let broken = false;          // WebGL unavailable: stop trying for this session
 
-function keyOf(cls, w, h, angle, wear, scale) { return `${VERSION}|${cls}|${w}x${h}@${scale}|${angle}|${wear.toFixed(1)}`; }
+function keyOf(cls, w, h, angle, wear, scale, livery = null) { return `${VERSION}|${cls}|${w}x${h}@${scale}|${angle}|${wear.toFixed(1)}|${livery ? [livery.hull, livery.house, livery.funnel, livery.band ?? '-', livery.mark ?? '-'].join('.') : 'd'}`; }
 function normOpts(opts = {}) {
   const w = Math.max(16, Math.min(1600, Math.round(Number(opts.w) || 320)));
   const h = Math.max(16, Math.min(1200, Math.round(Number(opts.h) || 200)));
@@ -39,7 +39,7 @@ function normOpts(opts = {}) {
   const wear = Math.max(0, Math.min(1, Math.round((Number(opts.wear) || 0) * 10) / 10));
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   const scale = Math.max(1, Math.min(2, Math.round(dpr * 2) / 2));
-  return { w, h, angle, wear, scale };
+  return { w, h, angle, wear, scale, livery: opts.livery || null };
 }
 function ssGet(key) { try { return sessionStorage.getItem(SS_PREFIX + key); } catch { return null; } }
 function ssSet(key, url) {
@@ -53,7 +53,7 @@ function ssSet(key, url) {
 
 /** Synchronous cache lookup (memory, then sessionStorage); null when the thumb has not been rendered yet. */
 export function cachedThumb(cls, opts = {}) {
-  const o = normOpts(opts), key = keyOf(cls, o.w, o.h, o.angle, o.wear, o.scale);
+  const o = normOpts(opts), key = keyOf(cls, o.w, o.h, o.angle, o.wear, o.scale, o.livery);
   let url = mem.get(key);
   if (!url) { url = ssGet(key); if (url) mem.set(key, url); }
   return url || null;
@@ -67,7 +67,7 @@ export function cachedThumb(cls, opts = {}) {
  */
 export async function shipThumb(cls, opts = {}) {
   if (!cls || typeof document === 'undefined') return null;
-  const o = normOpts(opts), key = keyOf(cls, o.w, o.h, o.angle, o.wear, o.scale);
+  const o = normOpts(opts), key = keyOf(cls, o.w, o.h, o.angle, o.wear, o.scale, o.livery);
   const hit = cachedThumb(cls, opts); if (hit) return hit;
   if (broken) return null;
   let job = pending.get(key);
@@ -166,7 +166,7 @@ function renderShip(job) {
   renderer.setSize(pw, ph, false);
   camera.aspect = job.w / job.h;
   let ship;
-  try { ship = buildShip(job.cls, null, 7); } catch (e) { console.warn('[thumbs] buildShip failed', job.cls, e); return null; }
+  try { ship = buildShip(job.cls, null, 7, { livery: job.livery }); } catch (e) { console.warn('[thumbs] buildShip failed', job.cls, e); return null; }
   try {
     ship.userData.setWear?.(job.wear);
     ship.userData.setWaterY?.(0);

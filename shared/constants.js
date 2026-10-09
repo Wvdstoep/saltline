@@ -1,4 +1,5 @@
 // Shared constants — imported by both the Node server and the browser client (plain ESM, no deps).
+import { installVariants } from './ships/classes.js';   // SHIPYARD H1 (docs/SHIPS-LANEA-PHASE2.md)
 
 export const GEO = {
   EARTH_R: 6371000,
@@ -66,6 +67,7 @@ export const SHIP_CLASSES = {
   catamaran: { id: 'catamaran', cat: 'sailing yacht', name: 'Catamaran 14 m', length: 14, beam: 7.5, draft: 1.3, maxKn: 10.5, auxKn: 7, sail: true, turnRate: 18, displacement: 12, capacity: 1.2, pax: 8, fuelCap: 0.5, burn: 0.02, price: 300000, hullColor: 0xf0f0f0, fishRate: 0.05, wearMul: 1.2, crewCost: 0, desc: 'Fast off the wind and shallow enough for most anchorages.' },
   schooner: { id: 'schooner', cat: 'sailing yacht', name: 'Classic schooner 35 m', length: 35, beam: 7.5, draft: 3.5, maxKn: 10, auxKn: 7, sail: true, turnRate: 9, displacement: 180, capacity: 8, pax: 12, fuelCap: 3, burn: 0.06, price: 1400000, hullColor: 0x3b2a1a, fishRate: 0.1, wearMul: 1.4, crewCost: 60, desc: 'Wood and brass; charter guests love her, the maintenance bill does not.' },
 };
+installVariants(SHIP_CLASSES);   // SHIPYARD H1: model and variant ids resolve (shared/ships/classes.js); enumeration unchanged
 
 export const GOODS = {
   fish: { name: 'Fish', base: 700, contraband: false },
