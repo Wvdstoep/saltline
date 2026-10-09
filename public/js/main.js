@@ -149,6 +149,8 @@ class App {
     import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
     this.yardUi = null;   // SHIPYARD H13: the shipyard screen (yardui.js); harbour sheet → Shipyard tab (hud.js H5)
     if (new URLSearchParams(location.search).get('yard') !== '0') import('./yardui.js').then((m) => { this.yardUi = new m.YardUi(this); }).catch((e) => console.warn('[yard] unavailable', e));
+    this.politics = null;   // world politics (docs/WORLD-POLITICS-CONTRACT.md §5): Rules tab, chart overlays, risk check, Compliance
+    import('./politics.js').then((m) => { this.politics = new m.PoliticsUi(this); if (this.net.connected) this.politics.load(); }).catch((e) => console.warn('[politics] unavailable', e));
     this.touchHelm = null;
     // sailing (docs/SAILING-CONTRACT.md §5): instruments + sail panel / phone sheet. Rig commands are applied locally at once
     // (optimistic) and sent at ≤ 4 Hz with a trailing send for sliders (rigCommand)
@@ -218,10 +220,11 @@ class App {
       case 'wt': this.terrain.wtiles?.onPush(m); break;                 // WORLD TILES: a tile near us changed revision → refetch (ETag)
       case 'ais': try { this.aisLayer.ingest(m.ships || [], m.time); } catch (e) { console.warn('[ais] ingest failed', e); } break;
       case 'you': this.onYou(m.you, false, !!m.correction, !!m.switched); break;
-      case 'fleet': this.fleetUi?.onFleet(m.fleet); this.hq?.onFleet(m.fleet); break;
+      case 'fleet': this.politics?.onFleet(m.fleet); this.fleetUi?.onFleet(m.fleet); this.hq?.onFleet(m.fleet); break;
+      case 'pol_home_plan': this.politics?.onMessage(m); break;
       case 'fleet_board': this.fleetUi?.onBoard(m); break;
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
-      case 'harbor': this.hud.showHarbor(m.harbor); break;
+      case 'harbor': this.politics?.onHarbor(m.harbor); this.hud.showHarbor(m.harbor); break;
       case 'quays': this.quayUi?.onQuays(m); break;                       // DOCK ANYWHERE
       case 'vhf': case 'vhf_st': this.vhf?.onMessage(m); break;          // VHF transmissions and station lists
       case 'ww_static': this.wwMesh?.setStatics(m.objects || []); this.terrain.wtiles?.setSkipIds?.(this.wwMesh?.knownIds?.() || []); break;  // bridges & locks near us (§8.2)
@@ -237,6 +240,7 @@ class App {
     }
   }
   onWelcome(m) {
+    this.politics?.load();   // /api/politics with If-None-Match; 304 keeps the cached dataset
     this.world = { platforms: [], ...m.world }; this.wrecks = m.wrecks; this.simTime = m.simTime;
     if (!this.world.ww) {   // the server runs without bridges, locks and radio (SALTLINE_WW_OFF=1): none of their UI either
       try { this.vhf?.mini?.remove(); this.vhf?.ticker?.remove(); this.vhf?.panel?.remove(); } catch { /* best effort */ }
@@ -262,6 +266,7 @@ class App {
   onYou(you, first, correction, switched) {
     const prev = this.you;
     this.you = you;
+    this.politics?.onYou(you);
     this.net.vid = you.aboard ?? null;   // v6: states carry the ship they are for
     this.vhf?.onYou(you);                                                // you.radio, the ship's numbers for the phrase preview
     this.shipClock = { t: Number(you.shipTime) || 0, rate: Number(you.shipRate) || 1, at: performance.now(), warpRun: you.warpRun || null }; // V6 item 5
@@ -851,7 +856,11 @@ class App {
     if (t.kind === 'ground' && t.distM > t.rangeM) to = destination(t.lat, t.lon, bearing(t.lat, t.lon, s.lat, s.lon), Math.max(0, t.rangeM - 2000)); // the near edge of the bank
     const harbor = t.kind === 'harbor' ? t.job.to : null;
     // route planner v2 for this hull's draught; the crew steers it at sea (any helm input takes over again)
-    return this.pilot.planTo({ lat: to.lat, lon: to.lon, harbor, label: t.name || 'contract', engage: !this.you?.docked });
+    const engage = !this.you?.docked;
+    if (!this.politics || t.kind !== 'harbor') return this.pilot.planTo({ lat: to.lat, lon: to.lon, harbor, label: t.name || 'contract', engage });
+    const r = await this.pilot.planTo({ lat: to.lat, lon: to.lon, harbor, label: t.name || 'contract', engage: false });
+    if (r?.ok || this.route?.length) this.politics.checkPlannedRoute({ job: t.job, harbor, contract: true, engage });   // world politics: voyage risk check, [Go] engages
+    return r;
   }
   requestTugs() {
     const you = this.you; if (!you || you.docked || you.assist) return;

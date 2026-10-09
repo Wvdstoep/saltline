@@ -56,13 +56,14 @@ export function platformsFor(from) {
     .filter((x) => x.d < 450 || (x.d < REMOTE_KM && nearestHarborId(x.p) === from.id)).sort((a, b) => a.d - b.d);
 }
 
-export function pickDestination(from, rnd, maxKm = 1e9) {
+export function pickDestination(from, rnd, maxKm = 1e9, weightFn = null) {
   const bands = DEST_BANDS.map((b) => ({ ...b, cands: [], total: 0 }));
   for (const h of HARBORS) {
     if (h.id === from.id) continue;
     const d = distKm(from, h);
     if (d > maxKm) continue;
-    const w = h.size === 'mega' ? 1.5 : h.size === 'minor' ? 0.7 : 1;
+    const w = (h.size === 'mega' ? 1.5 : h.size === 'minor' ? 0.7 : 1) * (weightFn ? weightFn(h) : 1);   // weightFn: world politics trade/sanction weights
+    if (!(w > 0)) continue;
     const b = bands.find((x) => d < x.maxKm);
     b.cands.push({ h, w, d }); b.total += w;
   }
@@ -80,7 +81,7 @@ export function pickDestination(from, rnd, maxKm = 1e9) {
 // with 40–80 % margin (feasible by construction), the distances it was rated on, and stays on the board for 24 h.
 const r1 = (v) => Math.round(v * 10) / 10;
 function seaKmFor(env, from, to, gcKm) { let km = null; try { km = env && env.seaKm ? env.seaKm(from.id, to.id) : null; } catch { km = null; } return Number.isFinite(km) && km > 0 ? r1(km) : r1(gcKm * RATES.DETOUR); }
-function rateJob(job, simTime, rnd) {
+export function rateJob(job, simTime, rnd) {
   const cls = refClassFor(job, rnd);
   const margin = JOBTIME.MARGIN_MIN + rnd() * (JOBTIME.MARGIN_MAX - JOBTIME.MARGIN_MIN);
   job.hours = budgetFor(job, cls, margin);
@@ -137,7 +138,8 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
       title: `Tow a disabled ${SHIP_CLASSES[victim].name.toLowerCase()} at ${at.lat.toFixed(2)}°, ${at.lon.toFixed(2)}° to ${dest.h.name}`,
     }, simTime, rnd);
   }
-  const dest = pickDestination(from, rnd);
+  const goodFirst = type === 'freight' && env.destWeight ? LEGAL_GOODS[Math.floor(rnd() * LEGAL_GOODS.length)] : null;   // world politics H4: the good picks the trade partner
+  const dest = pickDestination(from, rnd, 1e9, goodFirst ? (h) => env.destWeight(from.id, h.id, goodFirst) : null);
   if (!dest) return null;
   if (type === 'passengers') {
     const pax = Math.round(4 + rnd() * rnd() * 396);
@@ -157,10 +159,10 @@ export function generateJob(from, simTime, rnd, forceType, env = {}) {
       title: `Private charter: ${pax} guests to ${dest.h.name} (yacht or ferry)`,
     }, simTime, rnd);
   }
-  const good = LEGAL_GOODS[Math.floor(rnd() * LEGAL_GOODS.length)];
+  const good = goodFirst || LEGAL_GOODS[Math.floor(rnd() * LEGAL_GOODS.length)];
   const sizes = [120, 250, 400, 600, 900, 1100, 1800, 2500, 3600, 8000, 20000];
   const qty = sizes[Math.floor(rnd() * rnd() * sizes.length)];
-  const pay = Math.round(qty * dest.d * PAY_PER_T_KM * (1 + 0.15 * rnd()) * SIZE_MULT[from.size] + 800);
+  const pay = Math.round((qty * dest.d * PAY_PER_T_KM * (1 + 0.15 * rnd()) * SIZE_MULT[from.size] + 800) * (env.payMul ? env.payMul(from.id, dest.h.id) : 1));   // §4.11 war-risk premium
   return rateJob({
     id: nextJobId(), type: 'freight', from: from.id, to: dest.h.id, good, qty, pay, distKm: Math.round(dest.d),
     seaKm: seaKmFor(env, from, dest.h, dest.d), contraband: false,
@@ -172,6 +174,7 @@ export function generateSmugglingJob(from, simTime, rnd, env = {}) {
   const dest = pickDestination(from, rnd);
   if (!dest) return null;
   const good = CONTRABAND[Math.floor(rnd() * CONTRABAND.length)];
+  if (env.contrabandOk && !env.contrabandOk(from, dest.h, good)) return null;   // world politics H3
   const qty = [40, 80, 150, 250, 400][Math.floor(rnd() * 5)];
   const pay = Math.round(qty * dest.d * PAY_PER_T_KM * SMUGGLE_MULT * (1 + 0.3 * rnd()) + 15000);
   return rateJob({
@@ -235,6 +238,8 @@ function seededRnd(seed) { // mulberry32 over a string hash: deterministic per h
 }
 
 const profileCache = new Map();
+let tradeProfileFn = null;   // world politics H5: (countryCode, good) → multiplier or null (shared/politics/trade.json)
+export function setTradeProfile(fn) { tradeProfileFn = fn; profileCache.clear(); }
 /** Per-harbour price multipliers {good: 0.7..1.3}: country trade table × size × seeded noise. Deterministic. */
 export function localProfile(harbor) {
   let prof = profileCache.get(harbor.id);
@@ -243,7 +248,7 @@ export function localProfile(harbor) {
   const country = COUNTRY_PROFILE[harbor.country] || {};
   prof = {};
   for (const g of MARKET_GOODS) {
-    let m = country[g] ?? 1;
+    let m = tradeProfileFn?.(harbor.country, g) ?? country[g] ?? 1;
     if (INDUSTRIAL.has(g)) m *= harbor.size === 'mega' ? 0.95 : harbor.size === 'minor' ? 1.08 : harbor.size === 'regional' ? 1.03 : 1;
     if (g === 'fish' && harbor.size === 'minor') m *= 0.94; // fishing harbours land fish
     m *= 0.94 + rnd() * 0.12;

@@ -14,7 +14,7 @@ function ensureCss(id, href) {
 }
 const $ = (id) => document.getElementById(id);
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } } };
-const TABS = [['map', 'chart', 'Map'], ['ships', 'ship', 'Ships'], ['money', 'coins', 'Money'], ['office', 'anchor', 'Office'], ['log', 'list', 'Log']];
+const TABS = [['map', 'chart', 'Map'], ['ships', 'ship', 'Ships'], ['money', 'coins', 'Money'], ['office', 'anchor', 'Office'], ['rules', 'scale', 'Rules'], ['log', 'list', 'Log']];   // rules: world politics Compliance
 const REGION = { lonMin: -8, lonMax: 14, latMin: 48, latMax: 62.5 };   // LAYERS[1] of shared/constants.js
 const D2R = Math.PI / 180;
 
@@ -142,6 +142,7 @@ export class Hq {
       case 'map': html = this.mapSideHTML(v, now); break;
       case 'money': html = this.moneyHTML(v, now); break;
       case 'office': html = this.officeHTML(v, now); break;
+      case 'rules': html = this.app.politics ? this.app.politics.complianceTabHTML(v.compliance) : ''; break;   // world politics (politics.js)
       case 'log': html = this.logHTML(v, now); break;
       default: html = this.shipsHTML(v, now);
     }

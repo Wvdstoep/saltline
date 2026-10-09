@@ -179,7 +179,7 @@ export class PoliticsUi {
     const report = riskCheck(ds, ctx, { route: { from: a.from, points: pts }, speedKn, cls: v.cls, cond: v.cond, job: a.job || null, toHarbor: a.toHarbor || null, vessel: v });
     const areaIds = report.lines.map((l) => l.id).concat(a.toHarbor ? [] : []);
     const policyText = V.policyVerdict(ds, this.compliance?.riskPolicy || 'avoid', areaIds, a.job?.type);
-    const toId = a.toHarbor, clearance = toId ? ((this.pol?.clearance?.[toId] || 0) > this.now() ? 'valid' : null) : null;
+    const toId = a.toHarbor, clearance = toId ? ((this.pol?.clearance?.[toId] || 0) > this.now() ? 'valid' : (this.pol?.clearancePending?.[toId] || 0) > this.now() ? 'pending' : null) : null;
     this.risk = { ...a, report, speedKn };
     const html = V.riskCheckHTML(report, {
       ds, nowS: this.now(), title: a.title, toName: a.toName, contract: !!a.contract, refunded: (a.job?.pol?.tier || 0) > 0 || !!a.job?.pol?.refundPremium,

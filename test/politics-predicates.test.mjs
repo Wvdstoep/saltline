@@ -99,7 +99,8 @@ test('jobs: arms embargo, cabotage, price-cap carriage warning, rep requirement,
 });
 test('geometry: areas at a point, route exposure in km and hours, avoid discs by policy', () => {
   const ds = fixtureDs();
-  assert.deepEqual(areasAt(ds, 44, 30).map((a) => a.id), ['war4']);
+  assert.deepEqual(areasAt(ds, 44, 30).map((a) => a.id), ['war4', 'fx-corr']);   // corridors are lines: within OFF_CORRIDOR_KM
+  assert.deepEqual(areasAt(ds, 44, 30.5).map((a) => a.id), ['war4']);
   assert.deepEqual(areasAt(ds, 39.5, 0, null, T0).map((a) => a.id), []);          // future ECA not in force yet
   assert.deepEqual(areasAt(ds, 39.5, 0).map((a) => a.id), ['eca-future']);
   const ex = routeExposure(ds, { lat: 26, lon: 2.5 }, [[19, 2.5]], 10);

@@ -28,6 +28,7 @@ const P = {
   gauge: '<path d="M3.5 17.5a9 9 0 1 1 17 0"/><path d="M12 15l4.5-5.5"/><circle cx="12" cy="15.5" r="1.4"/>',
   compass: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5 5-2z"/>',
   route: '<circle cx="6" cy="18.5" r="2.2"/><circle cx="18" cy="5.5" r="2.2"/><path d="M8.2 18.5H16a3.5 3.5 0 0 0 0-7H8a3.5 3.5 0 0 1 0-7h7.8"/>',
+  scale: '<path d="M12 3v18"/><path d="M7 21h10"/><path d="M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0z"/><path d="M19 7l-3 7a3 3 0 0 0 6 0z"/>',   // world politics: Rules
   radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6.4-6.4"/><circle cx="12" cy="12" r="1" fill="currentColor"/>',
   target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
   camera: '<path d="M4 7.5h3l1.8-2.5h6.4L17 7.5h3a1 1 0 0 1 1 1V19a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8.5a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.2" r="3.6"/>',
@@ -139,6 +140,7 @@ export const GOOD_ICON = Object.freeze({
 /** Contract type → icon name. */
 export const JOB_ICON = Object.freeze({
   freight: 'crate', passengers: 'users', charter: 'yacht', fishing: 'fish', supply: 'platform', tow: 'tow', smuggling: 'mask',
+  aid: 'lifebuoy', corridor: 'grain', state: 'flag', avoid: 'compass', evac: 'users',   // world politics (diplomatic contracts)
 });
 /** Ship market category → icon name. */
 export const CAT_ICON = Object.freeze({ working: 'crane', cargo: 'containers', passenger: 'users', 'motor yacht': 'yacht', 'sailing yacht': 'sail' });

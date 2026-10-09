@@ -160,6 +160,12 @@ app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_
 // BRIDGES & LOCKS (docs/WATERWAYS-LANE1-PHASE2.md §4): registry objects near a point, one object with its live state
 app.get('/api/ww', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon, r = Math.min(15000, +req.query.r || 8000); if (!game.ww || !Number.isFinite(lat) || !Number.isFinite(lon)) return res.json({ objects: [] }); res.json({ objects: game.ww.statics(lat, lon, r), attribution: game.ww.attribution }); });
 app.get('/api/ww/:id', (req, res) => { const o = game.ww?.get(req.params.id); if (!o) return res.status(404).end(); res.json({ object: game.ww.statics(...(o.p || [0, 0]), 1).find((x) => x.id === o.id) || o, state: game.ww.state(o.id) }); });
+app.get('/api/politics', (req, res) => {          // world politics dataset for the client (docs/WORLD-POLITICS-PHASE2.md H24)
+  if (!game.politics) return res.status(404).end();
+  const c = game.politics.clientPayload();                     // everything except trade.json; ETag = dataset version
+  if (req.headers['if-none-match'] === c.etag) return res.status(304).end();
+  res.set({ ETag: c.etag, 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' }).send(c.json);
+});
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
 const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);

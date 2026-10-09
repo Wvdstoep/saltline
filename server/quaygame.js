@@ -67,6 +67,7 @@ export function quayQuery(game, p, { now = Date.now() } = {}) {
 /** Common "lines ashore at a quay" state + fees (both quay_dock and the end of a tug assist). */
 export function quayMoor(game, p, run, fit) {
   const h = run.harbor ? harborById(run.harbor) : null;
+  if (h && game.politics) { const e = game.politics.entryCheck(p, h); if (e.refuse) return game.event(p, 'law', e.text); }   // world politics H8 (never on a restart re-mooring)
   const home = game.fleet?.homeOf ? game.fleet.homeOf(p) : null;
   const perDay = quayFeePerDay(p.ship.cls, run.cls, { size: h?.size, tier: run.tier, home: !!home && home === run.harbor });
   const s = p.ship, sl = fit.slot;

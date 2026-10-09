@@ -194,3 +194,8 @@
   .polReg td.num { text-align: left; }
   .polReg td:last-child button { width: 100%; }
 }
+
+/* phase 2: harbour overview quick tile tone, `risk` events (amber like warn) */
+.quick button.pol-warn { border-color: rgba(255,191,90,.55); }
+.quick button.pol-bad { border-color: rgba(255,107,107,.65); }
+@media (max-width: 359px) { .hqTabs button span { display: none; } }

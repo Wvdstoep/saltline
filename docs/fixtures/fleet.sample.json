@@ -58,8 +58,10 @@
   "unread": 2,
   "homeMove": {
    "allowed": "Rotterdam is already your home.",
-   "cost": 0
+   "cost": 0,
+   "plan": null
   },
+  "compliance": null,
   "vessels": [
    {
     "id": "v3fa9c2d1",
@@ -796,7 +798,8 @@
    "storagePerDay": 25,
    "homeMove": {
     "allowed": "Rotterdam is already your home.",
-    "cost": 0
+    "cost": 0,
+    "plan": null
    }
   },
   "fleetHere": [

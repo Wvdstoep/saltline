@@ -90,7 +90,7 @@ test('destination weight: share 0.3 → 2.8; closed port → 0; no flow → 1', 
 });
 test('risk tags and pay multiplier per harbour pair', () => {
   const { pol } = makePolitics();
-  assert.deepEqual(pol.riskOf('hd1', 'hr'), { tier: 4, areas: ['war4'] });
+  assert.deepEqual(pol.riskOf('hd1', 'hr'), { tier: 4, areas: ['war4', 'fx-corr'] });   // hr requires the corridor
   assert.equal(pol.riskOf('ha1', 'hh1').tier, 3);
   assert.equal(pol.riskOf('ha1', 'hb1').tier, 0);
   assert.equal(pol.jobEnvHooks().payMul('hd1', 'hr'), 3);

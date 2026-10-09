@@ -14,6 +14,7 @@ import {
   shipCapacity, setJobSeq, nextJobId, generateUsedShips, shipValue, repairCostFor, ECON,
   initEconomy, refreshPrices, driftEconomy, marketTrend, demandBonus, shipSpecs, serviceCostFor, serviceWearMul,
   portDues, berthFeePerDay, pilotageFee, tugCostFor, tradeQuote,
+  rateJob, setTradeProfile,
 } from './economy.js';
 import { affordableQty } from './market.js';
 import { DATA_DIR } from './world.js';
@@ -33,6 +34,8 @@ import { lowWaterAt } from '../shared/tide.js';
 import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
 import { Yard } from './yard.js';                               // SHIPYARD (docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §4)
 import { compactOrder as compactOrderView, healHarborYard } from '../shared/ships/index.js';   // SHIPYARD §7.3 / §8
+import { Politics } from './politics.js';                       // world politics (docs/WORLD-POLITICS-CONTRACT.md)
+import { diplomaticJobs } from './politicsjobs.js';
 import { quayQuery, quayDock, quayDockNearest, quayTugs, quayAssistDone, quayUndock, quayGate, quayMigrate, quayPublic, quayHarbourInfo } from './quaygame.js'; // DOCK ANYWHERE
 import { ACTION_SERVICE } from '../shared/quayrules.js';
 import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
@@ -154,6 +157,9 @@ export class Game {
     });
     setGen8(jobtimeHooks(() => ({ harborById, simTime: this.simTime })));
     this.yard = new Yard(this);                     // SHIPYARD: orders, stock, second-hand market (before loadState)
+    // World politics (docs/WORLD-POLITICS-CONTRACT.md): rules per harbour, sanctions, war risk, flags. Tests pass a fixture.
+    this.politics = opts.politics === false ? null : new Politics(this, { dir: opts.politicsDir, dataset: opts.politicsDataset, harbors: opts.politicsHarbors, log: this.log });
+    if (this.politics?.ds.trade && !opts.politicsDataset) setTradeProfile((cc, g) => this.politics.tradeProfile(cc, g));   // only once shared/politics/trade.json exists
     this.loadState();
     // INLAND HARBOURS (docs/WATERWAYS-HARBOURS-PHASE2.md §2.2): generated per z12 square from the overlay as ships sail; ≤ 3,000 in memory
     this.inlandGraph = this.fis ? buildInlandGraph(this.fis, { levels: this.levels }) : null;   // the harbour card's reach (≈ 3 MB)
@@ -241,12 +247,14 @@ export class Game {
       p.assist = null;
       if (h) { if (b) this.moorAt(p, h, b); else this.setDocked(p, h.id, null); }
     }
+    this.politics?.migrate(p);                         // office.pol, vessel flag/built/psc/held, cargo origin (never throws)
+    this.politics?.reconcile(p);                       // §4.17 wind-down / frustration when the dataset changed
   }
   saveState() {
     try {
       fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
       const s = {
-        savedAt: new Date().toISOString(), fleetSchema: 1, simTime: this.simTime, ww: this.ww ? this.ww.toSave() : undefined, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
+        savedAt: new Date().toISOString(), fleetSchema: 1, polSchema: 1, polVersion: this.politics?.version ?? null, simTime: this.simTime, ww: this.ww ? this.ww.toSave() : undefined, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
         players: [...this.players.values()].map((p) => ({ ...p, hail: null, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1, ...(this.wwOn ? { radio: p.radio ? { ...p.radio, open: false } : undefined, radioLastTx: 0, radioLastDsc: 0, radioMiss: null, lockStay: null } : {}) })),
       };
       const tmp = this.stateFile + '.tmp';
@@ -283,6 +291,10 @@ export class Game {
       let guard = 0;
       if (st.jobs.length < n) st.jobs.push(...this.jobsx.generate(h, this.simTime, this.rnd, this.jobEnv(), { n: n - st.jobs.length, phase: JOBS_PHASE })); // YARD §5.7
       void guard;
+      if (this.politics) {
+        for (const j of diplomaticJobs(this.politics.ds, h, this.simTime, this.rnd, { harbors: HARBORS, nextJobId, rateJob, seaKm: this.jobEnv().seaKm, riskOf: (a, b) => this.politics.riskOf(a, b) })) if (st.jobs.length < n + 2) st.jobs.push(j);
+        for (const j of st.jobs) if (!j.pol || j.pol.ver !== this.politics.version) { const keep = j.pol?.mustAvoid; this.politics.tagJob(j); if (keep) j.pol.mustAvoid = keep; }
+      }
       // Black-market contact: 70% present per regen, 1-3 runs.
       if (this.rnd() < 0.7) {
         const k = 1 + Math.floor(this.rnd() * 3);
@@ -304,6 +316,7 @@ export class Game {
       towSpot: (lat, lon, draft) => this.towSpotOk(lat, lon, draft),
       // V6 item 5: planned sea km between two harbours when the route table knows it (else the generator uses gc × 1.25)
       seaKm: (a, b) => { try { const km = this.routeTable?.seaKm?.(a, b); return Number.isFinite(km) && km > 0 ? km : null; } catch { return null; } },
+      ...(this.politics ? this.politics.jobEnvHooks() : {}),   // destWeight, riskOf, contrabandOk, tradeProfile, payMul
     });
   }
   // Can a disabled vessel lie here? Open water at least draft + 6 m deep, deep water 1.5 km all round (no lee shore
@@ -466,6 +479,7 @@ export class Game {
       ...this.fleet.youFields(p),                     // v6: aboard, vesselName, home, homeName, fleet {n, atSea, laidUp, owed, unread}
       ...(this.radio ? { radio: this.radio.youFields(p) } : {}),   // VHF {on, ch, dual, power, powerEff, inland, lang, vol, dmg}
       ...(this.mh && p.ship ? { mhNear: this.mh.near(p.ship.lat, p.ship.lon, 3).slice(0, 3).map((h) => ({ id: h.id, name: h.name, tier: h.tier, vhf: h.vhf })) } : {}),
+      pol: this.politics ? this.politics.youView(p) : null,
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
     };
   }
@@ -542,6 +556,7 @@ export class Game {
     const geom = this.harborGeom(h.id), anchor = this.harborAnchor(h);
     this.send(p, {
       t: 'harbor', harbor: { id: h.id, name: h.name, country: h.country, size: h.size, lat: h.lat, lon: h.lon, fuelPrice: this.fuelPrice(h), repairCost: this.repairCost(p),
+        rules: this.politics ? this.politics.harbourPayload(p, h) : null,
         jobs: st.jobs.map(wireJob), market: st.market, econ: this.harborEcon(st), contact: p.contactSeen === h.id && st.contact ? st.contact : null, contactLooked: p.contactSeen === h.id,
         shipyard: Object.values(SHIP_CLASSES).filter((c) => c.price > 0).map((c) => ({ id: c.id, name: c.name, cat: c.cat, price: c.price, desc: c.desc, tradeIn: shipValue(p.ship.cls, p.cond), specs: shipSpecs(c.id) })),
         used: st.used || [], tradeIn: shipValue(p.ship.cls, p.cond), sellValue: p.ship.cls === 'pilot' ? 0 : shipValue(p.ship.cls, p.cond),
@@ -666,6 +681,16 @@ export class Game {
       try { return quayGate(this, p, a, m, () => this.onAction(p, { ...m, quayGated: true })); } catch (e) { this.log(`[game] quay gate ${a} failed: ${e.stack || e}`); return; }
     }
     try {
+      if (typeof a === 'string' && a.startsWith('pol_') && this.politics) {
+        if (p.office && !this.fleet.allow(p)) return;   // the fleet actions' token bucket
+        if (a === 'pol_home_plan' || a === 'pol_home_start') {   // the existing office rules (cost, cooldown, laid-up ships) come first
+          const hm = this.fleet.homeMove(p, harborById(m.harbor));
+          if (a === 'pol_home_start' && hm.allowed !== true) return this.event(p, 'warn', hm.allowed);
+          m = { ...m, baseCost: hm.cost };
+        }
+        const r = this.politics.onAction(p, m);
+        if (r !== null) { this.sendYou(p); if (p.docked) this.sendHarbor(p); this.fleet.dirty?.(p); return; }
+      }
       switch (a) {
         case 'quay_query': return quayQuery(this, p);
         case 'quay_dock': if (this.ww && p.lockStay && this.ww.makeFast(p.lockStay.lockId, p.id)) { this.event(p, 'info', 'Made fast in the lock chamber.'); return this.sendYou(p); } return quayDock(this, p, m);   // in a lock: Moor = make fast
@@ -793,6 +818,7 @@ export class Game {
       if (Math.abs(p.ship.spd) > 3) return this.event(p, 'warn', 'Too fast to dock — slow below 3 kn.');
     }
     if (p.hail) return this.event(p, 'law', 'The harbour master refuses: the coast guard has ordered you to heave to first.');
+    if (this.politics) { const e = this.politics.entryCheck(p, harbor); if (e.refuse) return this.event(p, 'law', e.text); }
     if (berth) this.moorAt(p, harbor, berth); else this.setDocked(p, harbor.id, null);
     this.finishDock(p, harbor);
   }
@@ -803,6 +829,8 @@ export class Game {
     // Port authority inspection happens at the quay, before anything is unloaded.
     const chance = p.wanted > 0 ? LAW.PORT_INSPECT_CHANCE_WANTED : LAW.PORT_INSPECT_CHANCE;
     const seized = this.rnd() < chance ? this.inspect(p, `${harbor.name} port authority`) : false;
+    const pol = this.politics ? this.politics.onDock(p, harbor) : null;   // call record, seizure, designation, PSC, port incident
+    if (pol?.incident?.outcome === 'loss') return;                        // the ship was abandoned (sink already ran)
     if (p.docked === harbor.id) this.deliverJobs(p, harbor);
     // Port dues scaled by ship size and harbour class; pilotage for big ships at the big ports.
     const dues = portDues(p.ship.cls, harbor), pilot = pilotageFee(p.ship.cls, harbor);
@@ -812,6 +840,7 @@ export class Game {
   }
   undock(p) {
     if (!p.docked) return;
+    const held = this.politics?.canUndock(p); if (held) return this.event(p, 'law', held);
     if (quayUndock(this, p)) return;                    // DOCK ANYWHERE: the stay's balance, 20 m out on the water side
     const h = harborById(p.docked);
     // Berth fee per started 24 h alongside.
@@ -910,6 +939,7 @@ export class Game {
     if (Math.abs(p.ship.spd) > 6) return this.event(p, 'warn', 'Slow below 6 kn so the tugs can make fast.');
     const cost = tugCostFor(p.ship.cls);
     if (p.money < cost) return this.event(p, 'warn', `The tugs want ${fmt(cost)} cr up front. You have ${fmt(p.money)}.`);
+    if (this.politics) { const e = this.politics.entryCheck(p, harbor); if (e.refuse) return this.event(p, 'law', e.text); }   // world politics H8: no tugs into a port that refuses you
     const geom = this.harborGeom(harbor.id);
     let berth = null, tugPlan = null;
     if (geom && (geom.berths || []).length) {
@@ -1042,8 +1072,12 @@ export class Game {
   }
   repair(p) {
     if (!p.docked) return;
-    const cost = this.repairCost(p);
-    if (cost <= 0) return this.event(p, 'warn', 'Nothing to repair.');
+    const cost0 = this.repairCost(p);
+    if (cost0 <= 0) return this.event(p, 'warn', 'Nothing to repair.');
+    const credit = this.politics ? this.politics.repairCredit(p) : 0;   // hull points from covered war incidents (30 days)
+    const covered = credit > 0 ? Math.min(cost0, Math.round(cost0 * Math.min(1, credit / Math.max(1, 100 - p.cond)))) : 0;
+    const cost = cost0 - covered;
+    if (covered > 0) this.event(p, 'info', `War cover pays ${fmt(covered)} cr of the repair.`);
     if (cost > p.money) {
       const frac = p.money / cost; const gain = (100 - p.cond) * frac;
       if (gain < 1) return this.event(p, 'warn', 'You cannot afford repairs.');
@@ -1067,6 +1101,7 @@ export class Game {
     let fromContact = false;
     if (!job && st.contact && p.contactSeen === p.docked) { job = st.contact.jobs.find((j) => j.id === jobId); fromContact = !!job; }
     if (!job) return this.event(p, 'warn', 'That contract is gone.');
+    if (this.politics) { const c = this.politics.onAccept(p, job); if (c.block) return this.event(p, 'law', c.text); }
     if (isRunnerJob(job)) {                                                   // YARD lane D: runner families
       const r = this.jobsx.accept(p, job);
       if (!r.ok) return this.event(p, 'warn', r.why || 'Not possible with this ship.');
@@ -1079,7 +1114,7 @@ export class Game {
       if (!c.ok && c.why.code !== 'time') return this.event(p, 'warn', c.why.text);
     }
     const C = SHIP_CLASSES[p.ship.cls];
-    if (job.type === 'passengers' || job.type === 'charter') {
+    if (job.type === 'passengers' || job.type === 'charter' || job.type === 'evac') {
       const used = p.jobs.filter((j) => j.pax).reduce((s, j) => s + j.pax, 0);
       if (used + job.pax > C.pax) return this.event(p, 'warn', `Not enough berths (${C.pax - used} free).`);
       if (job.needsCat && !job.needsCat.includes(C.cat)) return this.event(p, 'warn', `Charter guests expect a ${job.needsCat.join(' or ')}; a ${C.name.toLowerCase()} will not do.`);
@@ -1173,6 +1208,8 @@ export class Game {
     if (!Number.isFinite(j.dueShip)) this.migrateAcceptedJob(p, j);
     const late = p.shipTime > (j.dueShip ?? Infinity); // V6 item 5: due on the ship's clock
     if (late) pay = Math.round(pay * 0.5);
+    const pp = this.politics ? this.politics.onPaid(p, j, late, harbor) : null;   // standing, premium refund
+    if (pp && pp.payMul !== 1) { pay = Math.round(pay * pp.payMul); this.event(p, 'warn', 'Entered an area the contract said to avoid: pay halved.'); }
     if (frac < 1) this.event(p, 'warn', `Short delivery: only ${Math.round(frac * 100)} % of the contracted quantity.`);
     // Demand bonus: a port short of the good pays extra, and the delivery replenishes its stock.
     let bonus = 0;
@@ -1245,10 +1282,13 @@ export class Game {
       // straight back always loses the spread instead of printing money
       qty = affordableQty(h, st, good, Math.min(qty, free, avail), p.money);
       if (qty <= 0) return this.event(p, 'warn', 'No space or no money.');
+      const pc = this.politics?.onTrade(p, h, good, 'buy');
+      if (pc?.block) return;                                  // the engine already sent the `law` event
       const q = tradeQuote(h, st, good, qty, 'buy');
       p.money -= q.total;
-      const stack = p.cargo.find((c) => c.good === good && !c.jobId);
-      if (stack) stack.qty += qty; else p.cargo.push({ good, qty, contraband: false, jobId: null });
+      const origin = this.politics ? this.politics.stackOrigin(p, h) : null;
+      const stack = p.cargo.find((c) => c.good === good && !c.jobId && (c.origin ?? null) === origin);
+      if (stack) stack.qty += qty; else p.cargo.push({ good, qty, contraband: false, jobId: null, origin });
       st.stock[good] = Math.max(0, st.stock[good] - qty);
       refreshPrices(h, st);
       const d = st.market[good] - q.unit;
@@ -1259,14 +1299,25 @@ export class Game {
       qty = Math.min(qty, have);
       if (qty <= 0) return this.event(p, 'warn', 'Nothing to sell (contract cargo cannot be sold).');
       const q = tradeQuote(h, st, good, qty, 'sell');
-      let left = qty;
-      for (const c of stacks) { const k = Math.min(c.qty, left); c.qty -= k; left -= k; }
+      let left = qty, duty = 0, fees = 0;
+      const lines = [], take = [];
+      for (const c of stacks) {                                 // FIFO, duty per stack (contract §4.9); checked before anything is sold
+        const k = Math.min(c.qty, left); if (k <= 0) break;
+        if (this.politics) {
+          const r = this.politics.onTrade(p, h, good, 'sell', { origin: c.origin ?? null, value: Math.round(q.total * k / qty) });
+          if (r.block) return;                                  // nothing sold
+          if (r.duty) { duty += r.duty.duty || 0; fees += r.duty.fee || 0; if (r.duty.duty || r.duty.fee) lines.push(`${c.origin || 'origin unknown'} ${(r.duty.rate * 100).toFixed(1)} % ${r.duty.via === 'mfn' ? 'WTO MFN' : r.duty.via}`); }
+        }
+        take.push([c, k]); left -= k;
+      }
+      for (const [c, k] of take) c.qty -= k;
       p.cargo = p.cargo.filter((c) => c.qty > 0);
-      p.money += q.total; p.stats.earned += q.total;
+      const net = q.total - duty - fees;
+      p.money += net; p.stats.earned += net;
       st.stock[good] = (st.stock[good] || 0) + qty;
       refreshPrices(h, st);
       const d = q.unit - st.market[good];
-      this.event(p, 'info', `Sold ${qty} t of ${GOODS[good].name} at ${fmt(q.unit)} cr/t average${d > 0 ? ` (price now ${fmt(st.market[good])})` : ''}.`);
+      this.event(p, 'info', `Sold ${qty} t of ${GOODS[good].name} at ${fmt(q.unit)} cr/t average${d > 0 ? ` (price now ${fmt(st.market[good])})` : ''}${duty + fees ? ` — duty ${fmt(duty)} cr, fee ${fmt(fees)} cr (${lines.join('; ')})` : ''}.`);
     }
     this.sendYou(p); this.sendHarbor(p);
   }
@@ -1511,15 +1562,20 @@ export class Game {
     const wx = this.weatherAt(s.lat, s.lon);
     // The ship's own clock: warp multiplies everything that happens aboard per hour (the world clock stays real time).
     const hrs = simHours * this.warpOf(p);
+    const hold = this.politics?.vesselOf(p)?.held;
+    if (hold && hold.until > this.simTime) { s.throttle = 0; s.spd = 0; if (this.warpOf(p) > 1) this.dropWarp?.(p, 'Held.', false); }
     if (!(p.serviceDue > 0)) p.serviceDue = this.simTime + SERVICE_INTERVAL_S;
     if (underway && C.crewCost && !p.isActor) p.money = Math.max(0, p.money - C.crewCost * hrs * (p.towing ? 1.2 : 1));
+    let burnT = 0;
     if (p.fuel > 0 && Math.abs(s.throttle) > 0.01) {
       const burn = fuelBurnPerSimHour(s.cls, s.throttle, load, headwindFactor(s.hdg, wx.wind), p.cond) * hrs * (p.towing ? 1.3 : 1);
+      burnT = burn;
       p.fuel = Math.max(0, p.fuel - burn);
       if (p.fuel === 0) this.event(p, 'warn', 'Fuel exhausted. Engine stopped. You are drifting — call a tow or wait for a kind soul.');
       else if (p.fuel < C.fuelCap * 0.1 && !p.lowFuelWarned) { p.lowFuelWarned = true; this.event(p, 'warn', 'Low fuel: under 10 % remaining.'); }
       if (p.fuel > C.fuelCap * 0.2) p.lowFuelWarned = false;
     }
+    if (this.politics) this.politics.stepSea(p, hrs, burnT, { underway });   // cover, IBF wages, incidents, ECA, piracy (captains too: their IBF bonus is booked here)
     if (underway && p.cond > 0) {
       // Overdue maintenance ramps the wear multiplier (+2 %/day past serviceDue, up to +60 %).
       const svc = serviceWearMul(p.serviceDue, this.simTime);
@@ -1548,7 +1604,7 @@ export class Game {
         p.fishInfo = { ground: g.name, rate: Math.round(rate * 10) / 10, caught: Math.round(caught * 10) / 10, caughtRaw: caught, tooFast: false };
         if (add > 0) {
           const stack = p.cargo.find((c) => c.good === 'fish' && c.caught && !c.jobId);
-          if (stack) stack.qty += add; else p.cargo.push({ good: 'fish', qty: add, contraband: false, jobId: null, caught: true });
+          if (stack) stack.qty += add; else p.cargo.push({ good: 'fish', qty: add, contraband: false, jobId: null, caught: true, origin: this.politics ? this.politics.stackOrigin(p, null, { caught: true }) : null });
           p.fullWarned = false;
         } else if (free <= 0 && !p.fullWarned) { p.fullWarned = true; this.event(p, 'info', 'Hold is full of fish.'); this.sendYou(p); }
         if (Date.now() - (p.fishSentAt || 0) > 2000) { p.fishSentAt = Date.now(); this.sendYou(p); } // the catch counter follows live
@@ -1590,7 +1646,8 @@ export class Game {
     const r = (this.wind.dir + 180) * Math.PI / 180; // dir = where the wind comes FROM
     this.wind.u = Math.sin(r) * this.wind.spd; this.wind.v = Math.cos(r) * this.wind.spd;
   }
-  sink(p) {
+  sink(p, reason = null, text = null) {
+    if (p.isActor) return this.fleet.sinkVessel(p.vessel);   // world politics: a captained ship lost to a war incident (crew evacuated)
     const s = p.ship;
     this.dropWarp(p, 'Abandon ship.', false);
     p.stats.sunk++;
@@ -1602,7 +1659,7 @@ export class Game {
     const lostJobs = p.jobs.length;
     p.cargo = []; p.jobs = []; p.fishing = false; p.hail = null; p.towing = null; p.voyage = null; this.convoyLeave(p, true);
     s.spd = 0; s.throttle = 0; s.rudder = 0;
-    this.event(p, 'warn', `Your ship sank${lostJobs ? ` with ${lostJobs} contract(s)` : ''}. You are in the life raft.`);
+    this.event(p, 'warn', reason === 'war_loss' && text ? text : `Your ship sank${lostJobs ? ` with ${lostJobs} contract(s)` : ''}. You are in the life raft.`);
     this.startRescue(p);
     this.sendYou(p);
   }
@@ -2098,6 +2155,11 @@ export class Game {
     }
     const arr = this.expressArrival(p, lat, lon);
     if (!arr.ok) return this.event(p, 'warn', arr.why);
+    if (this.politics) {                               // war cover and incident rolls for the listed areas on the way (H17)
+      const x = this.politics.expressCheck(p, { points: [[arr.lat, arr.lon]] });
+      if (x.refuse) return this.event(p, 'warn', x.text);
+      if (x.incidents.some((i) => i.outcome === 'loss')) return;
+    }
     p.money -= cost; p.fuel = Math.max(0, p.fuel - fuelNeeded);
     p.cond = Math.max(0, p.cond - wearPerSimHour(0.8, this.wind.spd, C.wearMul) * hours);
     const s = p.ship;

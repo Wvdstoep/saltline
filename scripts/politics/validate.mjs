@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ringArea, ringSelfIntersects, loadDataset } from '../../shared/politics.js';
 import { MID } from '../../server/ais/mid.js';
+import { HARBORS } from '../../server/harbors.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_DIR = path.resolve(HERE, '../../shared/politics');
@@ -44,11 +45,18 @@ export function proseStrings(parts) {
   walk(parts, (o, at) => { for (const [k, v] of Object.entries(o)) if (typeof v === 'string' && !skip.has(k)) out.push({ at: `${at}.${k}`, text: v }); });
   return out;
 }
+// Harbour names are real places, never prose to police ("Libreville" contains "evil"): removed before matching.
+const PLACE_NAMES = [...new Set(HARBORS.flatMap((h) => [h.name, String(h.name).split(' (')[0]]).map((n) => String(n).toLowerCase()).filter((n) => n.length > 2))].sort((a, b) => b.length - a.length);
+// Banned words match at the start of a word only ('kill' hits "killed" but not "skill"); these few also need the word
+// to end there or take an inflection, so "deadline", "deadweight" and "Kill van Kull"-style compounds stay clean.
+const WHOLE = { dead: 'dead(ly)?', kill: 'kill(s|ed|ing|er|ers)?', evil: 'evils?', glory: 'glor(y|ies|ious|ify|ified)', enemy: 'enem(y|ies)', regime: 'regime' };
 export function bannedHits(text, extra = []) {
-  const t = String(text).toLowerCase(), hits = [];
+  let t = String(text).toLowerCase();
+  const hits = [];
+  for (const n of PLACE_NAMES) if (t.includes(n)) t = t.split(n).join(' ');
   for (const w of BANNED_WORDS) {
-    if (w === 'regime') { if (/\bregime\b/.test(t)) hits.push(w); continue; }
-    if (t.includes(w)) hits.push(w);
+    const re = w in WHOLE ? `${WHOLE[w]}($|[^\\p{L}])` : w;
+    if (new RegExp(`(^|[^\\p{L}])${re}`, 'u').test(t)) hits.push(w);
   }
   // names (extra list): whole words only, so 'modi' hits neither 'commodity' nor 'modified'
   for (const w of extra) if (new RegExp(`(^|[^\\p{L}])${w.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}])`, 'u').test(t)) hits.push(w);
