@@ -1,0 +1,17 @@
+/* Radar layer controls (public/js/radarmap.js): Map · Ships · Names. Desktop: a row under the range buttons.
+   Touch: one round layers button on the radar's top-left (mirrors the N↑ button) opening the row as a popover. */
+#radarOpts { position: relative; }
+#radarOpts .ro-toggle { display: none; }
+#radarOpts .ro-row { display: flex; gap: 4px; justify-content: center; margin-top: 3px; }
+#radarOpts .ro-row button { flex: 1 1 0; min-width: 0; height: 20px; min-height: 20px; padding: 0 4px; font-size: 10.5px; line-height: 1; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: rgba(255, 255, 255, 0.05); border-color: var(--line, rgba(255, 255, 255, 0.12)); color: var(--muted, #9fb3c2); }
+#radarOpts .ro-row button.on { color: var(--cyan, #5ad6ff); border-color: rgba(90, 214, 255, 0.4); }
+
+body.touch #radarOpts { position: static; }
+body.touch #radarOpts .ro-toggle { display: inline-flex; align-items: center; justify-content: center; position: absolute; top: 4px; left: 4px; padding: 0;
+  width: var(--tap, 40px); min-width: var(--tap, 40px); height: var(--tap, 40px); min-height: var(--tap, 40px); border-radius: 50%; background: var(--glass-strong, rgba(6, 20, 30, 0.9)); }
+body.touch #radarOpts.open .ro-toggle { color: var(--cyan, #5ad6ff); border-color: rgba(90, 214, 255, 0.5); }
+body.touch #radarOpts .ro-row { display: none; position: absolute; right: calc(100% + 6px); bottom: 0; flex-direction: column; gap: 6px; margin: 0; padding: 6px;
+  border-radius: var(--r3, 12px); background: var(--glass-strong, rgba(6, 20, 30, 0.92)); border: 1px solid var(--line-2, rgba(255, 255, 255, 0.14)); z-index: 5; }
+body.touch #radarOpts.open .ro-row { display: flex; }
+body.touch #radarOpts .ro-row button { flex: none; width: 104px; height: var(--tap, 40px); min-height: var(--tap, 40px); font-size: 13px; }

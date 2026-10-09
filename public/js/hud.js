@@ -14,6 +14,7 @@ import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js
 import { jobWhere, fmtLeft, JOB_COLOR } from './jobs.js';
 import { estimateJob, hardReason, fmtShipH, JOBTIME } from '/shared/jobtime.js'; // V6 item 5: contract hours on the ship's clock
 import { TIER_TABS, SERVICE_TIERS, quayDenies } from '/shared/quayrules.js'; // DOCK ANYWHERE
+import { RadarMap } from './radarmap.js'; // RADAR MAP: map underlay, traffic / names toggles
 
 const { GOODS, SHIP_CLASSES, GEO, SIM, INTERACT } = K;
 const $ = (id) => document.getElementById(id);
@@ -821,6 +822,8 @@ export class Hud {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, W);
     ctx.save(); ctx.translate(R, R);
+    const rm = this.radarMap || (this.radarMap = new RadarMap(this.app)); // RADAR MAP
+    rm.drawUnderlay(ctx, me, rangeU * GEO.SCALE, R - 6, rot, now, W);
     ctx.strokeStyle = 'rgba(90,214,255,0.16)'; ctx.lineWidth = 1;
     for (let i = 1; i <= 3; i++) { ctx.beginPath(); ctx.arc(0, 0, ((R - 6) * i) / 3, 0, Math.PI * 2); ctx.stroke(); }
     ctx.beginPath(); ctx.moveTo(0, -R + 6); ctx.lineTo(0, R - 6); ctx.moveTo(-R + 6, 0); ctx.lineTo(R - 6, 0); ctx.stroke();
@@ -840,7 +843,9 @@ export class Hud {
     if (!all.some((c) => c.kind === 'rescue')) for (const r of collectRescues(a)) all.push({ kind: 'rescue', lat: r.lat, lon: r.lon, color: '#ff9f43', label: 'SAR' });
     const nb = a.you?.nearBerth; if (nb && Number.isFinite(nb.lat) && !all.some((c) => c.kind === 'berth')) all.push({ kind: 'berth', lat: nb.lat, lon: nb.lon, color: '#f2b134', label: nb.name || 'berth' });
     else if (nb && !Number.isFinite(nb.lat) && Number.isFinite(nb.brg) && Number.isFinite(nb.distM)) all.push({ kind: 'berth', polar: { brg: nb.brg, d: nb.distM / GEO.SCALE }, color: '#f2b134', label: nb.name || 'berth' });
-    for (const c of all) {
+    const lab = rm.beginLabels(ctx, me, k / GEO.SCALE, rot, R - 6, small); // RADAR MAP: collect + place the names
+    for (const c of rm.filterContacts(all)) {
+      lab.at(c);
       const d = c.polar ? c.polar.d : unitsBetween(me.lat, me.lon, c.lat, c.lon);
       if (c.kind === 'job' && d - (c.radiusU || 0) > rangeU * 0.94) { // out of range: an arrowhead on the rim points to it
         const bj = ((bearing(me.lat, me.lon, c.lat, c.lon) + rot) * Math.PI) / 180, rr = R - 10;
@@ -874,6 +879,7 @@ export class Hud {
       }
       else { ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill(); if (c.hdg != null) { const hh = ((c.hdg + rot) * Math.PI) / 180; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.sin(hh) * 9, y - Math.cos(hh) * 9); ctx.stroke(); } ctx.fillStyle = 'rgba(255,255,255,0.85)'; if (!small) ctx.fillText(c.label, x, y - 9); }
     }
+    lab.flush();
     ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(Math.sin(h) * 6, -Math.cos(h) * 6); ctx.lineTo(Math.sin(h + 2.6) * 5.5, -Math.cos(h + 2.6) * 5.5); ctx.lineTo(Math.sin(h - 2.6) * 5.5, -Math.cos(h - 2.6) * 5.5); ctx.closePath(); ctx.fill();
     ctx.restore();
   }
