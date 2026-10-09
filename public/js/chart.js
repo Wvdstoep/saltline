@@ -400,9 +400,22 @@ export class Chart {
       const p = this.project(s.lat, s.lon); const r = Math.max(6, (s.radiusKm * 1000) / this.mPerPx(s.lat));
       if (!this.onScreen(p, r)) continue;
       const k = clamp(s.intensity ?? 0.5, 0, 1);
+      const bft = Number.isFinite(s.bft) ? ` · F${s.bft}` : '';
+      if (s.kind === 'real') {
+        // real severe weather from the forecast: violet, solid ring with a hatched edge, "REAL" tag, wind and sea
+        ctx.fillStyle = `rgba(150,110,255,${0.1 + 0.2 * k})`; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = `rgba(190,160,255,${0.55 + 0.4 * k})`; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.lineWidth = 1; ctx.beginPath();
+        for (let a = 0; a < 24; a++) { const t = (a / 24) * Math.PI * 2; ctx.moveTo(p.x + Math.cos(t) * r, p.y + Math.sin(t) * r); ctx.lineTo(p.x + Math.cos(t) * (r + 5), p.y + Math.sin(t) * (r + 5)); }
+        ctx.stroke();
+        const y0 = p.y - Math.min(r, 14) - 8;
+        ctx.fillStyle = '#e6dcff'; ctx.fillText(`REAL · ${s.name || 'Severe weather'}${bft}`, p.x, y0);
+        if (Number.isFinite(s.windMs) || Number.isFinite(s.hs)) { ctx.font = '10px sans-serif'; ctx.fillText(`${Number.isFinite(s.windMs) ? `${Math.round(s.windMs)} m/s` : ''}${s.hs ? ` · Hs ${s.hs.toFixed(1)} m` : ''}`, p.x, y0 + 13); ctx.font = 'bold 11px sans-serif'; }
+        continue;
+      }
       ctx.fillStyle = `rgba(255,80,80,${0.08 + 0.22 * k})`; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = `rgba(255,120,120,${0.4 + 0.5 * k})`; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = '#ffd0d0'; ctx.fillText(`${s.name || 'Storm'} · ${Math.round(k * 100)} %`, p.x, p.y - Math.min(r, 14) - 8);
+      ctx.fillStyle = '#ffd0d0'; ctx.fillText(`${s.name || 'Storm'} · ${Math.round(k * 100)} %${bft}`, p.x, p.y - Math.min(r, 14) - 8);
     }
   }
   drawWrecks() {

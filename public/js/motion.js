@@ -74,7 +74,7 @@ export function createMotion(cls) {
 /**
  * Advance the motion by dt seconds and return { heave (m), pitch (rad), roll (rad), slam 0..1, greenWater 0..1 }
  * (the same object every call). ctx = { length, beam, draft, freeboard, displacementT, speedKn, hdgRad, x, z, time,
- * ocean, throttle, rudder, flooding, docked } plus optional { windSpd, windDir (from, deg), sails (bool) } — wind
+ * ocean, throttle, rudder, flooding, docked } plus optional { windSpd, windDir (from, deg), gust (m/s), sails (bool) } — wind
  * defaults to ocean.wind / ocean.windDir. hdgRad is the compass heading (0 = north = −z, clockwise).
  */
 export function stepMotion(st, ctx, dt) {
@@ -108,6 +108,13 @@ export function stepMotion(st, ctx, dt) {
   // sails: heel grows with the square of the wind up to ~12 m/s, then the crew reefs (heel held, then eased)
   if (st.sail && ctx.sails !== false) heel = Math.min(25, st.windHeel * (U / 12) * (U / 12)) * D2R * Math.sign(sinRb) * Math.pow(Math.abs(sinRb), 0.6) * (U > 13 ? Math.pow(13 / U, 1.5) : 1);
   else heel = st.windHeel * (U / 20) * (U / 20) * D2R * sinRb;
+  // gusts: wind pressure goes with U², so a squall heels her harder for a few seconds (deterministic in time; `gust`
+  // = the gust speed from the weather, m/s). Sails are reefed above ~13 m/s, so this mostly shows on high-sided hulls.
+  const Ug = Number.isFinite(ctx.gust) && Number.isFinite(t) && U > 3 ? Math.max(U, ctx.gust) : U;
+  if (Ug > U) {
+    const gn = Math.max(0, Math.sin(t * 0.41 + 1.7 * Math.sin(t * 0.13)) * 0.7 + Math.sin(t * 1.07) * 0.3);
+    heel *= 1 + ((Ug / U) * (Ug / U) - 1) * gn;
+  }
   heel += st.turnHeel * D2R * Math.max(-1, Math.min(1, ctx.rudder || 0)) * vr * vr;
   heel = Math.max(-0.5, Math.min(0.5, heel));
   const list = flood * 0.25, trim = -flood * 0.035;

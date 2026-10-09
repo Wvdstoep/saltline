@@ -722,7 +722,7 @@ export class Fleet {
       const lat = Number(m.lat), lon = Number(m.lon), radiusKm = Number(m.radiusKm), intensity = Number(m.intensity);
       if (![lat, lon, radiusKm, intensity].every(Number.isFinite)) return this.warn(p, 'storm: lat, lon, radiusKm, intensity');
       const now = g.simTime;
-      g.storms.push({ id: 's' + crypto.randomBytes(4).toString('hex'), lat, lon, radiusKm, peak: intensity, intensity, driftDir: 0, driftMs: 0, born: now - 3600, dies: now + 7200, region: false, name: 'Debug' });
+      g.storms.push({ id: 's' + crypto.randomBytes(4).toString('hex'), lat, lon, radiusKm, peak: intensity, intensity, driftDir: 0, driftMs: 0, born: now - 3600, dies: now + 7200, region: false, name: typeof m.name === 'string' && m.name.trim() ? m.name.trim().slice(0, 20) : 'Debug' });
     } else return this.warn(p, 'fleet_debug: money | place | advance | storm');
     this.sendFleet(p);
   }

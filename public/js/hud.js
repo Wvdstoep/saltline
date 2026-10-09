@@ -7,6 +7,7 @@ import { fmtDMS, bearing, unitsBetween, haversine, fmtDistance } from '/shared/g
 import * as K from '/shared/constants.js';
 import { fuelBurnPerSimHour } from '/shared/physics.js';
 import { orderLabel, isAstern, THROTTLE_MIN } from '/shared/telegraph.js';
+import { seaStateWord, beaufort, douglas, BFT_WORD } from '/shared/seastate.js';
 import { Chart, fetchJobs, cachedJobs, collectAi, collectRescues, collectStorms, fmtDur, fmtClock } from './chart.js';
 import { isTouch, TouchHelm } from './touch.js';
 import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js';
@@ -53,11 +54,8 @@ export function fmtDurS(sec) {
   if (h < 48) return `${h} h ${pad2(m % 60)} min`;
   return `${Math.floor(h / 24)} d ${h % 24} h`;
 }
-/** Douglas sea state word from the significant wave height (m). */
-export function seaStateWord(h) {
-  return h < 0.1 ? 'calm' : h < 0.5 ? 'smooth' : h < 1.25 ? 'slight' : h < 2.5 ? 'moderate' : h < 4 ? 'rough' : h < 6 ? 'very rough' : h < 9 ? 'high' : h < 14 ? 'very high' : 'phenomenal';
-}
-export function beaufort(ms) { const t = [0.3, 1.6, 3.4, 5.5, 8, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7]; let b = 0; while (b < t.length && ms >= t[b]) b++; return b; }
+// Douglas / WMO sea state by Hs and the Beaufort force live in shared/seastate.js (server and client agree).
+export { seaStateWord, beaufort } from '/shared/seastate.js';
 /** Accept the v0.2 compact weather, the flat wire shape ({windDir, windSpd, waveH, …}) and the nested v0.3 shape. */
 export function normWeather(w) {
   if (!w) return null;
@@ -66,7 +64,7 @@ export function normWeather(w) {
     : Number.isFinite(w.waveH) ? { height: w.waveH, dir: w.waveDir ?? wind.dir, period: w.wavePeriod ?? null }
       : { height: Math.round((w.sea ?? 0) * 6 * 10) / 10, dir: wind.dir, period: null };
   const swell = w.swell || (Number.isFinite(w.swellH) ? { height: w.swellH, dir: w.swellDir, period: w.swellPeriod } : null);
-  return { wind, waves, swell, sea: w.sea ?? Math.min(1, waves.height / 6), storm: w.storm ?? 0, rain: w.rain ?? 0, visibility: w.visibility, pressure: w.pressure, temp: w.temp, cloud: w.cloud, source: w.source || 'synthetic' };
+  return { wind, waves, swell, sea: w.sea ?? Math.min(1, waves.height / 6), storm: w.storm ?? 0, rain: w.rain ?? 0, visibility: w.visibility, pressure: w.pressure, temp: w.temp, cloud: w.cloud, source: w.source || 'synthetic', stormName: w.stormName || null, stormKind: w.stormKind || null, forced: !!w.forced };
 }
 /** Ship specs from a shipyard entry or the class table. */
 function specsOf(id, entry) {
@@ -617,9 +615,17 @@ export class Hud {
       setText($('tRange'), range == null ? '—' : range === Infinity ? '∞ sail' : `${range >= 100 ? fmt(range) : range.toFixed(1)} nm`);
       const wx = normWeather(info.weather || you.weather);
       if (wx) {
-        setText($('tWind'), `${pad3(wx.wind.dir)}° ${wx.wind.spd.toFixed(0)} m/s${wx.wind.gust ? ` g${wx.wind.gust.toFixed(0)}` : ''}`);
-        setText($('tSea'), `${seaStateWord(wx.waves.height)} ${wx.waves.height.toFixed(1)} m`);
-        $('tSea').style.color = wx.storm > 0.5 ? 'var(--red)' : wx.storm > 0.2 ? 'var(--accent)' : '';
+        const bft = beaufort(wx.wind.spd), ds = douglas(wx.waves.height);
+        setText($('tWind'), `${pad3(wx.wind.dir)}° ${wx.wind.spd.toFixed(0)} m/s${wx.wind.gust ? ` g${wx.wind.gust.toFixed(0)}` : ''} F${bft}`);
+        $('tWind').style.color = bft >= 10 ? 'var(--red)' : bft >= 8 ? 'var(--accent)' : '';
+        // SEA: WMO/Douglas sea state from the significant wave height (calm-glassy … phenomenal), red from very rough
+        // (the narrow cell: the height goes on the label line, the Douglas word gets the value line)
+        const seaLbl = $('tSea').previousElementSibling;
+        if (seaLbl) setText(seaLbl, `Sea ${wx.waves.height.toFixed(wx.waves.height < 10 ? 1 : 0)} m`);
+        setText($('tSea'), ds.word);
+        $('tSea').style.fontSize = ds.word.length > 10 ? '0.86em' : '';
+        $('tSea').title = `Sea state ${ds.code} (${ds.word}) · Hs ${wx.waves.height.toFixed(1)} m${wx.waves.period ? ` · ${wx.waves.period.toFixed(0)} s` : ''}${wx.swell?.height ? ` · swell ${wx.swell.height.toFixed(1)} m` : ''}${wx.stormName ? ` · in ${wx.stormName}` : ''}${wx.forced ? ' · DEBUG forced' : ''}`;
+        $('tSea').style.color = ds.code >= 6 || wx.storm > 0.5 ? 'var(--red)' : ds.code >= 5 || wx.storm > 0.2 ? 'var(--accent)' : '';
       }
     }
     if (tide && Number.isFinite(tide.height)) setText($('tTide'), `${tide.height >= 0 ? '+' : ''}${tide.height.toFixed(1)} m ${tide.state === 'flood' ? '↑' : '↓'}${tide.rate != null ? ` ${Math.abs(tide.rate).toFixed(1)} m/h` : ''}`);
@@ -701,13 +707,13 @@ export class Hud {
     const tiles = [];
     const tile = (icon, label, big, sub, wide) => tiles.push(`<div class="wxTile${wide ? ' wide' : ''}"><label>${ic(icon)}${esc(label)}</label><b>${esc(big)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>`);
     if (wx) {
-      tile('wind', 'Wind', `${pad3(wx.wind.dir)}° · ${wx.wind.spd.toFixed(1)} m/s`, `force ${beaufort(wx.wind.spd)}${wx.wind.gust ? ` · gusts ${wx.wind.gust.toFixed(0)} m/s` : ''}`);
-      tile('wave', 'Sea state', `${seaStateWord(wx.waves.height)}`, `${wx.waves.height.toFixed(1)} m${wx.waves.period ? ` / ${wx.waves.period.toFixed(0)} s` : ''}${wx.waves.dir != null ? ` from ${pad3(wx.waves.dir)}°` : ''}`);
+      tile('wind', 'Wind', `${pad3(wx.wind.dir)}° · ${wx.wind.spd.toFixed(1)} m/s`, `force ${beaufort(wx.wind.spd)} (${BFT_WORD[beaufort(wx.wind.spd)]})${wx.wind.gust ? ` · gusts ${wx.wind.gust.toFixed(0)} m/s` : ''}`);
+      tile('wave', 'Sea state', `${douglas(wx.waves.height).code} · ${seaStateWord(wx.waves.height)}`, `${wx.waves.height.toFixed(1)} m${wx.waves.period ? ` / ${wx.waves.period.toFixed(0)} s` : ''}${wx.waves.dir != null ? ` from ${pad3(wx.waves.dir)}°` : ''}`);
       if (wx.swell && Number.isFinite(wx.swell.height)) tile('wave', 'Swell', `${wx.swell.height.toFixed(1)} m`, `${wx.swell.period ? `${wx.swell.period.toFixed(0)} s` : ''}${wx.swell.dir != null ? ` from ${pad3(wx.swell.dir)}°` : ''}`);
       if (Number.isFinite(wx.visibility)) tile(wx.visibility < 4000 ? 'visibility' : 'eye', 'Visibility', wx.visibility >= 10000 ? 'good' : wx.visibility >= 4000 ? 'moderate' : wx.visibility >= 1000 ? 'poor' : 'fog', wx.visibility >= 1000 ? `${(wx.visibility / 1000).toFixed(wx.visibility >= 10000 ? 0 : 1)} km` : `${Math.round(wx.visibility)} m`);
       if (Number.isFinite(wx.pressure)) tile('pressure', 'Pressure', `${wx.pressure.toFixed(0)} hPa`, '');
       if (Number.isFinite(wx.temp)) tile('thermo', 'Air', `${wx.temp.toFixed(0)} °C`, Number.isFinite(wx.cloud) ? `cloud ${Math.round(wx.cloud * 100)} %` : '');
-      if (wx.rain > 0.05 || wx.storm > 0.1) tile('storm', 'Weather', wx.storm > 0.6 ? 'STORM' : wx.storm > 0.2 ? 'gale' : 'showers', `rain ${Math.round(wx.rain * 100)} %`);
+      if (wx.rain > 0.05 || wx.storm > 0.1 || wx.stormName) tile('storm', 'Weather', wx.storm > 0.6 ? 'STORM' : wx.storm > 0.2 ? 'gale' : 'showers', `${wx.stormName ? `${wx.stormKind === 'real' ? 'real storm' : 'storm'} ${wx.stormName} · ` : ''}rain ${Math.round(wx.rain * 100)} %`);
     } else tile('cloud', 'Weather', 'no data yet', '', true);
     if (tide && Number.isFinite(tide.height)) {
       tile('tide', 'Tide', `${tide.height >= 0 ? '+' : ''}${tide.height.toFixed(2)} m · ${tide.state === 'flood' ? 'rising' : 'falling'}`, `${Math.abs(tide.rate ?? 0).toFixed(2)} m/h${Number.isFinite(tide.range) ? ` · range ${tide.range.toFixed(1)} m` : ''}`, true);
@@ -828,7 +834,7 @@ export class Hud {
     const a = this.app;
     if (!all.some((c) => c.kind === 'ai')) for (const s of collectAi(a)) all.push({ kind: 'ai', lat: s.lat, lon: s.lon, hdg: s.hdg, color: '#9aa3ab', label: s.name });
     if (!all.some((c) => c.kind === 'platform')) for (const p of a.world?.platforms || []) all.push({ kind: 'platform', lat: p.lat, lon: p.lon, color: '#ffb35c', label: p.name });
-    if (!all.some((c) => c.kind === 'storm')) for (const s of collectStorms(a)) all.push({ kind: 'storm', lat: s.lat, lon: s.lon, color: 'rgba(255,100,100,0.7)', radiusU: (s.radiusKm * 1000) / GEO.SCALE, label: s.name });
+    if (!all.some((c) => c.kind === 'storm')) for (const s of collectStorms(a)) all.push({ kind: 'storm', lat: s.lat, lon: s.lon, color: s.kind === 'real' ? 'rgba(170,140,255,0.8)' : 'rgba(255,100,100,0.7)', radiusU: (s.radiusKm * 1000) / GEO.SCALE, label: s.name });
     if (!all.some((c) => c.kind === 'rescue')) for (const r of collectRescues(a)) all.push({ kind: 'rescue', lat: r.lat, lon: r.lon, color: '#ff9f43', label: 'SAR' });
     const nb = a.you?.nearBerth; if (nb && Number.isFinite(nb.lat) && !all.some((c) => c.kind === 'berth')) all.push({ kind: 'berth', lat: nb.lat, lon: nb.lon, color: '#f2b134', label: nb.name || 'berth' });
     else if (nb && !Number.isFinite(nb.lat) && Number.isFinite(nb.brg) && Number.isFinite(nb.distM)) all.push({ kind: 'berth', polar: { brg: nb.brg, d: nb.distM / GEO.SCALE }, color: '#f2b134', label: nb.name || 'berth' });

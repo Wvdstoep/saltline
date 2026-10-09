@@ -23,6 +23,7 @@ import { HarborGeomSet } from './harborgeom.js';
 import { resolveShip } from './collision.js';
 import { Interior } from './interior.js';
 import { WeatherFX } from './weather.js';
+import { seaForBeaufort, douglas } from '/shared/seastate.js';   // debug sea-state forcing (?bft=0..12)
 import { TouchHelm, isTouch } from './touch.js';
 import { Telegraph } from './telegraph.js';
 import { THROTTLE_MIN, rpmFraction } from '/shared/telegraph.js';
@@ -68,6 +69,12 @@ class App {
     this.terrain = new Terrain(this.scene);
     this.geoms = new HarborGeomSet(); this.geomState = new Map(); // harbour id -> { state: 'loading'|'loaded'|'failed', t }
     this.weatherFx = new WeatherFX(this.scene, this.camera);
+    this.weatherFx.onThunder = (k, delayS) => setTimeout(() => this.sound?.event('thunder', k), delayS * 1000);   // light first, then the sound
+    // Debug / screenshots: ?bft=0..12 (or window.saltlineSea(n), null = real weather) forces this client's sea state,
+    // visuals and HUD only (the server's SALTLINE_DEBUG=1 action 'debug_sea' {bft} does the same server-side).
+    this.forceBft = null; this.camJolt = 0;
+    try { const q = new URLSearchParams(location.search).get('bft') ?? new URLSearchParams(location.search).get('sea'); if (q !== null && q !== '' && Number.isFinite(+q)) this.forceBft = Math.max(0, Math.min(12, Math.round(+q))); } catch { /* no URL API */ }
+    window.saltlineSea = (n) => { this.forceBft = n === null || n === undefined || !Number.isFinite(+n) ? null : Math.max(0, Math.min(12, Math.round(+n))); if (this.you?.weather) { const w = this.forceBft != null ? this.forcedWeather(this.you.weather) : this.you.weather; this.applyWeather(w); this.ocean.snapSea?.(); } return this.forceBft; };
     try { this.sound = new SoundEngine(); } catch (e) { console.warn('[sound] unavailable', e); this.sound = null; }
     this.soundState = { view: 'deck', room: null, shipCls: 'coaster', throttle: 0, rpmFrac: 0, speedKn: 0, windSpd: 0, windRelDeg: 0, waveH: 0, rain: 0, storm: 0, night: 0, nearHarborM: null, nearShips: [], underway: false, docked: true, towing: false, warp: 1 };
     this.lastNearHarbor = 0; this.lastFootstep = 0; this.shelterSet = false;
@@ -224,6 +231,7 @@ class App {
     if (prev?.sailsUp !== you.sailsUp) { this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false); this.lastSails = 0; }
     // environment: tide level + stream, local weather for sea state / particles / fog
     if (you.tide) { this.tide = you.tide; this.tideLevel = Number(you.tide.height) || 0; this.ocean.setLevel?.(this.tideLevel); }
+    if (you.weather && this.forceBft != null) you.weather = this.forcedWeather(you.weather);
     if (you.weather) this.applyWeather(you.weather);
     if (you.rescue && !prev?.rescue) { this.cam.free = false; this.hud.event({ kind: 'warn', text: 'You are in the life raft. Hold on — help is on the way.' }); }
     if (this.hud.harborOpen()) {
@@ -247,12 +255,18 @@ class App {
     const c = this.shipClock; if (!c || !(c.t > 0)) return this.simTime || Date.now() / 1000;
     return c.t + ((performance.now() - c.at) / 1000) * (this.you?.assist ? c.rate : (this.warp || 1));
   }
+  /** The real weather with its sea state replaced by a representative open sea of Beaufort `forceBft` (debug). */
+  forcedWeather(w) {
+    const f = seaForBeaufort(this.forceBft), dir = Number.isFinite(+w?.windDir) ? +w.windDir : 250;
+    const d = douglas(f.waveH);
+    return { ...w, ...f, windDir: dir, waveDir: dir, swellDir: (dir + 340) % 360, seaState: d.code, seaWord: d.word, stormName: null, stormKind: null, forced: true, source: `${w?.source || 'synthetic'} (forced F${f.bft})` };
+  }
   applyWeather(w) {
     this.wx = w;
     const spd = Number(w.windSpd) || 0, dir = Number(w.windDir) || 0;
     this.localWind = { spd, dir, u: -Math.sin(dir * D2R) * spd, v: -Math.cos(dir * D2R) * spd, gust: w.gust };
     this.ocean.setWind(spd);
-    this.ocean.setSea?.({ windSpd: spd, windDir: dir, waveH: w.waveH ?? Math.min(6, (w.sea || 0) * 6), waveDir: w.waveDir ?? dir, wavePeriod: w.wavePeriod ?? 3 + 0.6 * spd, swellH: w.swellH ?? 0, swellDir: w.swellDir ?? dir, swellPeriod: w.swellPeriod ?? 9 });
+    this.ocean.setSea?.({ windSpd: spd, windDir: dir, waveH: w.waveH ?? Math.min(6, (w.sea || 0) * 6), waveDir: w.waveDir ?? dir, wavePeriod: w.wavePeriod ?? 3 + 0.6 * spd, swellH: w.swellH ?? 0, swellDir: w.swellDir ?? dir, swellPeriod: w.swellPeriod ?? 9, storm: Number(w.storm) || 0, rain: Number(w.rain) || 0 });
     this.ocean.setRain?.(w.rain || 0);
     const vis = Number.isFinite(w.visibility) ? w.visibility : (w.storm || 0) > 0.5 ? 4000 : 20000;
     this.fogFar = THREE.MathUtils.clamp(vis, 500, 24000);
@@ -1047,6 +1061,7 @@ class App {
     ctx.throttle = own ? (this.ship?.throttle || 0) : 0; ctx.rudder = own ? (this.ship?.rudder || 0) : 0;
     ctx.flooding = flooding || 0; ctx.docked = !!docked;
     ctx.windSpd = this.localWind?.spd ?? this.wind?.spd ?? 0; ctx.windDir = this.localWind?.dir ?? this.wind?.dir ?? 0;
+    ctx.gust = Number(this.localWind?.gust) || undefined;
     ctx.sails = own ? this.you?.sailsUp !== false : true;
     const r = stepMotion(vis.motion, ctx, dt);
     vis.heave = r.heave; vis.pitch = r.pitch; vis.roll = r.roll; vis.slam = r.slam; vis.greenWater = r.greenWater;
@@ -1061,6 +1076,36 @@ class App {
       if (ud.wakeGroup && !ud.wakeGroup.parent) this.scene.add(ud.wakeGroup);
       ud.updateWake(dt, mesh.position, h, flooding >= 1 ? 0 : spd);
     }
+  }
+  /** Spray over the bow on slams, green water on the foredeck, spindrift around the ship, water on the lens. */
+  feedHeavyWeather(dt, ashore) {
+    const m = this.myMesh, vis = this.myVis, fx = this.weatherFx; if (!m || !vis || !fx?.heavy) return;
+    const ud = m.userData, L = ud.length || 60, h = (this.ship.hdg || 0) * D2R;
+    const bow = this._bowW || (this._bowW = new THREE.Vector3());
+    bow.set(0, (ud.freeboard || 3) * 1.25, -0.47 * L).applyMatrix4(m.matrixWorld);
+    const cam = this.camera.position, dCam = cam.distanceTo(m.position);
+    const dir = this._camDir || (this._camDir = new THREE.Vector3()); this.camera.getWorldDirection(dir);
+    const wd = (this.localWind?.dir ?? this.wind?.dir ?? 0) * D2R;      // FROM; world from-vector = (sin, -cos)
+    const hor = Math.hypot(dir.x, dir.z) || 1;
+    const indoors = this.interior.active || !!this.hud.chartOpen?.();
+    fx.heavy({
+      hs: Number(this.wx?.waveH) || 0, bow, fwd: { x: Math.sin(h), z: -Math.cos(h) }, shipSpd: Math.abs(this.ship.spd || 0) * GEO.KN_TO_MS * SIM.MOTION_SCALE,
+      slam: this.you?.docked ? 0 : vis.slam || 0, green: this.you?.docked ? 0 : vis.greenWater || 0, length: L, beam: ud.beam || L / 6,
+      center: m.position, seaY: this.tideLevel, outdoors: !indoors && !ashore,
+      camNear: !indoors && !ashore && dCam < Math.max(60, L * 2.2), camBow: this.cam.mode === 2,
+      faceWind: (dir.x * Math.sin(wd) - dir.z * Math.cos(wd)) / hor,
+    });
+    if ((vis.slam || 0) > 0.5) this.camJolt = Math.max(this.camJolt, vis.slam);
+  }
+  /** Camera jolt on slams and buffeting in a gale (added after the camera is placed; decays by itself). */
+  shakeCamera(dt) {
+    const U = this.localWind?.spd ?? 0, buffet = THREE.MathUtils.clamp((U - 14) / 18, 0, 1) * (this.cam.mode === 2 ? 0.05 : 0.18);
+    this.camJolt = Math.max(0, this.camJolt - dt * 2.2);
+    const j = this.camJolt * this.camJolt * (this.cam.mode === 2 ? 0.35 : 0.8), t = this.time;
+    if (j + buffet < 1e-3) return;
+    this.camera.position.x += Math.sin(t * 23.1) * j + Math.sin(t * 3.7 + Math.sin(t * 1.3)) * buffet;
+    this.camera.position.y += Math.sin(t * 29.7 + 1) * j + Math.sin(t * 4.3) * buffet * 0.6;
+    this.camera.position.z += Math.sin(t * 19.3 + 2) * j + Math.cos(t * 3.1) * buffet;
   }
   updateCamera(dt) {
     const s = this.ship; if (!s || !this.myMesh) return;
@@ -1089,13 +1134,14 @@ class App {
       const L = this.myMesh.userData.length; const bp = new THREE.Vector3(0, this.myMesh.userData.freeboard + 16, L * 0.35).applyMatrix4(this.myMesh.matrixWorld);
       if (!this.cam.free) this.cam.look = (this.cam.look || 0) * Math.max(0, 1 - dt * 1.5);
       const la = h + (this.cam.look || 0);
-      this.camera.position.copy(bp); const look = new THREE.Vector3(Math.sin(la), -0.05, -Math.cos(la)).add(bp); this.camera.lookAt(look); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
+      this.camera.position.copy(bp); const look = new THREE.Vector3(Math.sin(la), -0.05, -Math.cos(la)).add(bp); this.camera.lookAt(look); this.shakeCamera(dt); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
     }
     if (this.myMesh.userData.label) this.myMesh.userData.label.visible = true;
     const wave = this.ocean.heightAt(pos.x, pos.z, this.time);
     pos.y = Math.max(pos.y, wave + 4);
     this.camera.position.lerp(pos, Math.min(1, dt * 6));
     this.camera.lookAt(target);
+    this.shakeCamera(dt);
   }
   /** Adrift after sinking: a low orbit around the life raft while the SAR craft comes in. */
   updateRaftCamera(dt) {
@@ -1121,10 +1167,12 @@ class App {
     const day = THREE.MathUtils.smoothstep(elev, -0.08, 0.25);
     const dusk = Math.exp(-Math.pow((elev - 0.02) / 0.12, 2));
     const storm = this.wx?.storm || 0, cloud = this.wx?.cloud ?? 0;
-    const gloom = THREE.MathUtils.clamp(0.55 * storm + 0.2 * cloud, 0, 0.75); // storm darkening
-    const grey = new THREE.Color(0x5d6670);
+    const rainW = Number(this.wx?.rain) || 0, gale = THREE.MathUtils.smoothstep(Number(this.wx?.windSpd) || 0, 10, 26);
+    // overcast and storm darkening: a gale sky is low and grey, a storm at noon is dusk-dark
+    const gloom = THREE.MathUtils.clamp(0.5 * storm + 0.35 * gale + 0.25 * cloud + 0.15 * rainW, 0, 0.88);
+    const grey = new THREE.Color(0x5d6670).lerp(new THREE.Color(0x2c3438), THREE.MathUtils.clamp(Math.max(storm, gale) * 1.2 - 0.2, 0, 1)); // storm: slate, nearly black under the scud
     const top = new THREE.Color(0x101e33).lerp(new THREE.Color(0x3f7fc9), day).lerp(new THREE.Color(0x8c5a6a), dusk * 0.35).lerp(grey, gloom * day);
-    const hor = new THREE.Color(0x24364d).lerp(new THREE.Color(0xbfd9ee), day).lerp(new THREE.Color(0xf2a860), dusk * 0.7).lerp(grey.clone().multiplyScalar(1.3), gloom * day);
+    const hor = new THREE.Color(0x24364d).lerp(new THREE.Color(0xbfd9ee), day).lerp(new THREE.Color(0xf2a860), dusk * 0.7).lerp(grey.clone().multiplyScalar(1.3 - 0.45 * Math.max(storm, gale)), gloom * day);
     const sunCol = new THREE.Color(0xfff2d0).lerp(new THREE.Color(0xff9a4a), dusk);
     // lightning: a short sky + ambient pulse (WeatherFX adds its own light flash)
     if (storm > 0.6 && Math.random() < dt / 11) { this.lightning = 0.14; this.weatherFx.flash?.(); }
@@ -1169,6 +1217,7 @@ class App {
     this.governOceanQuality(now);
     this.updateSound(dt, now, ashore);
     this.shipVisual(this.myMesh, this.ship.lat, this.ship.lon, this.ship.hdg, this.ship.spd, this.myVis, this.you.flooding, dt, !!this.you.docked);
+    try { this.feedHeavyWeather(dt, ashore); } catch (e) { if (!this.heavyWarned) { this.heavyWarned = true; console.warn('[weather] heavy-weather fx failed', e); } }
     if (this.myMesh.userData.setSails && now - this.lastSails > 500) { this.lastSails = now; this.myMesh.userData.setSails(this.you.sailsUp !== false, this.windRel()); }
     for (const o of this.others.values()) { this.interp(o, now); this.shipVisual(o.mesh, o.cur.lat, o.cur.lon, o.cur.hdg, o.cur.spd, o.vis, o.flooding || 0, dt, !!o.docked); }
     for (const c of this.cutters.values()) { this.interp(c, now); this.shipVisual(c.mesh, c.cur.lat, c.cur.lon, c.cur.hdg, c.cur.spd, c.vis, 0, dt, false); if (c.mesh.userData.beacon) c.mesh.userData.beacon.material.emissiveIntensity = c.state === 'patrol' ? 0.5 : 2 + 2 * Math.sin(this.time * 12); }

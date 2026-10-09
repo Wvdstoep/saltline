@@ -876,7 +876,19 @@ export class SoundEngine {
       v.wq = wl > 0.002 ? 0 : v.wq + this._step;
       if (v.wq > 3) this._dropWhistle(v);
     }
-    v.info = () => ({ apparentMs: +aw.toFixed(1), whistle: !!v.wbp });
+    // storm howl: a low, moaning resonance (superstructure, stays, wave crests) from about Bft 8, rising in pitch and
+    // level with the gusts — the sound of a gale, not a breeze
+    const hl = clamp((aw - 16) / 14, 0, 1.2) * env.wind * wf * 0.22 * (0.55 + 0.6 * g) * rig;
+    if (hl > 0.004 && !v.hbp && this._procNow() + 1 <= this.maxNodes) {
+      v.hbp = this._bq(v, 'bandpass', 260, 7); this._feed(v, this.noiseW, v.hbp);
+      v.hg = this._gain(v, 0); v.hbp.connect(v.hg); v.hg.connect(v.out);
+    }
+    if (v.hbp) {
+      this._ph = (this._ph || 0) + this._step * (0.35 + 0.25 * g);
+      this._set(v.hbp.frequency, (190 + 7 * aw + 120 * g + 40 * Math.sin(this._ph)) * env.windLP, 0.3);
+      this._set(v.hg.gain, lvl > 0 ? hl / Math.max(lvl, 0.02) : 0, 0.35);
+    }
+    v.info = () => ({ apparentMs: +aw.toFixed(1), whistle: !!v.wbp, howl: !!v.hbp });
   }
 
   _ctlRain(s, env, wf) {
@@ -1024,6 +1036,8 @@ export class SoundEngine {
     if (!s.docked && s.waveH > 0.8 && (inside || ci.wood) && P((s.waveH - 0.7) * 0.025 * (inside ? 1 : 0.6))) this._creak(rand(0.2, 0.7));
     if (s.docked && (s.waveH > 0.15 || s.windSpd > 6) && (ek === 'deck' || ek === 'ashore' || ek === 'cabin') && P(0.04)) this._creak(rand(0.2, 0.6), 'rope');
     if (!s.docked && s.waveH > 2.2 && s.speedKn > 3 && (ek === 'deck' || ek === 'bridge') && P((s.waveH - 2.2) * 0.03 * clamp(s.speedKn / 10, 0.3, 1.5))) this._splash(rand(0.3, 0.9), ek === 'bridge');
+    // heavy seas: breaking crests crash against the hull and over the deck whether she makes way or lies hove-to
+    if (!s.docked && s.waveH > 3 && (ek === 'deck' || ek === 'bridge' || ek === 'ashore') && P(clamp((s.waveH - 3) * 0.035, 0, 0.45))) this._splash(rand(0.5, 1), ek === 'bridge');
     if (this.opts.autoRadio !== false && env.radio > 0.2 && P(h > 0.1 ? 1 / 50 : 1 / 140)) this._chatter(0.55 * env.radio);
   }
 

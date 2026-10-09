@@ -184,9 +184,13 @@ them is missing (tests construct `new Game(world, log, {stateFile})`).
 `weatherAt(lat, lon)` → keep the shape and ADD fields: `{ wind: {u, v, spd, dir, gust}, sea (0..1), storm (0..1), rain (0..1),
 waves: {height, dir, period}, swell: {height, dir, period}, visibility (m), pressure, temp, cloud, source }`.
 Real data from `weather.sample()` when available (call `weather.request()` for every online player's cell and every
-harbour cell lazily), otherwise the existing synthetic wind + storms. Synthetic storms remain as an overlay only when
-`source === 'synthetic'`; with real data `storm` = clamp((windSpd − 14)/12) and `rain` from precip. `sea` from wave
-height: `min(1, waves.height / 6)`. The global `this.wind` random walk is only the fallback.
+harbour cell lazily), otherwise the synthetic wind. **Superseded (sea-state update):** the game's storm cells are
+overlaid on real AND synthetic data (server/stormfield.js — cyclonic wind, gusts, fetch/duration-grown sea, swell
+ahead of the track, rain bands, pressure, visibility; `stormId/stormName/stormKind` name the dominant cell); real
+severe-weather areas (server/realstorms.js, Bft 8+ or Hs ≥ 4 m, kind 'real' in `storms`) are overlaid on the synthetic
+fallback only. With real data `storm` ≥ clamp((windSpd − 14)/12) and `rain` from precip. `sea` from wave height:
+`min(1, waves.height / 6)`. `you.weather` adds `bft`, `seaState`/`seaWord` (WMO/Douglas by Hs, shared/seastate.js).
+The global `this.wind` random walk is only the fallback.
 
 ### Tide
 `you.tide = tideAt(lat, lon, simTime)` (rounded) every `sendYou`. `env.current` for offline simulation and cutters =

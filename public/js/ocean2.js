@@ -352,7 +352,7 @@ void main() {
   water = mix(water, vec3(0.085, 0.115, 0.125), uStorm * 0.6);
   water *= 0.62 + 0.38 * max(0.0, dot(N, uSunDir)) * (0.4 + 0.6 * sunUp);
   float crest = clamp(h / max(0.25, uHs) * 0.95 + 0.3, 0.0, 1.0);
-  float crestK = 0.3 + 0.7 * smoothstep(0.6, 2.5, uHs);             // a glassy calm has no dark troughs / bright crests
+  float crestK = (0.3 + 0.7 * smoothstep(0.6, 2.5, uHs)) * (1.0 + 0.55 * smoothstep(3.0, 9.0, uHs)); // a glassy calm has no dark troughs / bright crests; a storm sea has black troughs
   water *= 1.0 + crestK * (0.75 * crest - 0.4);                     // deep troughs read darker, thin crests lighter
   vec3 Ls = normalize(uSunDir + N * 0.55);
   float back = pow(clamp(dot(V, -Ls), 0.0, 1.0), 3.5);
@@ -417,7 +417,7 @@ void main() {
         vec2 qm = vec2(dot(pf, uWindDir) / st, dot(pf, vec2(-uWindDir.y, uWindDir.x)));
         cR = foamFilm(qm, fp, old) * (0.28 + 0.5 * old);
         float sk = strK * smoothstep(0.03, 0.4, old);
-        if (sk > 0.001) cS = foamStreaks(pp, fp) * sk * 0.45;
+        if (sk > 0.001) cS = foamStreaks(pp, fp) * sk * (0.45 + 0.5 * smoothstep(16.0, 28.0, uWind)); // gale: well-marked streaks
       }
       foam = 1.0 - (1.0 - cA) * (1.0 - clamp(cR, 0.0, 1.0)) * (1.0 - 0.85 * cS);
       foamLit = 0.74 + 0.26 * body;
@@ -538,7 +538,7 @@ void main() {
   vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   float size = (0.6 + 1.6 * r1) * (1.0 + 2.0 * age / T);
-  gl_PointSize = clamp(size * uPx / max(1.0, -mvPosition.z), 0.0, 40.0);
+  gl_PointSize = clamp(size * uPx / max(1.0, -mvPosition.z), 0.0, 28.0);
   #include <fog_vertex>
 }`;
 const SPRAY_FRAG = /* glsl */`
@@ -546,9 +546,9 @@ uniform vec3 uCol; varying float vA;
 #include <fog_pars_fragment>
 void main() {
   float r = length(gl_PointCoord - 0.5);
-  float a = smoothstep(0.5, 0.12, r) * vA;
+  float a = pow(smoothstep(0.5, 0.0, r), 1.6) * vA;   // soft spray puffs (a hard disc reads as snow)
   if (a < 0.01) discard;
-  gl_FragColor = vec4(uCol, a * 0.8);
+  gl_FragColor = vec4(uCol, a * 0.55);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   #include <fog_fragment>
@@ -938,12 +938,13 @@ export class Ocean {
     this.packN = n; this.packNL = nL; this.packT = time;
     // whitecaps: Monahan coverage → fraction of the sea actively breaking → Jacobian threshold in σ units
     const u = this.uniforms;
-    const W = Math.min(0.25, 0.45 * 3.84e-6 * Math.pow(Math.max(U, 0.1), 3.41)); // ~45 % of Monahan's total coverage is active breaking
+    // ~45 % of Monahan's total coverage is active breaking; from a strong gale up the crests tumble over everywhere
+    const W = Math.min(0.32, 0.45 * 3.84e-6 * Math.pow(Math.max(U, 0.1), 3.41) + 0.1 * smooth01(18, 30, U));
     u.uFoamA.value = zTail(Math.max(W, 1e-6));
     u.uFoamK.value = smooth01(4.5, 8, U) * Math.min(1, this.hs / 0.4);
     u.uSigLM.value = this.stats.sigLM;
     u.uStreak.value = smooth01(12, 22, U);
-    u.uOldMean.value = 0.35 * smooth01(8, 26, U);
+    u.uOldMean.value = 0.35 * smooth01(8, 26, U) + 0.2 * smooth01(20, 32, U);   // Bft 10+: the sea takes a white appearance
     this.stats.foamThr = 1 - u.uFoamA.value * this.stats.sigLM;
     // glitter roughness: Cox–Munk total slope variance minus what the spectrum resolves (never below 35 %)
     const cm = 0.003 + 0.00512 * U;
@@ -1065,7 +1066,7 @@ export class Ocean {
     this.grp.x = posMod(this.grp.x + Math.sin(ta) * cg * dt, GRP_PERIOD); this.grp.z = posMod(this.grp.z - Math.cos(ta) * cg * dt, GRP_PERIOD);
     const u = this.uniforms;
     u.uTime.value = time; u.uWind.value = this.wind; u.uRain.value = this.rain; u.uLevel.value = this.level; u.uHs.value = this.hs;
-    u.uStorm.value = Math.max(this.storm, 0.65 * smooth01(15, 30, this.wind));
+    u.uStorm.value = Math.max(this.storm, 0.9 * smooth01(10, 24, this.wind));   // a gale sea is slate-grey under the overcast
     this.bindShoreFields(cx, cz);
     const wa = (this.windDir + 180) * D2R;
     u.uWindDir.value.set(Math.sin(wa), -Math.cos(wa));

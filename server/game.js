@@ -26,6 +26,9 @@ import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; 
 import { lowWaterAt } from '../shared/tide.js';
 import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
 import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
+import { overlayStorms, stormMaxWind } from './stormfield.js';     // game storms over real AND synthetic weather
+import { RealStorms } from './realstorms.js';                  // real severe-weather areas from Open-Meteo
+import { beaufort, douglas, seaForBeaufort } from '../shared/seastate.js';        // HUD sea state (Douglas) and Beaufort
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
 const START_HARBOR = 'rotterdam';
@@ -48,6 +51,9 @@ export class Game {
     // synthetic weather / legacy harbour point / empty AI list take over. server.js ticks weather and traffic itself.
     this.weather = opts.weather || null;       // WeatherService: sample(lat, lon) / request(lat, lon)
     this.traffic = opts.traffic || null;       // Traffic: near(lat, lon, rangeM) / all()
+    // Real storms (server/realstorms.js): severe weather in the real data, scanned within the 'scan' quota share
+    this.realStorms = opts.realStorms !== undefined ? opts.realStorms
+      : this.weather && typeof this.weather.fetchBatch === 'function' ? new RealStorms(this.weather, { isWater: (la, lo) => this.world.isWater(la, lo), log: this.log }) : null;
     this.geom = opts.harborgeom || null;       // harborgeom module namespace
     this.routeTable = opts.routeTable || null; // V6: harbour-to-harbour sea km (MARKET's RouteTable); contract budgets read it
     this.lastEcon = 0;                         // Date.now() of the last market drift
@@ -336,7 +342,7 @@ export class Game {
       money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs, convoyId: p.convoyId, docked: p.docked,
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
-      weather: this.weatherPublic(p.ship.lat, p.ship.lon), tide: this.tideFor(p.ship.lat, p.ship.lon),
+      weather: this.weatherFor(p), tide: this.tideFor(p.ship.lat, p.ship.lon),
       berth: p.berth || null, assist: p.assist ? { harbor: p.assist.harbor, berthId: p.assist.berthId, berthName: p.assist.berthName, until: p.assist.until, from: p.assist.from, to: p.assist.to, ...assistExtra(this, p) } : null,
       nearBerth: this.nearBerthFor(p), serviceDue: p.serviceDue, serviceMul: round2(serviceWearMul(p.serviceDue, this.simTime)),
       stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
@@ -347,6 +353,13 @@ export class Game {
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
     };
   }
+  // The weather a skipper is told about: the real thing, or (SALTLINE_DEBUG=1 'debug_sea') a forced Beaufort sea.
+  weatherFor(p) {
+    const w = this.weatherPublic(p.ship.lat, p.ship.lon);
+    if (p.debugBft == null || process.env.SALTLINE_DEBUG !== '1') return w;
+    const f = seaForBeaufort(p.debugBft), d = douglas(f.waveH);
+    return { ...w, ...f, waveDir: w.windDir, swellDir: (w.windDir + 340) % 360, seaState: d.code, seaWord: d.word, forced: true };
+  }
   // Flat, rounded weather for the wire (ocean.setSea / weatherFx.set read these names directly).
   weatherPublic(lat, lon) {
     const w = this.weatherAt(lat, lon);
@@ -356,6 +369,8 @@ export class Game {
       swellH: round2(w.swell.height), swellDir: Math.round(w.swell.dir), swellPeriod: round1(w.swell.period),
       visibility: Math.round(w.visibility), pressure: round1(w.pressure), temp: round1(w.temp), cloud: round2(w.cloud), source: w.source,
       sst: Number.isFinite(w.sst) ? round1(w.sst) : null, curSpd: w.current ? round2(w.current.speed) : null, curDir: w.current ? Math.round(w.current.dir) : null,
+      bft: beaufort(w.wind.spd), seaState: douglas(w.waves.height).code, seaWord: douglas(w.waves.height).word,   // WMO/Douglas sea state by Hs
+      stormName: w.stormName || null, stormKind: w.stormKind || null,
     };
   }
   worldInfo() {
@@ -543,6 +558,13 @@ export class Game {
         case 'convoy_accept': return this.convoyAccept(p, m.convoyId);
         case 'convoy_leave': return this.convoyLeave(p);
         case 'rename': p.name = cleanName(m.name) || p.name; this.sendYou(p); this.broadcast({ t: 'rename', id: p.id, name: p.name }); return;
+        case 'debug_sea': {   // SALTLINE_DEBUG=1 only: force this skipper's reported sea state to Beaufort 0..12 (null = real weather)
+          if (process.env.SALTLINE_DEBUG !== '1') return this.event(p, 'warn', `Unknown action ${a}`);
+          const b = m.bft === null || m.bft === undefined || m.bft === '' ? null : Math.round(Number(m.bft));
+          p.debugBft = Number.isFinite(b) ? clamp(b, 0, 12) : null;
+          this.event(p, 'info', p.debugBft == null ? 'Debug: real weather again.' : `Debug: sea state forced to Beaufort ${p.debugBft}.`);
+          return this.sendYou(p);
+        }
         default: if (this.fleet.handles(a)) return this.fleet.onAction(p, m); this.event(p, 'warn', `Unknown action ${a}`);
       }
     } catch (e) {
@@ -1306,6 +1328,7 @@ export class Game {
         for (const s of ships) this.weather.request(s.lat, s.lon, true);
         this.weather.requestAround(online, HARBORS.map((h) => this.harborAnchor(h)));
       } else for (const s of ships) this.weather.request(s.lat, s.lon, true);
+      if (this.realStorms) this.realStorms.tick(ships);
     } catch (e) { this.log(`[game] weather.request failed: ${e.message}`); }
   }
   updateWind(dt) {
@@ -1911,37 +1934,35 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ v0.2: weather & storms
-  // Weather at a point. Real Open-Meteo data when the WeatherService has the cell; otherwise the synthetic global
-  // wind with storm cells overlaid. Shape (docs/V3-CONTRACTS.md §3): { wind:{u,v,spd,dir,gust}, sea, storm, rain,
-  // waves:{height,dir,period}, swell:{height,dir,period}, visibility, pressure, temp, cloud, source }.
+  // Weather at a point: the base is real Open-Meteo data when the WeatherService has the cell, else the synthetic
+  // global wind; the game's storm cells are overlaid on EITHER base (server/stormfield.js: cyclonic wind, gusts, a sea
+  // grown with fetch and duration, swell running ahead, rain bands, pressure, visibility), so a storm on the chart is
+  // a storm at sea for every player. Real-weather storm areas (server/realstorms.js) are only overlaid on the synthetic
+  // base — where real data exists it already contains them. Shape (docs/V3-CONTRACTS.md §3): { wind:{u,v,spd,dir,gust},
+  // sea, storm, rain, waves:{height,dir,period}, swell:{height,dir,period}, visibility, pressure, temp, cloud, source,
+  // [stormId, stormName, stormKind] }.
   weatherAt(lat, lon) {
     const real = this.sampleWeather(lat, lon);
-    if (real) return real;
-    let u = this.wind.u, v = this.wind.v, storm = 0, rain = 0;
-    for (const st of this.storms) {
-      const d = haversine(lat, lon, st.lat, st.lon) / 1000;
-      if (d > st.radiusKm * 1.3) continue;
-      const f = Math.max(0, 1 - d / (st.radiusKm * 1.3));           // 1 at the eye, 0 at the fringe
-      const k = f * st.intensity;
-      // cyclonic circulation (anticlockwise in the northern hemisphere) around the centre
-      const b = (bearing(st.lat, st.lon, lat, lon) * Math.PI) / 180;
-      const dirU = -Math.cos(b) * (lat >= 0 ? 1 : -1), dirV = Math.sin(b) * (lat >= 0 ? 1 : -1);
-      u += dirU * 22 * k; v += dirV * 22 * k;
-      storm = Math.max(storm, k); rain = Math.max(rain, Math.min(1, k * 1.4));
-    }
+    if (real) return overlayStorms(real, this.storms, lat, lon, this.simTime);
+    const rs = this.realStorms ? this.realStorms.cells() : [];
+    return overlayStorms(this.syntheticWeather(lat), rs.length ? this.storms.concat(rs) : this.storms, lat, lon, this.simTime);
+  }
+  // The synthetic fallback without storms: the slowly wandering global wind and its fully developed sea.
+  syntheticWeather(lat) {
+    const u = this.wind.u, v = this.wind.v;
     const spd = Math.hypot(u, v);
     const dir = normDeg((Math.atan2(-u, -v) * 180) / Math.PI);
     // Synthetic sea: wind sea grows with the square of the wind (fully developed), a longer swell lags it by 20°.
     const waveH = Math.min(14, 0.021 * spd * spd + 0.15), period = clamp(2.5 + 0.32 * spd, 3, 14);
     const sea = Math.min(1, Math.max(waveH / 6, spd / 24));
-    const cloud = clamp(0.25 + 0.6 * storm + 0.3 * rain + 0.2 * Math.min(1, spd / 15), 0, 1);
-    const visibility = Math.round(clamp(22000 * (1 - 0.85 * rain) * (1 - 0.5 * storm), 800, 22000));
+    const storm = clamp((spd - 14) / 14, 0, 1);
+    const cloud = clamp(0.25 + 0.2 * Math.min(1, spd / 15), 0, 1);
     const month = new Date(this.simTime * 1000).getUTCMonth();
-    const temp = Math.round((27 - 0.42 * Math.abs(lat) + (lat >= 0 ? 1 : -1) * 7 * Math.cos(((month - 7) / 12) * Math.PI * 2) - 3 * storm) * 10) / 10;
+    const temp = Math.round((27 - 0.42 * Math.abs(lat) + (lat >= 0 ? 1 : -1) * 7 * Math.cos(((month - 7) / 12) * Math.PI * 2)) * 10) / 10;
     return {
-      wind: { u, v, spd, dir, gust: spd * (1.25 + 0.35 * storm) }, sea, storm, rain,
+      wind: { u, v, spd, dir, gust: spd * 1.25 }, sea, storm, rain: 0,
       waves: { height: waveH, dir, period }, swell: { height: Math.min(6, waveH * 0.45 + 0.2), dir: normDeg(dir - 20), period: period + 4 },
-      visibility, pressure: Math.round((1014 - 38 * storm - 0.25 * spd) * 10) / 10, temp, cloud, source: 'synthetic',
+      visibility: 22000, pressure: Math.round((1014 - 0.25 * spd) * 10) / 10, temp, cloud, source: 'synthetic',
     };
   }
   // Real data from the WeatherService: null when no cached cell covers the point (a fetch is requested lazily).
@@ -1997,7 +2018,17 @@ export class Game {
       if (this.world.isWater(lat, lon)) this.storms.push({ id: 's' + shortId(), lat, lon, radiusKm: 150 + this.rnd() * 300, peak: 0.5 + this.rnd() * 0.5, intensity: 0.1, driftDir: this.rnd() * 360, driftMs: 3 + this.rnd() * 7, born: now, dies: now + 3600 * (6 + this.rnd() * 30), region: false, name: stormName(this.rnd) });
     }
   }
-  stormsPublic() { return this.storms.map((s) => ({ id: s.id, name: s.name, lat: round6(s.lat), lon: round6(s.lon), radiusKm: Math.round(s.radiusKm), intensity: Math.round(s.intensity * 100) / 100 })); }
+  // Game cells (kind 'game': Bft of the peak wind) then the real-weather areas (kind 'real'). Captains and the
+  // autopilot route round both.
+  stormsPublic() {
+    const game = this.storms.map((s) => {
+      const v = stormMaxWind(s.intensity);
+      return { id: s.id, kind: 'game', name: s.name, lat: round6(s.lat), lon: round6(s.lon), radiusKm: Math.round(s.radiusKm), intensity: Math.round(s.intensity * 100) / 100, bft: beaufort(v), windMs: round1(v), driftDir: Math.round(s.driftDir || 0), driftMs: round1(s.driftMs || 0) };
+    });
+    let real = [];
+    try { real = this.realStorms ? this.realStorms.publicList() : []; } catch { real = []; }
+    return real.length ? game.concat(real) : game;
+  }
 
   // ------------------------------------------------------------------ v0.2: search and rescue
   startRescue(p) {

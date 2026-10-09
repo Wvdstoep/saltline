@@ -429,7 +429,7 @@ test('snapshots carry nearby AI per player; you carries tide, extended weather a
   // a Game without traffic still produces valid snapshots
   const g2 = mkGame(); const { ws: ws2 } = join(g2, 'Ko'); g2.broadcastSnapshot(); assert.deepEqual(last(ws2, 'snap').ai, []);
 });
-test('weatherAt uses real samples when the service has the cell, requests missing cells, and keeps synthetic storms as a fallback only', () => {
+test('weatherAt uses real samples when the service has the cell, requests missing cells, and overlays game storms on real data too', () => {
   const requested = [];
   const sample = { wind: { spd: 20, dir: 270, gust: 28 }, waves: { height: 3, dir: 280, period: 7 }, swell: { height: 1, dir: 250, period: 11 }, pressure: 998, temp: 9, precip: 2, visibility: 6000, cloud: 0.9, fetchedAt: Date.now(), source: 'open-meteo' };
   const weather = { sample: (lat) => (lat > 54 ? sample : null), request: (lat, lon) => requested.push([lat, lon]), tick() {}, stats: () => ({}) };
@@ -438,7 +438,10 @@ test('weatherAt uses real samples when the service has the cell, requests missin
   assert.equal(w.source, 'open-meteo'); assert.equal(w.wind.spd, 20); assert.equal(w.wind.dir, 270); assert.ok(w.wind.u > 19.9, 'a westerly blows east'); assert.equal(w.wind.gust, 28);
   assert.equal(w.storm, 0.5); assert.equal(w.sea, 0.5); assert.equal(w.rain, 0.5); assert.equal(w.waves.height, 3); assert.equal(w.swell.period, 11); assert.equal(w.visibility, 6000);
   g.storms.push({ id: 's1', name: 'Test', lat: 55, lon: 3, radiusKm: 100, peak: 1, intensity: 1, driftDir: 90, driftMs: 5, born: g.simTime, dies: g.simTime + 3600 });
-  assert.equal(g.weatherAt(55, 3).storm, 0.5, 'synthetic storms do not overlay real data');
+  const ws = g.weatherAt(55.4, 3);
+  assert.ok(ws.wind.spd > 25 && ws.waves.height > 5 && ws.storm > 0.8 && ws.stormName === 'Test', 'game storms overlay real data (player report: storm Regina was a chart decoration)');
+  assert.equal(ws.source, 'open-meteo', 'the base stays the real data');
+  g.storms.length = 0;
   const s = g.weatherAt(50, -5);
   assert.equal(s.source, 'synthetic'); assert.ok(s.waves.height > 0 && s.visibility > 0 && Number.isFinite(s.temp));
   assert.ok(requested.some(([la, lo]) => la === 50 && lo === -5), 'missing cell requested lazily');
