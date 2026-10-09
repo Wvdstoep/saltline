@@ -20,6 +20,7 @@ const shortName = (s) => String(s || '').split(' (')[0];
 
 /** Compact card title: 'Tow · stern trawler → IJmuiden', 'Freight · 400 t grain → Hamburg' … */
 export function jobShortTitle(j, harbors = []) {
+  if (Array.isArray(j.steps) && j.title) return j.title;   // step-runner jobs (JOB_GEN 8) carry their own title and units
   const to = shortName(harbors.find((h) => h.id === j.to)?.name || j.to).split(' / ')[0];
   const good = GOODS[j.good]?.name.toLowerCase() || j.good;
   switch (j.type) {
@@ -90,8 +91,11 @@ export function jobTargets(app) {
       }
     } else {
       toHarbor();
+      const step = Array.isArray(j.steps) ? j.steps[j.prog?.i ?? 0] : null;   // step-runner jobs: the current step's own label
+      if (step?.label) { t.step = step.label; } else {
       const what = j.pax ? `${j.pax} ${j.type === 'charter' ? 'charter guests' : 'passengers'}` : `${fmtT(j.qty)} of ${GOODS[j.good]?.name.toLowerCase() || j.good}`;
       t.step = `${j.type === 'smuggling' ? 'Run' : 'Deliver'} ${what} to ${t.name} — moor there to unload`;
+      }
     }
     if (!Number.isFinite(t.lat)) continue;
     t.distM = haversine(s.lat, s.lon, t.lat, t.lon); t.brg = bearing(s.lat, s.lon, t.lat, t.lon);

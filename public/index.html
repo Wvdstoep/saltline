@@ -79,13 +79,8 @@
   <div id="log" aria-live="polite"></div>
   <div id="alerts"></div>
 
-  <!-- context stack (bottom centre on desktop): berth guidance, fishing, time warp -->
-  <div id="ctxStack">
-    <div id="warpCtl" class="glass hidden" role="group" aria-label="Time warp">
-      <button id="warpDown" title="Slower (,)" aria-label="Slower time warp"><span class="si" data-icon="rewind"></span></button>
-      <span class="warpLevel"><small>Warp</small><b id="warpLevel">1×</b></span>
-      <button id="warpUp" title="Faster (.)" aria-label="Faster time warp"><span class="si" data-icon="ffwd"></span></button>
-    </div>
+  <!-- navigation cards (left column on desktop, under the top bar on phones): contract + berth guidance -->
+  <div id="ctxLeft">
     <div id="jobLine" class="glass ctxCard hidden" aria-live="polite">
       <div class="jobHead"><span class="si jobIc" id="jobIc" data-icon="contract"></span><b id="jobTitle"></b><span id="jobPay" class="jobPay"></span></div>
       <div class="jobStep"><span id="jobStep"></span></div>
@@ -95,6 +90,15 @@
     <div id="berthLine" class="glass ctxCard hidden">
       <div class="berthInfo"><span class="si" data-icon="pier"></span><span id="berthText"></span></div>
       <span class="berthBtns"><button id="btnMoor" class="primary">Moor (T)</button><button id="btnTugs">Request tugs</button></span>
+    </div>
+  </div>
+
+  <!-- context stack (bottom centre on desktop): berth guidance, fishing, time warp -->
+  <div id="ctxStack">
+    <div id="warpCtl" class="glass hidden" role="group" aria-label="Time warp">
+      <button id="warpDown" title="Slower (,)" aria-label="Slower time warp"><span class="si" data-icon="rewind"></span></button>
+      <span class="warpLevel"><small>Warp</small><b id="warpLevel">1×</b></span>
+      <button id="warpUp" title="Faster (.)" aria-label="Faster time warp"><span class="si" data-icon="ffwd"></span></button>
     </div>
     <div id="fishPanel" class="glass ctxCard hidden">
       <div class="ctxHead"><span class="si" data-icon="net"></span><b>Nets out</b></div>

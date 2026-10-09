@@ -128,7 +128,10 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius
 /* ---------------------------------------------------------------------------------------------- HUD frame */
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
 #hud > * { pointer-events: auto; }
-#hud > #log, #hud > #alerts, #hud > #ctxStack, #hud > #touchHelm { pointer-events: none; }
+#hud > #log, #hud > #alerts, #hud > #ctxStack, #hud > #ctxLeft, #hud > #touchHelm { pointer-events: none; }
+#ctxLeft > * { pointer-events: auto; }
+#ctxLeft { position: absolute; left: calc(var(--gut) + var(--sal)); bottom: calc(var(--gut) + var(--sab) + 170px); width: min(540px, calc(100vw - var(--radar-w) - 4 * var(--gut))); display: flex; flex-direction: column-reverse; gap: var(--s2); }
+#ctxLeft .ctxCard { max-width: none; }
 #ctxStack > *, #alerts > * { pointer-events: auto; }
 
 /* top bar */
@@ -286,6 +289,7 @@ body.touch #aisCardWrap { top: auto; bottom: calc(var(--bar) + var(--sab) + 8px)
 /* chat */
 #chatWrap { position: absolute; left: calc(var(--gut) + var(--sal)); bottom: calc(var(--gut) + var(--sab) + 108px); width: var(--tel-w); }
 body.telOpen #chatWrap { bottom: calc(var(--gut) + var(--sab) + 232px); }
+body.telOpen #ctxLeft { bottom: calc(var(--gut) + var(--sab) + 294px); }
 #chat { max-height: 110px; overflow-y: auto; font-size: 12.5px; display: flex; flex-direction: column-reverse; gap: 2px; }
 #chat div { background: var(--glass-strong); padding: 3px 8px; border-radius: var(--r1); }
 #chat b { color: var(--cyan); }
@@ -305,8 +309,8 @@ body.telOpen #chatWrap { bottom: calc(var(--gut) + var(--sab) + 232px); }
 #ashorePrompt, #interiorPrompt { font-family: var(--font) !important; border-radius: var(--r3) !important; }
 body.touch #ashorePrompt, body.touch #interiorPrompt { bottom: calc(196px + var(--sab)) !important; max-width: calc(100vw - 32px); }
 body.interior #log, body.ashore #log { top: calc(var(--top-h) + var(--sat) + 104px); }
-body.interior #telemetry, body.interior #radarWrap, body.interior #actions, body.interior #chatWrap, body.interior #ctxStack, body.interior #moreSheet, body.interior #warpBanner { display: none !important; }
-body.ashore #telemetry, body.ashore #radarWrap, body.ashore #actions, body.ashore #chatWrap, body.ashore #ctxStack, body.ashore #moreSheet, body.ashore #warpBanner, body.ashore #interiorHud { display: none !important; }
+body.interior #telemetry, body.interior #radarWrap, body.interior #actions, body.interior #chatWrap, body.interior #ctxStack, body.interior #ctxLeft, body.interior #moreSheet, body.interior #warpBanner { display: none !important; }
+body.ashore #telemetry, body.ashore #radarWrap, body.ashore #actions, body.ashore #chatWrap, body.ashore #ctxStack, body.ashore #ctxLeft, body.ashore #moreSheet, body.ashore #warpBanner, body.ashore #interiorHud { display: none !important; }
 
 /* ---------------------------------------------------------------------------------------------- full-screen sheets */
 .sheet { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; background: linear-gradient(180deg, rgba(6, 16, 27, 0.97), rgba(5, 13, 22, 0.98)); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: sheetIn 180ms ease; }
@@ -736,7 +740,7 @@ body.touch #radarCtl button { width: var(--tap); min-width: var(--tap); height: 
 body.touch #radarCtl #radarRange { min-width: 0; flex: 1; }
 body.touch #radarHU { position: absolute; top: 4px; right: 4px; width: var(--tap) !important; min-width: var(--tap) !important; height: var(--tap); border-radius: 50%; background: var(--glass-strong); font-size: 11px; }
 /* context stack goes to the top on phones (berth guidance matters most when approaching) */
-body.touch #ctxStack { display: contents; }
+body.touch #ctxStack, body.touch #ctxLeft { display: contents; }
 body.touch #berthLine, body.touch #fishPanel { position: absolute; left: calc(var(--gut) + var(--sal)); right: calc(var(--gut) + var(--sar)); width: auto; top: calc(var(--top-h) + var(--sat) + 4px); }
 body.touch #berthLine { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
 body.touch #jobLine { position: absolute; left: calc(var(--gut) + var(--sal)); right: calc(var(--gut) + var(--sar)); width: auto; top: calc(var(--top-h) + var(--sat) + 4px); padding: 6px 8px; gap: 3px; }
