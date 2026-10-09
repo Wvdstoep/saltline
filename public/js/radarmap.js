@@ -64,7 +64,7 @@ export function filterContacts(list, mode) {
 }
 
 // ------------------------------------------------------------------------------------------------ colours
-const WATER_SHOAL = [26, 78, 100], WATER_DEEP = [7, 32, 50];
+const WATER_SHOAL = [30, 88, 112], WATER_DEEP = [12, 46, 72]; // deep water stays distinguishable from the radar background
 const FIXED = {
   [MASK.LAND]: [46, 56, 44], [MASK.BUILDING]: [64, 70, 62], [MASK.QUAY]: [112, 116, 108], [MASK.BREAKWATER]: [104, 106, 100],
   [MASK.PONTOON]: [92, 104, 116], [MASK.LOCK]: [150, 116, 58], [MASK.SHALLOW]: [40, 104, 118], [MASK.FAIRWAY]: [22, 74, 116],
