@@ -29,6 +29,10 @@ import { Telegraph } from './telegraph.js';
 import { THROTTLE_MIN, rpmFraction } from '/shared/telegraph.js';
 import { Autopilot } from './autopilot.js'; // v6 chart-aware autopilot (docs/V6-QUICK-CONTRACTS.md §4.6)
 import { SailHud } from './sailhud.js';                        // sailing (docs/SAILING-CONTRACT.md §5)
+import { Vhf } from './vhf.js';                                       // VHF radio (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6.6)
+import { typeKeyOf } from '/shared/vhfphrases.js';
+import { WwMesh } from './wwmesh.js';                                  // bridges & locks 3D (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §5)
+import { WwHud } from './wwhud.js';
 import { windRelSigned } from './sailfmt.js';
 import { rigOf, normalizeRig, applyRigCommand, rigViewOf, unpackRigView, trimInfo, beginManeuver, maneuverStep, authOf, windOverWater } from './sailshared.js';
 
@@ -137,6 +141,8 @@ class App {
     // v6 fleet (fleet.js, hq.js): harbour Office tab, fleet dialogs, the top-bar chip and the Fleet HQ (O)
     this.fleetShips = new Map();   // snap.fleet (FleetPublic): fleet ships near you, drawn like AI traffic
     this.fleetUi = null; this.hq = null;
+    this.mhLayer = null;                                                   // inland harbours (§7.5): chart layer + harbour cards
+    import('./mhchart.js').then((m) => { if (this.ready && !this.world.ww) return; this.mhLayer = new m.MHChartLayer(this, { fetchImpl: (u) => fetch(u + (u.includes('/api/mh/') ? `?player=${encodeURIComponent(this.you?.id || '')}` : '')).then((r) => r.json()) }); }).catch((e) => console.warn('[mh] unavailable', e));
     import('./fleet.js').then((m) => { this.fleetUi = new m.FleetUi(this); }).catch((e) => console.warn('[fleet] unavailable', e));
     import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
     this.touchHelm = null;
@@ -147,6 +153,18 @@ class App {
       const el = document.getElementById('sailhud');
       if (el) this.sailHud = new SailHud(el, { phone: isTouch(), roundButtons: false, onCommand: (cmd) => this.rigCommand(cmd), onManeuver: (k) => this.startManeuver(k), onToggle: (open) => this.touchHelm?.setButtonOn?.('sails', open) });
     } catch (e) { console.warn('[sail] HUD unavailable', e); }
+    try {   // VHF radio: desktop panel (E) / phone handset button + sheet
+      this.vhf = new Vhf({ net: this.net, phone: isTouch(), uiLang: navigator.language,
+        shipInfo: (you) => { const c = SHIP_CLASSES[you?.ship?.cls] || {}; return { L: c.length, B: c.beam, type: typeKeyOf(you?.ship?.cls, { sail: !!rigOf(you?.ship?.cls) }), where: 'approach' }; } });
+    } catch (e) { console.warn('[vhf] unavailable', e); this.vhf = null; }
+    try {   // bridges & locks: own scene group (not cut by harbour patches), AIR chip + cards
+      this.wwMesh = new WwMesh({ parent: this.scene, origin: this.origin, phone: isTouch(), now: () => Date.now() + (this.clockOffset || 0),
+        heightAt: (lat, lon) => this.terrain.heightAt(lat, lon), meanWater: 0 });
+      this.wwHud = new WwHud({ ww: this.wwMesh, net: this.net, phone: isTouch(), vhf: () => this.vhf, clock: () => Date.now() + (this.clockOffset || 0),
+        lengthOf: (c) => SHIP_CLASSES[c]?.length, shipKind: (c) => (rigOf(c) ? 'sail' : SHIP_CLASSES[c]?.cat === 'cargo' ? 'cargo' : 'motor') });
+      import('/shared/waterworks.js').then((m) => this.wwMesh?.setRules(m)).catch(() => {});                       // lane A rules (optional)
+      import('/shared/airdraft.js').then((m) => { if (this.wwHud) this.wwHud.o.profileOf = m.profileOf; }).catch(() => {});
+    } catch (e) { console.warn('[ww] unavailable', e); this.wwMesh = null; this.wwHud = null; }
     window.addEventListener('resize', () => this.resize()); this.resize();
     this.bindInput();
     this.net.connect('');
@@ -201,6 +219,10 @@ class App {
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
       case 'harbor': this.hud.showHarbor(m.harbor); break;
       case 'quays': this.quayUi?.onQuays(m); break;                       // DOCK ANYWHERE
+      case 'vhf': case 'vhf_st': this.vhf?.onMessage(m); break;          // VHF transmissions and station lists
+      case 'ww_static': this.wwMesh?.setStatics(m.objects || []); this.terrain.wtiles?.setSkipIds?.(this.wwMesh?.knownIds?.() || []); break;  // bridges & locks near us (§8.2)
+      case 'ww': this.wwMesh?.applyDelta(m); break;                       // span / chamber state, signals, outages
+      case 'strike': this.flash?.(); break;                               // bridge strike (the event line carries the text)
       case 'chat': this.hud.chat(m); break;
       case 'join': this.hud.event({ kind: 'info', text: `${m.player.name} came online.` }); break;
       case 'leave': { const o = this.others.get(m.id); if (o) { this.hud.event({ kind: 'info', text: `${o.name} went offline.` }); this.drop(o.mesh); this.others.delete(m.id); } break; }
@@ -212,6 +234,12 @@ class App {
   }
   onWelcome(m) {
     this.world = { platforms: [], ...m.world }; this.wrecks = m.wrecks; this.simTime = m.simTime;
+    if (!this.world.ww) {   // the server runs without bridges, locks and radio (SALTLINE_WW_OFF=1): none of their UI either
+      try { this.vhf?.mini?.remove(); this.vhf?.ticker?.remove(); this.vhf?.panel?.remove(); } catch { /* best effort */ }
+      try { this.wwHud?.dispose(); this.wwMesh?.dispose(); this.wwMesh?.group?.removeFromParent?.(); } catch { /* best effort */ }
+      this.vhf = null; this.wwHud = null; this.wwMesh = null; this.mhLayer = null;
+      document.querySelectorAll('.ww-only').forEach((el) => el.classList.add('hidden'));
+    }
     if (m.storms) this.storms = m.storms;
     this.onYou(m.you, true);
     for (const l of m.log || []) this.hud.event(l);
@@ -231,6 +259,7 @@ class App {
     const prev = this.you;
     this.you = you;
     this.net.vid = you.aboard ?? null;   // v6: states carry the ship they are for
+    this.vhf?.onYou(you);                                                // you.radio, the ship's numbers for the phrase preview
     this.shipClock = { t: Number(you.shipTime) || 0, rate: Number(you.shipRate) || 1, at: performance.now(), warpRun: you.warpRun || null }; // V6 item 5
     const s = you.ship;
     const serverWarp = WARP_LEVELS.includes(Number(you.warp)) ? Number(you.warp) : 1;
@@ -263,7 +292,14 @@ class App {
     this.myMesh?.userData.setWear(1 - you.cond / 100); this.myMesh?.userData.setFlood(you.flooding);
     if (prev?.sailsUp !== you.sailsUp) { this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false); this.lastSails = 0; }
     // environment: tide level + stream, local weather for sea state / particles / fog
-    if (you.tide) { this.tide = you.tide; this.tideLevel = Number(you.tide.height) || 0; this.ocean.setLevel?.(this.tideLevel); }
+    if (you.tide || you.water) { if (you.tide) this.tide = you.tide; this.tideLevel = you.water && Number.isFinite(you.water.h) ? you.water.h : Number(you.tide?.height) || 0; this.ocean.setLevel?.(this.tideLevel); }   // BRIDGES & LOCKS: canal pounds have their own level
+    if (this.wwMesh && you.ship) {
+      this.wwMesh.setWater(you.water && Number.isFinite(you.water.h) ? you.water.h : this.tideLevel);
+      if (this.world?.wwAttribution && (!this.wwQueryAt || haversine(this.wwQueryAt.lat, this.wwQueryAt.lon, you.ship.lat, you.ship.lon) > 2000)) {
+        this.wwQueryAt = { lat: you.ship.lat, lon: you.ship.lon };                              // ask for statics every 2 km
+        this.net.action('ww_query', { lat: you.ship.lat, lon: you.ship.lon, r: isTouch() ? 5 : 8 });
+      }
+    }
     if (you.weather && this.forceBft != null) you.weather = this.forcedWeather(you.weather);
     if (you.weather) this.applyWeather(you.weather);
     if (you.rescue && !prev?.rescue) { this.cam.free = false; this.hud.event({ kind: 'warn', text: 'You are in the life raft. Hold on — help is on the way.' }); }
@@ -428,6 +464,7 @@ class App {
     this.ocean.shiftOrigin?.(p.x, p.z);
     if (this.camPrevTarget) { this.camPrevTarget.x -= p.x; this.camPrevTarget.z -= p.z; }
     this.terrain.setOrigin(this.origin);
+    this.wwMesh?.setOrigin(this.origin);
     const mp = toLocal(this.ship.lat, this.ship.lon, this.origin);
     this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), true);
     for (const [id, m] of this.harborMeshes) { const at = m.userData.placeAt; if (at) this.place(m, at.lat, at.lon); else { this.drop(m); this.harborMeshes.delete(id); } }
@@ -555,7 +592,7 @@ class App {
         if (!has || has.userData.geomId !== wantGeom) {
           if (has) { this.drop(has); this.harborMeshes.delete(h.id); }
           let m = null;
-          try { m = buildHarbor(h, entry ? entry.geom : null); } catch (e) { console.warn('[harbor] build failed', h.id, e); }
+          try { m = buildHarbor(h, entry ? entry.geom : null, { skipNear: (lat, lon) => !!this.wwMesh?.lineNear(lat, lon, 20) }); } catch (e) { console.warn('[harbor] build failed', h.id, e); }
           if (m) {
             const at = entry ? { lat: entry.geom.origin.lat, lon: entry.geom.origin.lon } : { lat: h.lat, lon: h.lon };
             m.userData.geomId = wantGeom; m.userData.placeAt = at;
@@ -577,7 +614,7 @@ class App {
       const entry = this.geoms.get(sp.id), has = this.harborMeshes.get(sp.id);
       if (entry && !has) {
         let m = null;
-        try { m = buildHarbor({ id: sp.id, name: '', sub: true, size: 'regional' }, entry.geom); } catch (e) { console.warn('[harbor] patch build failed', sp.id, e); }
+        try { m = buildHarbor({ id: sp.id, name: '', sub: true, size: 'regional' }, entry.geom, { skipNear: (lat, lon) => !!this.wwMesh?.lineNear(lat, lon, 20) }); } catch (e) { console.warn('[harbor] patch build failed', sp.id, e); }
         if (m) {
           const at = { lat: entry.geom.origin.lat, lon: entry.geom.origin.lon };
           m.userData.geomId = entry.id; m.userData.placeAt = at;
@@ -628,6 +665,7 @@ class App {
       if (!this.started) return;
       if (typing()) return;
       const k = String(e.key || '').toLowerCase();
+      if (this.vhf?.isOpen && !this.walking() && this.vhf.handleKey(e)) return;   // radio open: [ ] digits Enter Tab ↑↓ ←→ Z(PTT) Esc
       if (k === 'enter') { document.getElementById('chatInput')?.focus(); e.preventDefault(); return; }
       if (k === 'escape') {
         if (this.interior.active && this.interior.handleKey(e)) return;
@@ -640,6 +678,8 @@ class App {
       // the walkers (on foot ashore, below decks) get their keys first: WASD walk, E use, V view, T taxi ashore …
       if (this.ashore?.active && this.ashore.handleKey(e)) return;
       if (this.interior.active && this.interior.handleKey(e)) return;
+      if (!this.ashore?.active && this.vhf?.handleKey(e)) return;   // E radio · Shift+E dual watch · Shift+Z call the bridge/lock ahead (radio closed: Z and [ ] stay with sailing)
+      if (!this.ashore?.active && this.wwHud?.handleKey(e)) return;     // ; air-draught card · Esc closes the bridge / lock card
       if (k === 'm') return this.hud.toggleChart();
       if (k === 'tab') { e.preventDefault(); return this.hud.toggleShips(); }
       if (k === 'h') return document.getElementById('helpWrap')?.classList.toggle('hidden');
@@ -669,7 +709,7 @@ class App {
       if (k === 'b') this.boardNearest();
       if (k === 'v') this.salvageNearest();
     });
-    window.addEventListener('keyup', (e) => { const k = String(e.key || '').toLowerCase(); if (k === 'a' || k === 'arrowleft') this.input.left = false; if (k === 'd' || k === 'arrowright') this.input.right = false; });
+    window.addEventListener('keyup', (e) => { if (this.vhf?.handleKeyUp(e)) return; const k = String(e.key || '').toLowerCase(); if (k === 'a' || k === 'arrowleft') this.input.left = false; if (k === 'd' || k === 'arrowright') this.input.right = false; });
     // camera: one-pointer drag orbits (mouse or finger), two fingers pinch to zoom, wheel zooms (the walkers own theirs)
     const pointers = new Map();
     let pinch = null;
@@ -785,7 +825,9 @@ class App {
     const rc = this._raycaster || (this._raycaster = new THREE.Raycaster());
     rc.setFromCamera(ndc, this.camera);
     const v = this.aisLayer.pick(rc);
-    if (v) this.hud.showAisCard?.(this.aisLayer.info(v), v); else this.hud.showAisCard?.(null);
+    if (v) { this.hud.showAisCard?.(this.aisLayer.info(v), v); return; }
+    this.hud.showAisCard?.(null);
+    const w = this.wwMesh?.pick(rc); if (w) this.wwHud?.openObject(w.id);   // tap / click a bridge or lock → its card
   }
   /** The contract card's action (J): pass the tow line, crane transfer, nets out / in. `t` = a jobTargets() entry. */
   jobAction(t) {
@@ -1170,7 +1212,8 @@ class App {
     if (own && r.slam > 0.5 && this.time - (this.lastSlamSound || 0) > 1.5) { this.lastSlamSound = this.time; this.sound?.event('splash', r.slam); }
     const sink = flooding >= 1 ? Math.min(60, (vis.sinkT = (vis.sinkT || 0) + dt) * 6) : 0;
     if (flooding < 1) vis.sinkT = 0;
-    mesh.position.y = r.heave + this.tideLevel - flooding * (ud.freeboard + 2) - sink; // the flooding list is already in roll
+    const lockLvl = this.wwMesh?.chamberLevelAt(lat, lon);                                   // in a lock chamber: ride its level (§5.4)
+    mesh.position.y = r.heave + (lockLvl ?? this.tideLevel) - flooding * (ud.freeboard + 2) - sink; // the flooding list is already in roll
     mesh.rotation.set(r.pitch, -h, r.roll, 'YXZ');
     ud.updateRig?.(dt, { camera: this.camera, time: this.time, own, touch: document.body.classList.contains('touch') });   // sailing: cloth, springs, LOD
     mesh.userData.setWake?.(Math.abs(spd) / 10);
@@ -1292,6 +1335,7 @@ class App {
     this.scene.fog.far += (far - this.scene.fog.far) * kf; this.scene.fog.near += (near - this.scene.fog.near) * kf;
     this.ocean.setSun(dir, sunCol, 1 - day, top, hor);
     const night = 1 - day; this.night = night;
+    this.wwMesh?.setNight(night);                                                            // signal glow size
     for (const m of this.harborMeshes.values()) m.userData.setNight?.(night, this.time);
     for (const m of this.platformMeshes.values()) m?.userData.setNight?.(night, this.time);
     const lightsOn = night > 0.5;
@@ -1312,7 +1356,7 @@ class App {
     const ashore = !!this.ashore?.active;
     if (!ashore) this.simulate(dt); // ashore the ship lies moored: nothing to integrate, no helm
     this.recentre(false);
-    if (now - this.lastTerrainUpdate > 500) { this.lastTerrainUpdate = now; this.terrain.update(this.ship.lat, this.ship.lon, this.camera); this.updateScenery(); this.hud.setWorldDetail?.(this.terrain.wtiles?.attribution(), this.terrain.wtiles?.loading() || 0); }   // WORLD TILES: focus = where the camera looks; credit + loading dot
+    if (now - this.lastTerrainUpdate > 500) { this.lastTerrainUpdate = now; this.terrain.update(this.ship.lat, this.ship.lon, this.camera); this.updateScenery(); this.hud.setWorldDetail?.([this.terrain.wtiles?.attribution(), this.world?.wwAttribution].filter(Boolean).join(' · '), this.terrain.wtiles?.loading() || 0); }   // WORLD TILES: focus = where the camera looks; credit + loading dot
     const mp = toLocal(this.ship.lat, this.ship.lon, this.origin);
     if (this.terrain.version !== this.depthVersion) { this.depthVersion = this.terrain.version; this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), true); }
     else this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), false);
@@ -1339,6 +1383,8 @@ class App {
     try { this.berthGuide?.update(dt, now); } catch (e) { if (!this.berthGuideWarned) { this.berthGuideWarned = true; console.warn('[berthguide] update failed', e); } }
     try { this.quayUi?.update(dt, now); } catch (e) { if (!this.quayUiWarned) { this.quayUiWarned = true; console.warn('[quayui] update failed', e); } }
     try { this.tugLayer?.update(dt, now); } catch (e) { if (!this.tugLayerWarned) { this.tugLayerWarned = true; console.warn('[tugs] update failed', e); } }
+    try { this.wwMesh?.update(dt, { lat: this.ship.lat, lon: this.ship.lon }); } catch (e) { if (!this.wwWarned) { this.wwWarned = true; console.warn('[ww] update failed', e); } }
+    if (this.wwMesh && now - (this.lastCut || 0) > 500) { this.lastCut = now; try { this.ocean.setCutouts?.(this.wwMesh.cutouts().map((c) => c.ring.map(([la, lo]) => { const p = toLocal(la, lo, this.origin); return [p.x, p.z]; }))); } catch { /* cut-outs are cosmetic */ } }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
     // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views
     if (ashore) { this.camPrevTarget = null; try { this.ashore.update(dt); } catch (e) { console.warn('[ashore] update failed — back aboard', e); try { this.ashore.exit(); } catch {} this.afterAshoreChange(); } }
@@ -1399,6 +1445,11 @@ class App {
     this.hud.showBerth?.(you.nearBerth || null, you.berth || null, you.assist || null, Math.max(400, Math.round(C.displacement * 0.35)));
     this.jobTargets = jobTargets(this); this.jobLayer.setTargets(this.jobTargets); this.hud.showJobs?.(this.jobTargets);
     this.hud.showVoyage?.(this.route, eta, this.route.length ? Math.round((this.routeLength() / 1852) * SIM.EXPRESS_CR_PER_NM) : 0);
+    if (this.wwHud) {
+      this.wwHud.show(!this.ashore?.active && !this.interior.active);
+      const sea = this.wx?.waveH ?? 0, C2 = SHIP_CLASSES[s.cls] || {};
+      this.wwHud.update(you, { lat: s.lat, lon: s.lon, hdg: s.hdg, h: you.water?.h ?? this.tideLevel, Hs: sea, beam: C2.beam || 8 });
+    }
     if (this.hud.chartOpen() && now - (this.lastChart || 0) > 1000) { this.lastChart = now; this.hud.drawChart(); }
   }
   drawRadar(now) {

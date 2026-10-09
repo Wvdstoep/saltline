@@ -61,6 +61,7 @@ export class Net {
   // Envelope fields go last so an extra payload field can never clobber `t` / `action`.
   action(action, extra = {}) { this.send({ ...extra, t: 'action', action }); }
   chat(text) { this.send({ t: 'chat', text }); }
+  vhf(action, extra = {}) { this.action(action, extra); }              // VHF: vhf_set / vhf_tx / dsc (§8.2)
   /** Binary harbour patch (§1 layout). Resolves to an ArrayBuffer, or null on 404 (harbour not built yet). Throws on network errors. */
   async fetchPatch(id) {
     const r = await fetch(`/api/harbor/${encodeURIComponent(id)}/patch`);

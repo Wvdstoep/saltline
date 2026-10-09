@@ -14,6 +14,7 @@ import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js
 import { jobWhere, fmtLeft, JOB_COLOR } from './jobs.js';
 import { estimateJob, hardReason, fmtShipH, JOBTIME } from '/shared/jobtime.js'; // V6 item 5: contract hours on the ship's clock
 import { TIER_TABS, SERVICE_TIERS, quayDenies } from '/shared/quayrules.js'; // DOCK ANYWHERE
+import { cardHTML as mhCardHTML, berthsHTML as mhBerthsHTML } from './mhchart.js';   // inland harbour card (§7.5)
 
 const { GOODS, SHIP_CLASSES, GEO, SIM, INTERACT } = K;
 const $ = (id) => document.getElementById(id);
@@ -358,7 +359,7 @@ export class Hud {
   anyOverlayOpen() { return ['chartWrap', 'harborWrap', 'shipsWrap', 'helpWrap', 'marketWrap'].some((id) => $(id) && !$(id).classList.contains('hidden')); }
   transientOpen() {
     return ['chartWrap', 'shipsWrap', 'helpWrap', 'compareWrap', 'aisCardWrap', 'marketWrap'].some((id) => $(id) && !$(id).classList.contains('hidden')) || !!$('moreSheet')?.classList.contains('open')
-      || (this.touch && !$('weatherPanel')?.classList.contains('hidden'));
+      || (this.touch && !$('weatherPanel')?.classList.contains('hidden')) || !!this.app?.vhf?.isOpen || !!this.app?.wwHud?.isOpen;   // VHF panel, bridge / lock / air-draught card
   }
   /** Live AIS vessel card: `html` from AisLayer.info() (already escaped), or null to close. */
   showAisCard(html) {
@@ -367,6 +368,8 @@ export class Hud {
     $('aisCardBody').innerHTML = html; w.classList.remove('hidden'); this.hydrateIcons(w);
   }
   closeOverlays() {
+    this.app?.vhf?.open(false);                                          // VHF panel / phone sheet
+    this.app?.wwHud?.close();                                            // bridge / lock / air-draught card
     $('aisCardWrap')?.classList.add('hidden');
     this.chart.close();
     for (const id of ['shipsWrap', 'helpWrap', 'compareWrap', 'marketWrap']) $(id)?.classList.add('hidden');
@@ -972,7 +975,7 @@ export class Hud {
     setText($('navPlayers'), h.dockedPlayers?.length ? String(h.dockedPlayers.length) : '');
     $('btnAshoreH')?.classList.toggle('hidden', !you.docked);
     // DOCK ANYWHERE: a quay reaches only some of the harbour's services (shared/quayrules.js TIER_TABS)
-    const qTabs = h.quay ? TIER_TABS[h.quay.tier] || ['overview'] : null;
+    const qTabs = h.mh ? ['overview'] : h.quay ? TIER_TABS[h.quay.tier] || ['overview'] : null;   // inland harbour card: one page (card + berths)
     document.querySelectorAll('#harborNav button[data-tab]').forEach((b) => b.classList.toggle('hidden', !!qTabs && !qTabs.includes(b.dataset.tab)));
     if (qTabs && !qTabs.includes(this.harborTab)) this.harborTab = 'overview';
     $('btnAshoreH')?.classList.toggle('hidden', !!h.quay || !you.docked);
@@ -988,7 +991,7 @@ export class Hud {
     let html = '';
     try {
       switch (t) {
-        case 'overview': html = this.tabOverview(h, you, C); break;
+        case 'overview': html = h.mh ? mhCardHTML(h.mh) + mhBerthsHTML(h.mh) : this.tabOverview(h, you, C); break;
         case 'jobs': html = this.tabJobs(h, you, C); break;
         case 'boards': html = this.tabBoards(you, C); break;
         case 'market': html = this.tabMarket(h, you, C); break;
@@ -1002,12 +1005,23 @@ export class Hud {
     el.innerHTML = html;
     el.querySelectorAll('[data-qty]').forEach((i) => { if (qty[i.dataset.qty] != null && i.type !== 'range') i.value = qty[i.dataset.qty]; this.sheetInput(i); });
     this.hydrateThumbs(el);
-    if (t === 'overview') this.loadBanner(h);
+    if (t === 'overview' && h.mh) {   // inland harbour: tune the radio / open the named harbour it belongs to
+      el.querySelectorAll('[data-tune]').forEach((b) => { b.onclick = () => { this.app.vhf?.setChannel?.(+b.dataset.tune); this.app.vhf?.open?.(true); }; });
+      el.querySelectorAll('[data-named]').forEach((b) => { b.onclick = () => { const id = b.dataset.named; if (this.app.you?.docked === id) this.openHarborTab('overview'); else this.event({ kind: 'info', text: `${this.hname(id)}: moor there to open its offices.` }); }; });
+    } else if (t === 'overview') this.loadBanner(h);
     this._stale.delete(t);
   }
   loadBanner(h) {
     const img = $('hBanner'); if (!img || img.classList.contains('loaded')) return;
     thumbs().then((m) => { const url = m?.harborBanner?.(h, { w: 1240, h: 340 }); const el = $('hBanner'); if (url && el && el.dataset.h === h.id) { el.src = url; el.classList.add('loaded'); } });
+  }
+
+  /** Inland harbour / marina card (§7.5) in the harbour-sheet frame: GET /api/mh/:id (fit, fee and reach for this ship). */
+  async openMinorHarbour(id) {
+    let c = null; try { c = await this.app.mhLayer?.card(id); } catch { c = null; }
+    if (!c || c.error) return;
+    this.mhCard = c;
+    this.showHarbor({ id: c.id || id, name: c.name, country: c.sub ? '' : 'NL', size: c.tierLabel, mh: c, jobs: c.jobs || [], dockedPlayers: [] });
   }
 
   // -------- overview

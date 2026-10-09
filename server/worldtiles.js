@@ -327,8 +327,15 @@ export function createWorldTiles(opts = {}) {
   async function overlayFor(z, x, y) {
     if (z !== WT.Z_DETAIL) return null;
     const x12 = x >> 2, y12 = y >> 2;
-    try { const b = await fs.promises.readFile(overlayFile(x12, y12)); touch(`o12/${x12}/${y12}`); return JSON.parse(zlib.gunzipSync(b).toString('utf8')); } catch { return null; }
+    let ov = null;
+    try { const b = await fs.promises.readFile(overlayFile(x12, y12)); touch(`o12/${x12}/${y12}`); ov = JSON.parse(zlib.gunzipSync(b).toString('utf8')); } catch { return null; }
+    if (ov && !(ov.v >= 2) && process.env.SALTLINE_WW_OFF !== '1' && !ovRefetch.has(`${x12}/${y12}`)) {   // BRIDGES & LOCKS: v1 overlay → refetch once in the background (old one serves meanwhile)
+      ovRefetch.add(`${x12}/${y12}`);
+      setTimeout(() => { requestOverlay(x12, y12, { refetch: true }).catch(() => null); }, 0);
+    }
+    return ov;
   }
+  const ovRefetch = new Set();   // z12 squares whose v1 overlay was re-requested this process (small: one string per square)
 
   // ------------------------------------------------------------ build queue
   function cmpJob(a, b) { return a.prio - b.prio || a.d - b.d || a.seq - b.seq; }
@@ -471,10 +478,10 @@ export function createWorldTiles(opts = {}) {
   function pinKey(k) { const e = index.get(k); if (e && !e.pin) { const { p } = diskBytes(); if (p + e.bytes <= capBytes * 0.25) { e.pin = true; dirty.add(k); } } }
 
   /** Fetch (if needed) the Overpass overlay of a z12 square and rebuild its loaded / cached D14 children as rev 1. */
-  async function requestOverlay(x12, y12, { rebuild = true } = {}) {
+  async function requestOverlay(x12, y12, { rebuild = true, refetch = false } = {}) {
     try {
       const k = `o12/${x12}/${y12}`;
-      if (!index.has(k)) {
+      if (refetch || !index.has(k)) {
         const r = await sources.fetchOverlay(x12, y12);
         if (!r.ok) return false;
         const gz = zlib.gzipSync(JSON.stringify(r.overlay));
@@ -486,6 +493,7 @@ export function createWorldTiles(opts = {}) {
       for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++) {
         const x = x12 * 4 + dx, y = y12 * 4 + dy, key = tileKey(WT.Z_DETAIL, x, y);
         const e = mem.get(key);
+        if (refetch) { if ((e && !(e.tile.flags & WT.FLAG.UNIFORM)) || (!e && index.has(`t${key}`))) waits.push(enqueue(WT.Z_DETAIL, x, y, PRIO.P3, { force: true })); continue; }   // v2 overlay: background rebuild
         if ((e && !(e.tile.flags & WT.FLAG.OVERLAY) && !(e.tile.flags & WT.FLAG.UNIFORM)) || (!e && index.has(`t${key}`))) waits.push(enqueue(WT.Z_DETAIL, x, y, PRIO.P2, { force: true }));
       }
       await Promise.all(waits);

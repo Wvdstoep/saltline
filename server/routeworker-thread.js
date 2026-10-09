@@ -12,6 +12,19 @@ const { planRoute } = await import('./searoute.js');
 
 const world = new World().load(carvingsForWorld(), () => {});
 const graph = buildGraph(world);
+// BRIDGES & LOCKS (docs/WATERWAYS-LANE1-PHASE2.md §5): the inland graph (FIS fairways, bridges, locks) joined to the sea at the gates
+let inl = null, inland = null;
+if (process.env.SALTLINE_WW_OFF !== '1') {
+  try {
+    const { loadFis } = await import('./fis.js');
+    inl = await import('./inland.js');
+    const fs = await import('node:fs');
+    const levels = JSON.parse(fs.readFileSync(new URL('./waterworks/levels-nl.json', import.meta.url), 'utf8'));
+    const gates = JSON.parse(fs.readFileSync(new URL('./waterworks/seagates-nl.json', import.meta.url), 'utf8')).gates;
+    inland = inl.joinSeaGates(inl.buildGraph(loadFis(), { levels }), gates);
+  } catch { inland = null; }
+}
+const llPts = (r) => (r && Array.isArray(r.points) ? { ...r, points: r.points.map((p) => (Array.isArray(p) ? { lat: p[0], lon: p[1] } : p)) } : r);   // inland legs give [lat, lon]
 // warm the per-edge depth cache (the first deep-draught plan would otherwise pay for it)
 try { planRoute(world, graph, { lat: 51.95, lon: 4.05 }, { lat: 57.7, lon: 11.9 }, { draft: 5.5, beam: 14 }); } catch { /* warm-up only */ }
 
@@ -38,7 +51,11 @@ function geomFrom(ends) {
 parentPort.on('message', (m) => {
   if (!m || typeof m !== 'object') return;
   try {
-    const result = planRoute(world, graph, m.from, m.to, { ...(m.opts || {}), geom: geomFrom(m.ends) });
+    const sea = (a, b) => planRoute(world, graph, a, b, { ...(m.opts || {}), geom: geomFrom(m.ends) });
+    const o = m.opts || {};
+    const result = inland && o.inland && (o.inland.from || o.inland.to)
+      ? llPts(inl.planWithSea(sea, inland, m.from, m.to, o.inland.ship, o.simTime, { fromInland: !!o.inland.from, toInland: !!o.inland.to })) || sea(m.from, m.to)
+      : sea(m.from, m.to);
     parentPort.postMessage({ id: m.id, ok: true, result });
   } catch (e) {
     parentPort.postMessage({ id: m.id, ok: false, error: String(e?.message || e) });

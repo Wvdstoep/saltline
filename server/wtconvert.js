@@ -17,9 +17,10 @@
 // `landuse=industrial`); `transportation class=pier` as lines and polygons; `building` carries only render_height /
 // render_min_height (5 / 0 is the OpenMapTiles default for an untagged building, so it is treated as an estimate).
 import { WT, WT_NAVIGABLE, WT_OBSTACLE, encodeWTHeight, tileSizeM, tileF, tileFToLatLon, fnv1a } from '../shared/wtformat.js';
+import { bridgeVector } from '../shared/waterworks.js';
 import { bigPortById, portWaterKind, portIsFairway, KIND as BP_KIND } from './bigports.js';
 
-export const CONVERTER_VERSION = 1;
+export const CONVERTER_VERSION = process.env.SALTLINE_WW_OFF === '1' ? 1 : 2;   // 2: BRIDGES & LOCKS bridge vectors (id, clrO, wO, datum)
 const M = WT.MASK;
 const S = 2;                       // supersampling of the water raster
 export const FAIRWAY_DEPTH = { mega: 17, major: 15, regional: 11, minor: 8, none: 12 };
@@ -439,6 +440,20 @@ export function convertTile({ z, x, y, mvt, overlay = null, bathy = null, hints 
     }
     // bridges over water (OpenFreeMap brunnel=bridge), clearance estimated from the water width
     const bridges = [];
+    const smBridges = CONVERTER_VERSION >= 2 ? ovFeats.filter((f) => f.k === 'bridge').map((f) => ({ f, pts: ovLocal(f) })) : [];
+    const nearSeamark = (lm) => {             // OpenSeaMap tags the node on the waterway under the deck: join within 30 m
+      let best = null;
+      for (const s of smBridges) {
+        const [px, py] = [s.pts[0], s.pts[1]];
+        for (let i = 0; i + 3 < lm.length; i += 2) {
+          const ax = lm[i], ay = lm[i + 1], bx = lm[i + 2], by = lm[i + 3], L2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+          const t = Math.max(0, Math.min(1, ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / L2));
+          const d = Math.hypot(px - ax - t * (bx - ax), py - ay - t * (by - ay));
+          if (d <= 30 && (!best || d < best.d)) best = { d, s };
+        }
+      }
+      return best ? best.s.f : null;
+    };
     for (const f of layers.transportation?.features || []) {
       if (f.type !== 2 || f.tags.brunnel !== 'bridge') continue;
       for (const l of f.geom) {
@@ -455,9 +470,18 @@ export function convertTile({ z, x, y, mvt, overlay = null, bathy = null, hints 
         if (!wet) continue;
         const cls = String(f.tags.class || ''), k = /rail|transit/.test(cls) ? 'rail' : /path|track|footway|cycleway/.test(cls) ? 'foot' : 'road';
         const big = /motorway|trunk|rail/.test(cls);
-        const clr = big && wmax > 300 ? 35 : big && wmax > 100 ? 15 : 6;
         const w = /motorway|trunk/.test(cls) ? 30 : /primary/.test(cls) ? 20 : /secondary/.test(cls) ? 14 : k === 'rail' ? 10 : k === 'foot' ? 4 : 8;
-        bridges.push({ p: simplify(l.map((u) => u * mPerUnit), 1).map((v) => Math.round(v * 10)), w, deck: clr + 1.5, clr, mov: 0, k, e: 1 });
+        const lm = l.map((u) => u * mPerUnit);
+        if (CONVERTER_VERSION >= 2) {
+          const sm = nearSeamark(lm);
+          const id = sm ? `osm:${sm.id}` : `ofm:${z}/${x}/${y}:${bridges.length}`;
+          const { cls: _c, movable: _m, ...v } = bridgeVector({ p: simplify(lm, 1).map((q) => Math.round(q * 10)), w, k, cls, movable: f.tags['bridge:movable'] || null, id },
+            sm ? sm.t : null, { waterW: wmax, cemt: hints.cemt || null, datum: hints.nonTidal ? 'KP' : hints.nl ? 'NAP' : 'MHWS' });
+          bridges.push({ ...v, sp: null });   // sp (span along the line, dm) is filled by the registry join; maxheight is never read
+        } else {
+          const clr = big && wmax > 300 ? 35 : big && wmax > 100 ? 15 : 6;
+          bridges.push({ p: simplify(lm, 1).map((v) => Math.round(v * 10)), w, deck: clr + 1.5, clr, mov: 0, k, e: 1 });
+        }
       }
     }
     // areas (land use / cover), largest first
@@ -470,7 +494,7 @@ export function convertTile({ z, x, y, mvt, overlay = null, bathy = null, hints 
     areas.sort((a, b) => b.a - a.a || a.v.r[0] - b.v.r[0] || a.v.r[1] - b.v.r[1]);
     lights.sort((a, b) => a.x - b.x || a.z - b.z);
     vectors = {
-      v: 1, src: hints.src || null, ov: ov ? `ovp:${ov.date}` : null,
+      v: CONVERTER_VERSION, src: hints.src || null, ov: ov ? `ovp:${ov.date}` : null,
       quays: osmQuays.concat(vecQuays), piers, breakwaters, pontoons,
       buildings: blds.slice(0, CAPS.buildings).map((b) => b.b), tanks, cranes, bridges,
       locks: locks.map(({ pts, ...l }) => l), lights: lights.slice(0, CAPS.lights), areas: areas.slice(0, CAPS.areas).map((a) => a.v),

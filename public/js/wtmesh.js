@@ -559,6 +559,7 @@ export function buildStructures(tile, opts = {}) {
   const DECK = hex(0x8c8a86), DECK_SIDE = hex(0x6a6864);
   for (const br of v.bridges || []) {
     if (!br.p || br.p.length < 4) continue;
+    if (br.id != null && opts.skipIds && (opts.skipIds.has ? opts.skipIds.has(br.id) : opts.skipIds.includes(br.id))) continue;   // drawn by wwmesh
     const w = clamp(Number(br.w) || 6, 2, 40) / 2, deck = Math.max(1.5, Number(br.deck) || Number(br.clr) + 1.5 || 8);
     for (const fr of clipPolyline(frac(br.p))) {
       const m = fr.length >> 1;
