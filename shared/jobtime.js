@@ -4,6 +4,10 @@
 // Plain ESM, browser-safe (served at /shared), no DOM, no state.
 import { SHIP_CLASSES } from './constants.js';
 import { RATES, serviceKn, catchRate, kmHours, shipClass } from './rates.js';
+// YARD lane D (H6c): JOB_GEN 8 checks and hours come from shared/jobs/eligibility.js jobtimeHooks(), registered at start-up
+// by the server (server/game.js) and the client (main.js), so this module keeps no import cycle with the jobs modules.
+let gen8 = null;
+export function setGen8(hooks) { gen8 = hooks || null; }
 
 export const JOBTIME = {
   MARGIN_MIN: 1.4, MARGIN_MAX: 1.8,     // budget = need(reference ship) × margin + fixed hours
@@ -40,6 +44,7 @@ function seaKmOf(job) { const s = num(job.seaKm); if (s >= 0) return s; const d 
 
 /** Hours a ship of class `cls` needs for `job`: { type, workH (fishing / crane / tow line), sailH, needH }. */
 export function needFor(job, cls) {
+  if (gen8) { const n = gen8.needFor(job, cls); if (n) return n; }
   const C = shipClass(cls), type = job && job.type;
   let workH = 0, sailH = 0, needH;
   if (type === 'fishing') {
@@ -84,6 +89,7 @@ export function budgetFor(job, cls, margin) {
 
 /** Why `ship` ({ cls, holdFreeT, paxFree }) can never take `job`, or null. Same texts as the harbour sheet always showed. */
 export function hardReason(job, ship) {
+  if (gen8) { const r = gen8.hardReason(job, ship); if (r !== undefined) return r; }
   const C = shipClass(ship && ship.cls);
   if (job.needsCat && !job.needsCat.includes(C.cat)) return `needs ${job.needsCat.includes('passenger') ? 'a yacht or ferry' : 'a yacht'}`;
   if (job.type === 'passengers' || job.type === 'charter') {

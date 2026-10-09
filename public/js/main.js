@@ -138,6 +138,8 @@ class App {
     this.fleetShips = new Map();   // snap.fleet (FleetPublic): fleet ships near you, drawn like AI traffic
     this.fleetUi = null; this.hq = null;
     import('./fleet.js').then((m) => { this.fleetUi = new m.FleetUi(this); }).catch((e) => console.warn('[fleet] unavailable', e));
+    import('./jobboard.js').then((m) => m.JobBoard.create(this)).then((b) => { this.jobBoard = b; this.hud?.renderHarborTabs?.(); }).catch((e) => console.warn('[jobs] board unavailable', e));
+    import('/shared/jobtime.js').then(async (jt) => { const el = await import('/shared/jobs/eligibility.js'); jt.setGen8(el.jobtimeHooks(() => ({ harborById: (id) => this.world?.harbors?.find((h) => h.id === id) || null, simTime: Date.now() / 1000 }))); }).catch(() => {});
     import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
     this.touchHelm = null;
     // sailing (docs/SAILING-CONTRACT.md §5): instruments + sail panel / phone sheet. Rig commands are applied locally at once

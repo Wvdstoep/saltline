@@ -5,6 +5,7 @@ import { haversine, destination } from '../shared/geo.js';
 import { HARBORS, FISHING_GROUNDS, PLATFORMS, harborById } from './harbors.js';
 import { RATES } from '../shared/rates.js';
 import { JOBTIME, refClassFor, budgetFor } from '../shared/jobtime.js'; // V6 item 5: contract hours rated for a reference ship
+import { payOf, payInfoOf } from '../shared/jobs/types.js';   // YARD lane D: runner jobs carry pay as { cr, … }
 
 export const PAY_PER_T_KM = 0.08;
 export const SMUGGLE_MULT = 5;
@@ -19,7 +20,7 @@ let jobSeq = 1;
 export function setJobSeq(n) { jobSeq = Math.max(jobSeq, n); }
 export function nextJobId() { return `j${(jobSeq++).toString(36)}`; }
 
-const SIZE_JOBS = { mega: 8, major: 6, regional: 5, minor: 3 };
+const SIZE_JOBS = { mega: 24, major: 16, regional: 10, minor: 6 };   // YARD §5.7 board sizes (= server/jobsgen.js BOARD_SIZE)
 const SIZE_MULT = { mega: 1.0, major: 1.0, regional: 1.05, minor: 1.15 };
 
 export function distKm(a, b) { return haversine(a.lat, a.lon, b.lat, b.lon) / 1000; }
@@ -41,7 +42,7 @@ export function nearestHarborId(p) {
 // send most contracts across an ocean, so a band is drawn first (short hop, coastal/regional, sea, ocean; empty bands
 // are skipped) and then a harbour inside it, weighted by size.
 // Board generation: offers posted by an older generator (before the world-wide destination bands) are withdrawn on start.
-export const JOB_GEN = 7;
+export const JOB_GEN = 8;   // YARD §8: gen-7 offers leave the boards at start; accepted gen-7 jobs finish on the legacy path
 export const DEST_BANDS = [{ maxKm: 60, p: 0.06 }, { maxKm: 700, p: 0.6 }, { maxKm: 2500, p: 0.24 }, { maxKm: Infinity, p: 0.1 }];
 /** Fishing grounds a harbour offers contracts on, nearest first ({g, d} with d in km); the board picks among the first 3. */
 export function groundsFor(from) {
@@ -187,8 +188,10 @@ export function publicJob(j) {
   const to = harborById(j.to);
   const perUnit = j.qty > 0 ? j.qty : j.pax > 0 ? j.pax : 0;
   return {
-    id: j.id, type: j.type, title: j.title, from: j.from, to: j.to, toName: to ? to.name : j.to, pay: j.pay,
-    payPerT: perUnit ? Math.round(j.pay / perUnit) : null, distKm: j.distKm ?? null, needsCat: j.needsCat || null,
+    id: j.id, type: j.type, title: j.title, from: j.from, to: j.to, toName: to ? to.name : j.to, pay: payOf(j), payInfo: payInfoOf(j),
+    payPerT: perUnit ? Math.round(payOf(j) / perUnit) : null, distKm: j.distKm ?? null, needsCat: j.needsCat || null,
+    gen: j.gen ?? null, family: j.family || j.type, cargo: j.cargo || null, needs: j.needs || null, steps: j.steps || null, legs: j.legs || null,
+    timetable: j.timetable || null, level: j.level ?? null, crossings: j.crossings ?? null, entries: j.entries ?? null, band: j.band || null,
     hours: j.hours ?? null, postedAt: j.postedAt ?? null, expiresAt: j.expiresAt ?? null, ref: j.ref || null,
     seaKm: j.seaKm ?? null, groundKm: j.groundKm ?? null, richness: j.richness ?? null, platformKm: j.platformKm ?? null, towKm: j.towKm || null,
     good: j.good || null, qty: j.qty || null, pax: j.pax || null, at: j.at || null, platformName: j.platformName || null, groundName: j.groundName || null,

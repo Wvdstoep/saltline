@@ -15,6 +15,7 @@ import { harborById, FISHING_GROUNDS } from './harbors.js';
 import { throttleCap, stormOnRoute } from '../public/js/pilotcore.js';
 import { rigOf } from '../shared/sail/rigs.js';                              // sailing (docs/SAILING-CONTRACT.md §3.5)
 import { anyHoisted, applyRigCommand, settleRig } from '../shared/sail/state.js';
+import { isRunnerJob } from '../shared/jobs/types.js';                   // YARD lane D H6e
 
 const clsOf = (c) => SHIP_CLASSES[c] || SHIP_CLASSES.coaster;
 const short = (name) => String(name || '').split(' (')[0];
@@ -94,6 +95,7 @@ export function stepVessel(fleet, v, dt) {
   const g = fleet.game, a = fleet.actorOf(v), p = fleet.ownerOf(v);
   if (!v.cap) v.cap = newCap(g, 'idle');
   g.advanceShipClock(a, dt);
+  if (v.jobs?.length) g.jobsx?.onTick(a, dt);                            // YARD H6: runner steps (work hours, meets, tows)
   if (p && p.office) {
     const cr = accrueWage(v.pay, wageRateMcrH(v.ship.cls, dutyOf(v), !!v.towing), dt * 1000);
     if (cr > 0) fleet.charge(p, v.id, 'wages', cr);
@@ -141,6 +143,14 @@ function stepSea(fleet, v, dt) {
     case 'sailing': case 'fishing': sail(fleet, v, dt); break;
     case 'arriving': { const h = harborById(cap.target && cap.target.harbor); if (h) return pilotFallback(fleet, v, h); cap.phase = 'idle'; break; }
     case 'transfer': holdStill(v); transferStep(fleet, v); break;
+    case 'jobwork': {                                                    // YARD H6e: hold still until the runner moves on
+      holdStill(v);
+      const nt = contractTarget(fleet, v);
+      if (nt.done) return finishOrder(fleet, v);
+      if (nt.fail) return fail(fleet, v, nt.fail);
+      if (!sameTarget(nt, cap.target)) { v.cap = newCap(g, 'idle'); }
+      break;
+    }
     case 'anchored': holdStill(v); break;
     case 'holding': holdStill(v, FLEET.HOLD_THROTTLE); break;
     default: cap.phase = 'idle';
@@ -229,6 +239,19 @@ function jobTarget(fleet, v, j) {
     const a = g.harborAnchor(h);
     return { kind: 'harbor', harbor: h.id, name: short(h.name), lat: a.lat, lon: a.lon, jobId: j.id };
   };
+  if (isRunnerJob(j)) {                                                  // YARD H6e: the runner says where the next step is
+    const t = g.jobsx?.nextTarget(fleet.actorOf(v), j);
+    if (!t) return { fail: `${j.title}: captains cannot do this step — sail her yourself.` };
+    if (t.kind === 'harbor') {
+      if (v.docked === t.harbor) return { here: true, harbor: t.harbor, jobId: j.id, runner: true };
+      const h = harborById(t.harbor); if (!h) return { fail: `${j.title}: the port is not on the chart.` };
+      const an = g.harborAnchor(h);
+      return { kind: 'harbor', harbor: h.id, name: short(h.name), lat: an.lat, lon: an.lon, jobId: j.id };
+    }
+    if (t.kind === 'stay') return v.docked ? { here: true, harbor: v.docked, jobId: j.id, runner: true, stay: true }
+      : { kind: 'jobspot', name: 'on hire', lat: s.lat, lon: s.lon, jobId: j.id };
+    return { kind: 'jobspot', name: j.steps[j.prog.i]?.label || 'the work site', lat: t.lat, lon: t.lon, jobId: j.id };
+  }
   switch (j.type) {
     case 'tow': return v.towing === j.id ? toHarbour() : { fail: 'Captains do not take tows — sail her yourself.' };
     case 'fishing': {
@@ -258,6 +281,16 @@ function approachOf(fleet, h) {
 /** Docked at the order's harbour already (sail_to here, a contract ending here). */
 function arrivedHere(fleet, v, tgt) {
   const g = fleet.game, a = fleet.actorOf(v);
+  if (tgt.runner) {                                                      // YARD H6e: the dock hook already advanced the job
+    g.jobsx?.onDock(a, v.docked); g.sendYou(a);
+    if (tgt.stay) { v.cap.nextAt = g.simTime + 60; return; }
+    const again = contractTarget(fleet, v);
+    if (again && again.here && again.runner && again.jobId === tgt.jobId && !again.stay) {
+      const j = v.jobs.find((x) => x.id === tgt.jobId);
+      return fail(fleet, v, `${j ? j.title : 'Contract'}: this step cannot be completed here (space or cargo).`);
+    }
+    return;
+  }
   if (tgt.jobId) {
     const h = harborById(v.docked), j = v.jobs.find((x) => x.id === tgt.jobId);
     if (j) {
@@ -543,6 +576,11 @@ function arrivalTest(fleet, v, end) {
     case 'ground': return startFishing(fleet, v);
     case 'platform': return startTransfer(fleet, v);
     case 'spot': return settle(fleet, v);
+    case 'jobspot': {                                                    // YARD H6e: on station for a work / meet / tow step
+      if (d <= 400) { s.lat = t.lat; s.lon = t.lon; v.lastValid = { lat: t.lat, lon: t.lon }; }
+      holdStill(v); v.cap = newCap(g, 'jobwork', { target: t, jobId: cap.jobId });
+      return;
+    }
     default: { // a route without a harbour: then hold
       if (v.orders && v.orders.type === 'route') { v.orders = { type: 'hold' }; }
       return startHold(fleet, v, { lat: s.lat, lon: s.lon });
