@@ -30,8 +30,9 @@ function endsFor(geom, from, opts) {
 }
 
 export class RoutePlanner {
-  constructor({ world, graph, geom = null, log = () => {}, inline = false, timeoutMs = 8000, maxQueue = 50, workerData = null } = {}) {
+  constructor({ world, graph, geom = null, log = () => {}, inline = false, timeoutMs = 8000, maxQueue = 50, workerData = null, inland = null } = {}) {
     this.world = world; this.graph = graph; this.geom = geom; this.log = log;
+    this.inland = inland;      // BRIDGES & LOCKS: { graph, planWithSea } for the inline path (the worker builds its own)
     this.inline = !!inline; this.timeoutMs = timeoutMs; this.maxQueue = maxQueue;
     this.workerData = workerData;
     this.queue = { high: [], low: [] };
@@ -53,7 +54,15 @@ export class RoutePlanner {
     if (this.inline) {
       const t0 = Date.now();
       let r = null;
-      try { r = planRoute(this.world, this.graph, from, to, { ...opts, geom: opts.geom || this.geom }); } catch (e) { this.log('[route] inline plan failed', e.message); r = null; }
+      const il = opts.inland;
+      try {
+        if (this.inland && il && (il.from || il.to)) {   // BRIDGES & LOCKS: inland ends → inland graph + sea route (points as {lat, lon})
+          const sea = (a, b) => planRoute(this.world, this.graph, a, b, { ...opts, geom: opts.geom || this.geom });
+          r = this.inland.planWithSea(sea, this.inland.graph, from, to, il.ship, opts.simTime, { fromInland: !!il.from, toInland: !!il.to });
+          if (r && Array.isArray(r.points)) r = { ...r, points: r.points.map((p) => (Array.isArray(p) ? { lat: p[0], lon: p[1] } : p)) };
+        }
+        if (!r) r = planRoute(this.world, this.graph, from, to, { ...opts, geom: opts.geom || this.geom });
+      } catch (e) { this.log('[route] inline plan failed', e.message); r = null; }
       this.st.done++; this.st.totalMs += Date.now() - t0;
       return Promise.resolve(r);
     }

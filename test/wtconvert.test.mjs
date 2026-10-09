@@ -209,7 +209,7 @@ test('determinism: the same input converts to byte-identical tiles (synthetic an
   const d = decodeTile(a.raw);
   assert.equal(d.srcHash, srcHashOf('ofm:x', ''));
   assert.notEqual(srcHashOf('ofm:x', ''), srcHashOf('ofm:x', '2026-10-08'));
-  assert.equal(CONVERTER_VERSION, 1);
+  assert.equal(CONVERTER_VERSION, process.env.SALTLINE_WW_OFF === '1' ? 1 : 2);   // 2: bridge vectors v2 (docs/WATERWAYS-LANE1-PHASE2.md §2)
   const s1 = encodeTile(convertTile({ z: Z, x: X, y: Y, mvt: decodeMVT(mvtRaw), hints: { builtAt: 5 } }));
   const s2 = encodeTile(convertTile({ z: Z, x: X, y: Y, mvt: decodeMVT(mvtRaw), hints: { builtAt: 5 } }));
   assert.deepEqual(s1, s2);

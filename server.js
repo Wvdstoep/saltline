@@ -9,6 +9,12 @@ import { World, DATA_DIR } from './server/world.js';
 import { carvingsForWorld, HARBORS } from './server/harbors.js';
 import { Game } from './server/game.js';
 import { yardsFor, parseVariant } from './shared/ships/index.js';   // SHIPYARD: yard list for one design (no politics: per-player blocks come with harbor.yard)
+import { loadVtsFile } from './server/vhf.js';                           // VHF: VTS sectors (server/waterworks/vts-nl.json, else the lane B seed)
+import { WT } from './shared/wtformat.js';                                     // BRIDGES & LOCKS: inland ends of /api/route
+import { waterLevelAt } from './shared/waterlevel.js';
+import { profileOf } from './shared/airdraft.js';
+import { tileDepthSampler } from './server/minorharbours.js';                  // INLAND HARBOURS: berth depths from the tiles
+import { lowWaterAt } from './shared/tide.js';
 import { SIM, PATCH, SHIP_CLASSES } from './shared/constants.js';
 import * as harborgeom from './server/harborgeom.js';
 import { WeatherService } from './server/weather.js';
@@ -63,7 +69,9 @@ const traffic = new Traffic(world, HARBORS, { log, weatherAt: (lat, lon) => (gam
 const routePlanner = new RoutePlanner({ world, graph: traffic.graph, geom: harborgeom, log });            // AUTOPILOT (route planner v2 off the main thread)
 const routeTable = new RouteTable({ plan: (a, b, o) => routePlanner.plan(a, b, o, { priority: 'low' }), log }); // MARKET (harbour-to-harbour sea km)
 pruneRasterCache(world, log, { keep: [routeTable.file] });   // WORLD TILES phase 1b: stale raster / sea-route caches (disk space)
-game = new Game(stack, log, { weather, traffic, harborgeom: geom, routeTable, routePlanner });     // MARKET adds routeTable; TIME reads it; v6 fleet: captains plan with routePlanner   // WORLD TILES: stack + facade
+const WW_ON = process.env.SALTLINE_WW_OFF !== '1';                                // BRIDGES & LOCKS / VHF / inland harbours (SALTLINE_WW_OFF=1 = off)
+const vts = WW_ON ? await loadVtsFile() : null;                                  // VHF (§6.3)
+game = new Game(stack, log, { weather, traffic, harborgeom: geom, routeTable, routePlanner, ...(WW_ON ? { vts, memGuard, maskAt: WT_ON ? (la, lo) => wt.maskAt(la, lo) : null } : {}) });     // MARKET adds routeTable; TIME reads it; v6 fleet: captains plan with routePlanner   // WORLD TILES: stack + facade
 const priceHistory = new PriceHistory({ file: path.join(DATA_DIR, 'market-history.json'), log });           // MARKET
 priceHistory.load(); priceHistory.maybeSample(game); routeTable.start();                                     // MARKET
 setInterval(() => { try { priceHistory.maybeSample(game); } catch (e) { log('[market] sample failed', e.message); } }, 60000);
@@ -78,6 +86,7 @@ game.liveAis = liveAis;                     // V7 step 0: the express passage ke
 if (WT_ON) {
   const wtGet = (z, x, y) => wt.get(z, x, y);
   attachFinder(game, createQuayFinder({ getTile: wtGet, harbors: HARBORS, guard: memGuard }), wtGet);
+  if (game.mh && game.quayFinder?.sample) game.mh.setSampleDepth(tileDepthSampler(game.quayFinder.sample, lowWaterAt));   // INLAND HARBOURS
   game.quayEnsure = (lat, lon) => wt.ensureAround(lat, lon, 1700, worldtiles.PRIO.P1, { timeoutMs: 2500 });
 }
 // WORLD TILES §3.6.4: a tile that arrives / changes revision under a ship moves her to open water (≤ 300 m, depth ≥
@@ -134,7 +143,7 @@ function memReport() {
   return { ...memGuard.stats(), heapUsedMB: mb(m.heapUsed), heapTotalMB: mb(m.heapTotal), externalMB: mb(m.external), arrayBuffersMB: mb(m.arrayBuffers), wtMemMB: w.memMB ?? 0, wtMemBudgetMB: w.memBudgetMB ?? 0, wtTiles: w.memTiles ?? 0, wtQueue: w.queue ?? 0, bathyMB: w.bathyMB ?? 0, patchesMB: g.memMB, patches: g.built, patchBudgetMB: g.budgetMB, converter: w.converter || null };
 }
 const MEMLOG_MS = Number(process.env.SALTLINE_MEMLOG_MS) || 10 * 60e3;
-setInterval(() => { try { const r = memReport(); log(`[mem] ${r.level} rss ${r.rssMB}/${r.limitMB} MB · heap ${r.heapUsedMB} MB · ext ${r.externalMB} MB · tiles ${r.wtTiles} (${r.wtMemMB} MB) · patches ${r.patches} (${r.patchesMB} MB) · queue ${r.wtQueue}`); } catch { /* never */ } }, MEMLOG_MS).unref?.();
+setInterval(() => { try { const r = memReport(); log(`[mem] ${r.level} rss ${r.rssMB}/${r.limitMB} MB · heap ${r.heapUsedMB} MB · ext ${r.externalMB} MB · tiles ${r.wtTiles} (${r.wtMemMB} MB) · patches ${r.patches} (${r.patchesMB} MB) · queue ${r.wtQueue}${game.ww ? ` · ww ${game.ww.objs.size} obj, shelter ${game.shelter?.stats().size ?? 0}` : ''}${game.mh ? ` · mh ${game.mh.stats().harbours} (${game.mh.stats().approxKB} KB)` : ''}`); } catch { /* never */ } }, MEMLOG_MS).unref?.();
 const AIS_NEAR_M = 40000, AIS_NEAR_LIMIT = 200, AIS_PUSH_MS = 2000;
 if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 1500 }).catch((e) => log('[geom] prefetch failed', e.message));
 
@@ -146,8 +155,11 @@ app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
-app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), quays: game.quayFinder ? game.quayFinder.stats() : null, wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576), mem: memReport() }); });
+app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), quays: game.quayFinder ? game.quayFinder.stats() : null, wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576), mem: memReport(), ...(game.mh ? { mh: game.mh.stats() } : {}) }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
+// BRIDGES & LOCKS (docs/WATERWAYS-LANE1-PHASE2.md §4): registry objects near a point, one object with its live state
+app.get('/api/ww', (req, res) => { const lat = +req.query.lat, lon = +req.query.lon, r = Math.min(15000, +req.query.r || 8000); if (!game.ww || !Number.isFinite(lat) || !Number.isFinite(lon)) return res.json({ objects: [] }); res.json({ objects: game.ww.statics(lat, lon, r), attribution: game.ww.attribution }); });
+app.get('/api/ww/:id', (req, res) => { const o = game.ww?.get(req.params.id); if (!o) return res.status(404).end(); res.json({ object: game.ww.statics(...(o.p || [0, 0]), 1).find((x) => x.id === o.id) || o, state: game.ww.state(o.id) }); });
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
 const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
@@ -243,6 +255,14 @@ app.get('/api/yard/quote', (req, res) => {   // SHIPYARD §4.7: [{ yardId, name,
 // out of / into built harbour patches along the fairway, the Dover TSS lanes the right way, round the given storm discs.
 // /api/route?from=lat,lon&to=lat,lon[&harbor=id][&cls=class][&wp=lat,lon;…][&avoid=lat,lon,radiusKm[,name];…]
 const routeHits = new Map();
+// BRIDGES & LOCKS (§5): a route starting or ending on inland water (river / lock / dock cell, or a canal pound) is planned
+// through the inland graph joined to the sea route at the sea gates.
+const inlandEnds = (from, to, C, cls) => {
+  const inl = (pt) => { const m = WT_ON ? wt.maskAt(pt.lat, pt.lon) : null; return m === WT.MASK.RIVER || m === WT.MASK.LOCK || m === WT.MASK.DOCK || waterLevelAt(pt.lat, pt.lon, 0, { levels: game.levels }).ref === 'canal'; };
+  const f = inl(from), t = inl(to); if (!f && !t) return null;
+  const prof = cls ? profileOf(cls) : null;
+  return { from: f, to: t, ship: { L: C?.length || 0, B: C?.beam || 0, T: C?.draft || 0, need: (prof ? prof.kTop - prof.tDesign : 0) + 0.3, sail: !!C?.sail, kn: C?.maxKn ? 0.8 * C.maxKn : 8 } };
+};
 setInterval(() => routeHits.clear(), 60000).unref?.();
 app.get('/api/route', async (req, res) => {
   const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '?';
@@ -256,13 +276,24 @@ app.get('/api/route', async (req, res) => {
   if (WT_ON) { try { await withTimeout(Promise.all([wt.ensureAround(q.from.lat, q.from.lon, 4000, worldtiles.PRIO.P0, { timeoutMs: 3000 }), wt.ensureAround(q.to.lat, q.to.lon, 4000, worldtiles.PRIO.P0, { timeoutMs: 3000 })]), 3000); } catch { /* plan on the raster */ } }   // WORLD TILES §3.6.2
   let r = null;
   try {
-    r = await routePlanner.plan(q.from, q.to, { toHarbor: q.toHarbor, draft: C ? C.draft : 0, beam: C ? C.beam : 0, length: C ? C.length : 0, wp: q.wp, avoid: q.avoid, simTime: Date.now() / 1000 }, { priority: 'high' });
+    r = await routePlanner.plan(q.from, q.to, { toHarbor: q.toHarbor, draft: C ? C.draft : 0, beam: C ? C.beam : 0, length: C ? C.length : 0, wp: q.wp, avoid: q.avoid, simTime: Date.now() / 1000, ...(game.ww && !(q.wp && q.wp.length) ? { inland: inlandEnds(q.from, q.to, C, q.cls) } : {}) }, { priority: 'high' });
   } catch (e) { log('[route] failed', e.message); }
   if (!r) return res.status(routePlanner.full() ? 503 : 404).json({ error: routePlanner.full() ? 'route planner busy' : 'no sea route found' });
   res.json(r);
 });
 // World market (docs/V6-QUICK-CONTRACTS.md §3.4): every harbour's prices, the hourly price history, the trade finder.
 app.get('/api/market', (req, res) => res.json(cachedSnapshot(game)));
+// INLAND HARBOURS (§7.5): chart rows in a bbox (zoom ≥ 11) and the card on demand (fit / fee / reach for ?player=)
+app.get('/api/mh', (req, res) => {
+  const b = String(req.query.bbox || '').split(',').map(Number);
+  if (!game.mh || b.length !== 4 || !b.every(Number.isFinite)) return res.json({ harbours: [] });
+  res.json({ harbours: game.mh.inBbox(b, Number(req.query.z) || 11) });
+});
+app.get('/api/mh/:id', (req, res) => {
+  const p = req.query.player ? game.byId.get(String(req.query.player)) : null;
+  let card = null; try { card = game.mh?.sheet(String(req.params.id), p?.ship ? { cls: p.ship.cls, lat: p.ship.lat, lon: p.ship.lon, cargo: p.cargo } : null); } catch (e) { log('[mh] card failed', e.message); }
+  return card ? res.json(card) : res.status(404).json({ error: 'unknown harbour' });
+});
 app.get('/api/market/history', (req, res) => { const a = historyAnswer(priceHistory, req.query); res.status(a.status).json(a.body); });
 app.get('/api/market/routes', routesHandler({ game, routeTable }));
 app.get('/api/players', (req, res) => res.json([...game.byId.values()].filter((p) => p.online).map((p) => game.publicState(p))));

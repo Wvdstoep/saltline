@@ -211,6 +211,8 @@ export class WorldTileSet {
     this.updateShore(true);
   }
   /** Harbour patch footprints (lat/lon boxes): D14 detail is hidden inside them (patches keep precedence). */
+  /** Bridge ids drawn by wwmesh (registry): their D14 slabs are skipped on the next (re)build of a tile. */
+  setSkipIds(ids) { const k = [...ids].sort().join('|'); if (k === this.skipKey) return; this.skipKey = k; this.skipIds = new Set(ids); }
   setPatchBoxes(boxes) { this.patchBoxes = (boxes || []).filter(Boolean); this.updateClips(); this.shoreDirty = true; }
   /** The server's `wt` push ({t:'wt', k:'14/x/y', rev}): refetch that tile (keeps the old mesh until the new one). */
   onPush(m) {
@@ -443,6 +445,7 @@ export class WorldTileSet {
   buildOpts(e) {
     const far = e.want === 'far';
     const o = { lod: e.lod, structures: e.z === WT.Z_DETAIL, maxBuildings: this.B.buildings, maxVerts: this.B.structVerts, minBuildingH: far ? 6 : 0 };
+    if (this.skipIds?.size) o.skipIds = [...this.skipIds];              // registry bridges (wwmesh) — structured-clone friendly
     // coarse heights over the tile for the morph (what the coarse world shows there now)
     const n = COARSE_N, h = new Float32Array((n + 1) * (n + 1));
     for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {

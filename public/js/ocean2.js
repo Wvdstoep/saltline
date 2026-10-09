@@ -435,6 +435,12 @@ void main() {
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
+const CUT_GLSL = /* glsl */`uniform int uCutN; uniform vec4 uCutA[8]; uniform vec4 uCutB[8];
+float cutSide(vec2 a, vec2 b, vec2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
+bool inCut(vec2 p) { for (int i = 0; i < 8; i++) { if (i >= uCutN) break; vec2 a = uCutA[i].xy, b = uCutA[i].zw, c = uCutB[i].xy, d = uCutB[i].zw;
+  float s0 = cutSide(a, b, p), s1 = cutSide(b, c, p), s2 = cutSide(c, d, p), s3 = cutSide(d, a, p);
+  if ((s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)) return true; } return false; }
+`;
 
 // foam accumulation pass (full-screen triangle into a world-anchored toroidal render target)
 const FOAM_VERT = /* glsl */`varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
@@ -674,7 +680,10 @@ export class Ocean {
       uFoamTex: { value: noShoreTexture() }, uFoamOff: { value: new THREE.Vector2() }, uFoamShift: { value: new THREE.Vector2() }, uFoamW: { value: FOAM_W }, uFoamOn: { value: 0 },
       uPatOff: { value: new THREE.Vector2() },
     };
-    this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, fog: true });
+    this.uniforms.uCutN = { value: 0 };                                   // lock chambers (wwmesh.cutouts): up to 8 quads, world xz
+    this.uniforms.uCutA = { value: Array.from({ length: 8 }, () => new THREE.Vector4()) };   // p0.xz, p1.xz
+    this.uniforms.uCutB = { value: Array.from({ length: 8 }, () => new THREE.Vector4()) };   // p2.xz, p3.xz
+    this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG.replace('void main() {', CUT_GLSL + 'void main() {\n  if (inCut(vWorld.xz)) discard;'), fog: true });
     const prep = (renderer, scene2, camera) => this.prepare(renderer, camera);
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
     this.mesh.frustumCulled = false; this.mesh.renderOrder = 1; this.mesh.onBeforeRender = prep;
@@ -839,6 +848,12 @@ export class Ocean {
     for (let i = 0; i < NW; i++) this.tAng[i] = this.ang[i] + (((this.tAng[i] - this.ang[i]) % 360) + 540) % 360 - 180;
   }
   /** Tide: vertical offset of the whole surface (both meshes, heightAt, wakes). */
+  /** Lock chamber footprints in world xz (4 points each): the ocean is not drawn there (the chamber water mesh is). */
+  setCutouts(quads = []) {
+    const u = this.uniforms; if (!u.uCutN) return;
+    const q8 = quads.filter((q) => q && q.length >= 4).slice(0, 8); u.uCutN.value = q8.length;
+    q8.forEach((q, i) => { u.uCutA.value[i].set(q[0][0], q[0][1], q[1][0], q[1][1]); u.uCutB.value[i].set(q[2][0], q[2][1], q[3][0], q[3][1]); });
+  }
   setLevel(y) { this.level = Number.isFinite(y) ? y : 0; oceanState.level = this.level; }
   setRain(r) { this.rain = THREE.MathUtils.clamp(Number.isFinite(r) ? r : 0, 0, 1); }
   setStorm(s) { this.storm = THREE.MathUtils.clamp(Number.isFinite(s) ? s : 0, 0, 1); }

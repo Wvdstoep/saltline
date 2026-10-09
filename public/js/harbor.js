@@ -562,7 +562,7 @@ function addRibbon(fb, pts, hw, lift, hex, ground, bridge, step = 20) {
   }
 }
 /** far-LOD street layer: { group, areas, roads } or null when the geometry has no street data */
-function buildStreetsLod(S, ground) {
+function buildStreetsLod(S, ground, opts = {}) {
   if (!S.roads.length && !S.areas.length && !S.rails.length) return null;
   const mats = lodMaterials();
   const group = new THREE.Group(); group.name = 'streets-lod';
@@ -573,7 +573,10 @@ function buildStreetsLod(S, ground) {
   const fr = new FlatBuilder();
   // wide classes first so junctions of narrow roads draw on top of the main road
   const roads = [...S.roads].sort((a, b) => (ROAD_LOD[a.kind].y - ROAD_LOD[b.kind].y));
-  for (const r of roads) { const st = ROAD_LOD[r.kind]; addRibbon(fr, r.pts, (r.width || st.w) / 2, st.y, st.c, ground, r.bridge); }
+  for (const r of roads) {
+    if (r.bridge && opts.skipNear && opts.origin && r.pts.some((p) => { const ll = fromLocal(p.x, p.z, opts.origin); return opts.skipNear(ll.lat, ll.lon); })) continue;   // drawn by wwmesh (registry bridge)
+    const st = ROAD_LOD[r.kind]; addRibbon(fr, r.pts, (r.width || st.w) / 2, st.y, st.c, ground, r.bridge);
+  }
   for (const r of S.rails) { addRibbon(fr, r.pts, RAIL_LOD.w / 2, RAIL_LOD.y, RAIL_LOD.c, ground, false); for (const off of [-0.72, 0.72]) addRibbon(fr, offsetLine(r.pts, off), 0.09, RAIL_LOD.y + 0.12, RAIL_LOD.steel, ground, false); }
   const roadMesh = fr.build(mats.roads);
   if (roadMesh) { roadMesh.renderOrder = 0; group.add(roadMesh); }
@@ -591,7 +594,7 @@ function offsetLine(pts, d) {
 
 // ----------------------------------------------------------------------------------------------- buildHarbor
 /** @param harbor {id,name,country,size,lat,lon} @param geom geometry JSON (§1) or null / legacy OSM array → compact fallback */
-export function buildHarbor(harbor, geom) {
+export function buildHarbor(harbor, geom, opts = {}) {
   const g = new THREE.Group();
   const r = rng(hashStr(String(harbor?.id || harbor?.name || 'harbour')));
   const valid = geom && !Array.isArray(geom) && geom.origin && Number.isFinite(geom.origin.lat) && (geom.features || geom.berths);
@@ -628,7 +631,7 @@ export function buildHarbor(harbor, geom) {
   for (const b of S.berths.slice(0, 40)) { try { addBerthBoard(g, b, hardRings); } catch (e) { console.warn('[harbor] berth board skipped', e); } }
   // street layer as a far LOD (hidden while ashore; the land-use flats step aside once the map drape shows)
   let streets = null;
-  try { streets = buildStreetsLod(S, ground); } catch (e) { console.warn('[harbor] street layer skipped', e); streets = null; }
+  try { streets = buildStreetsLod(S, ground, valid ? { skipNear: opts.skipNear || null, origin: geom.origin } : {}); } catch (e) { console.warn('[harbor] street layer skipped', e); streets = null; }
   if (streets) g.add(streets.group);
   // harbour name: the FIRST sprite child (main.js toggles it by camera distance). A real sign is ~6 m tall; far away the
   // board keeps 30–44 px so it stays readable without towering over the port.

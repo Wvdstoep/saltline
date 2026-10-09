@@ -12,6 +12,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { DATA_DIR } from './paths.js';
 import { tileFToLatLon } from '../shared/wtformat.js';
+import { WW_KEEP_TAGS } from '../shared/waterworks.js';   // BRIDGES & LOCKS: overlay v2 keeps the bridge / harbour tags
+const WW_OFF = process.env.SALTLINE_WW_OFF === '1';
 
 export const UA = 'Saltline/0.8 (+https://saltline.mavicpro-fan.my-app.engineer; world tiles)';
 export const OFM_TILEJSON = 'https://tiles.openfreemap.org/planet';
@@ -79,9 +81,13 @@ export function overlayQuery(x, y) {
     `way["waterway"="lock"](${b});way["lock"="yes"]["waterway"](${b});node["waterway"="lock_gate"](${b});way["waterway"="lock_gate"](${b});` +
     `node["man_made"~"^(crane|lighthouse|storage_tank|silo)$"](${b});way["man_made"~"^(crane|storage_tank|silo)$"](${b});` +
     `nwr["seamark:type"~"^(${SEAMARK_TYPES})$"](${b});` +
+    (WW_OFF ? '' : `way["bridge:movable"](${b});way["man_made"="bridge"](${b});way["waterway"~"^(river|canal)$"]["CEMT"](${b});` +
+      `nwr["leisure"="marina"](${b});nwr["mooring"](${b});nwr["seamark:type"="small_craft_facility"](${b});nwr["harbour"="yes"](${b});nwr["waterway"="fuel"](${b});`) +
     `);out tags geom qt;`;
 }
-const KEEP_TAGS = /^(man_made|floating|waterway|lock|name|height|width|diameter|crane:type|seamark:type|seamark:.*(colour|character|period|category|minimum_depth|clearance_height|height|range)|depth|maxdraught|maxheight|bridge:movable|ele)$/;
+const KEEP_TAGS = WW_OFF
+  ? /^(man_made|floating|waterway|lock|name|height|width|diameter|crane:type|seamark:type|seamark:.*(colour|character|period|category|minimum_depth|clearance_height|height|range)|depth|maxdraught|maxheight|bridge:movable|ele)$/
+  : WW_KEEP_TAGS;
 function keepTags(t) { const o = {}; for (const [k, v] of Object.entries(t || {})) if (KEEP_TAGS.test(k)) o[k] = String(v).slice(0, 60); return o; }
 function overlayKind(t) {
   const mm = t.man_made, st = t['seamark:type'] || '';
@@ -100,12 +106,17 @@ function overlayKind(t) {
   if (st.startsWith('light')) return 'light';
   if (st.startsWith('beacon')) return 'beacon';
   if (st.startsWith('buoy')) return 'buoy';
+  if (!WW_OFF) {
+    if (t['bridge:movable'] || mm === 'bridge') return 'bridge';
+    if (t.CEMT && (t.waterway === 'river' || t.waterway === 'canal')) return 'fairway_cemt';
+    if (t.leisure === 'marina' || t.mooring || st === 'small_craft_facility' || t.harbour === 'yes' || t.waterway === 'fuel') return 'harbour_osm';   // lane D reads these
+  }
   if (st === 'bridge') return 'bridge';
   return null;
 }
 const r6 = (v) => Math.round(v * 1e6) / 1e6;
 /**
- * Overpass JSON → compact overlay `{ v: 1, date, x, y, f: [{ k, t, g: [lat, lon, …], c: 0|1 }] }` (c = closed ring;
+ * Overpass JSON → compact overlay `{ v: 2, date, x, y, f: [{ k, t, g: [lat, lon, …], c: 0|1 }] }` (c = closed ring;
  * multipolygon relations contribute one entry per outer ring). Deterministic order (by kind, then OSM id).
  */
 export function compactOverlay(json, x, y, date) {
@@ -130,7 +141,7 @@ export function compactOverlay(json, x, y, date) {
     }
   }
   f.sort((a, b) => (a.k < b.k ? -1 : a.k > b.k ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { v: 1, date, x, y, f };
+  return { v: WW_OFF ? 1 : 2, date, x, y, f };
 }
 
 // ------------------------------------------------------------------------------------------------ service

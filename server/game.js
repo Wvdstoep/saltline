@@ -44,6 +44,20 @@ import { ensureRig, anyHoisted, applyRigCommand, settleRig, packRigView, unpackR
 import { maxSpeedKn } from '../shared/sail/polar.js';
 import { sailHelm, crossTrackM, harbourRigCmd, departurePlan, HARBOUR_FURL_M } from '../shared/sail/tactics.js';
 import { crashJibeDamage, windOverWater } from '../shared/sail/sailphys.js';
+import { loadFis } from './fis.js';                                         // BRIDGES & LOCKS (docs/BRIDGES-LOCKS-VHF-CONTRACT.md)
+import { createWaterworks } from './waterworks.js';
+import { createShelter } from './shelter.js';
+import { airPublic, airDraftNow, ballastStep, canFold, profileOf, FOLD_TIME, registerProfiles } from '../shared/airdraft.js';
+import { waterLevelAt } from '../shared/waterlevel.js';
+import { WT, WT_NAVIGABLE } from '../shared/wtformat.js';
+import LEVELS_NL from './waterworks/levels-nl.json' with { type: 'json' };
+import { createRadio } from './vhf.js';                                                   // VHF radio (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6)
+import { createMinorHarbours, diskOverlayReader, tileDepthSampler, squaresUnder } from './minorharbours.js';   // inland harbours (§7)
+import { boardFor as mhBoardFor, INLAND_TERMINALS } from './inlandjobs.js';
+import { loadLaneA, stubLaneA } from './inlandlink.js';
+import { buildGraph as buildInlandGraph } from './inland.js';
+import { marketSnapshot } from './market.js';
+import { BARGE_AD } from '../shared/ships/barges.js';
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
 const START_HARBOR = 'rotterdam';
@@ -92,6 +106,37 @@ export class Game {
     this.lastYou = 0;
     this.eventSeq = 1;
     this.routePlanner = opts.routePlanner || null;   // v6 fleet: captains plan their passages with the shared planner
+    // BRIDGES & LOCKS (docs/WATERWAYS-LANE1-PHASE2.md §3b): registry, sheltered sea state. SALTLINE_WW_OFF=1 → none of it.
+    this.wwOn = process.env.SALTLINE_WW_OFF !== '1';
+    if (this.wwOn) registerProfiles(BARGE_AD);                                   // barge air-draught rows (§7.6)
+    this.levels = this.wwOn ? LEVELS_NL : null;
+    this.fis = this.wwOn ? (opts.fis !== undefined ? opts.fis : loadFis()) : null;   // one copy for ww + harbours (≈ 10 MB heap)
+    this.ww = this.wwOn ? createWaterworks(this, this.fis, { now: () => this.simTime, levels: this.levels, aisIn: opts.aisIn || null }) : null;
+    this.shelter = this.wwOn && opts.maskAt ? createShelter({
+      navigable: (la, lo) => { const m = opts.maskAt(la, lo); return m == null ? this.world.isWater(la, lo) : WT_NAVIGABLE[m] === 1; },
+      cellKind: (la, lo) => { const m = opts.maskAt(la, lo); return m === WT.MASK.LOCK ? 'lock' : m === WT.MASK.DOCK ? 'dock' : 'water'; },
+      now: () => this.simTime, maxEntries: 2000 }) : null;
+    if (this.ww) this.ww.onEvent((e) => this.onWaterworksEvent?.(e));   // lane B's radio subscribes through ww.onEvent itself
+    this.wwRev = new WeakMap();                      // player → Map(object id → rev) of the `ww` deltas sent (never saved)
+    // VHF radio (§6): stations from ww + VTS sectors + coast guard; AI and fleet ships answer, AIS ships never speak.
+    this.radio = !this.wwOn ? null : createRadio(this, this.ww || null, {
+      vts: opts.vts || null, harbors: HARBORS,
+      aisNear: (lat, lon, r) => { try { return this.liveAis?.near(lat, lon, r) || []; } catch { return []; } },
+      shipsNear: (lat, lon, r) => {
+        const ai = (this.traffic?.near?.(lat, lon, r) || []).filter((a) => !this.aiFilter || this.aiFilter(a));
+        const fleet = [...(this.fleet?.actors?.values?.() || [])].filter((a) => a.ship && haversine(lat, lon, a.ship.lat, a.ship.lon) <= r)
+          .map((a) => ({ id: a.id, name: a.vesselName || a.name, lat: a.ship.lat, lon: a.ship.lon, hdg: a.ship.hdg }));
+        return [...ai, ...fleet];
+      },
+      airOf: (p) => {
+        const c = SHIP_CLASSES[p.ship.cls] || {};
+        const a = this.airDraftNow(p);
+        return { ad: a?.ad ?? null, T: a?.T ?? c.draft, need: a?.need ?? null, L: c.length, B: c.beam };
+      },
+      isInland: (lat, lon) => { try { return this.waterAt(lat, lon)?.ref === 'canal'; } catch { return false; } },
+      harboursOn: (ch, lat, lon) => this.mh?.harboursOn(ch, lat, lon) || [],    // harbour masters (§6.3), ch 31 simulated in NL
+    });
+    this.radio?.on('sar_alert', (a) => this.log(`[sar] ${a.name} ${a.nature} at ${a.lat.toFixed(3)}, ${a.lon.toFixed(3)} (${a.cg})`));   // hook for search and rescue
     this.rigLimits = new WeakMap();                  // sailing: per-person rig command rate limit + rig_event times (never saved)
     this.rigViews = new WeakMap();                   // sailing: the rv each online skipper last sent (never saved)
     this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
@@ -110,6 +155,19 @@ export class Game {
     setGen8(jobtimeHooks(() => ({ harborById, simTime: this.simTime })));
     this.yard = new Yard(this);                     // SHIPYARD: orders, stock, second-hand market (before loadState)
     this.loadState();
+    // INLAND HARBOURS (docs/WATERWAYS-HARBOURS-PHASE2.md §2.2): generated per z12 square from the overlay as ships sail; ≤ 3,000 in memory
+    this.inlandGraph = this.fis ? buildInlandGraph(this.fis, { levels: this.levels }) : null;   // the harbour card's reach (≈ 3 MB)
+    this.mhBoards = new Map();                                                    // minor harbour id → board (regenerated every 24 h)
+    this.mh = !this.wwOn ? null : createMinorHarbours({
+      named: HARBORS, fis: this.fis, graph: this.inlandGraph, guard: opts.memGuard || null, lane: stubLaneA(),
+      readOverlay: opts.readOverlay || diskOverlayReader(DATA_DIR),
+      keepSquares: () => squaresUnder([...this.byId.values()].filter((p) => p.online && p.ship).map((p) => p.ship), 25),
+      sampleDepth: opts.quaySample ? tileDepthSampler(opts.quaySample, lowWaterAt) : null,
+      market: (id) => { try { return marketSnapshot(this).harbors.find((h) => h.id === id) || null; } catch { return null; } },
+      jobs: (h) => { try { return this.mhBoard(h); } catch { return null; } },
+      log: (...a) => this.log(...a),
+    });
+    if (this.mh) loadLaneA().then((l) => this.mh?.setLane(l)).catch(() => {});
     this.initHarbors();
     this.initCutters();
   }
@@ -119,6 +177,7 @@ export class Game {
     try {
       if (!fs.existsSync(this.stateFile)) return;
       const s = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'));
+      if (this.ww && s.ww) { try { this.ww.load(s.ww); } catch (e) { this.log(`[ww] load failed: ${e.message}`); } }
       this.simTime = Date.now() / 1000;
       this.wrecks = s.wrecks || [];
       this.storms = s.storms || [];
@@ -156,6 +215,13 @@ export class Game {
     // Never resume warped (docs/V4-CONTRACTS.md §1): every load starts the ship back in real time.
     p.warp = 1; p.warpRouted = false; p.warpGraceUntil = 0; p.warpGraceFactor = 1;
     if (p.berth === undefined) p.berth = null;
+    if (this.wwOn && p.ship) {                          // BRIDGES & LOCKS / VHF fields (never resumed inside a lock: the chamber restarts idle, §8.3)
+      if (!Number.isFinite(p.ship.ballastT)) p.ship.ballastT = 0;
+      if (!p.ship.fold || typeof p.ship.fold !== 'object') p.ship.fold = {};
+      p.ship.foldOp = null; p.lockStay = null;
+      if (!p.radio || typeof p.radio !== 'object') p.radio = { on: true, ch: 16, dual: true, power: 'hi', lang: 'auto', vol: 0.8 };
+      p.radio.open = false; p.radioLastTx = 0; p.radioLastDsc = 0; p.radioMiss = null;
+    }
     if (!(p.serviceDue > 0)) p.serviceDue = this.simTime + SERVICE_INTERVAL_S;
     if (!p.stats) p.stats = {};
     for (const k of ['delivered', 'earned', 'sunk', 'inspected', 'fined', 'caught', 'boarded', 'pirated', 'distanceKm', 'collisions']) if (!Number.isFinite(p.stats[k])) p.stats[k] = 0;
@@ -180,8 +246,8 @@ export class Game {
     try {
       fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
       const s = {
-        savedAt: new Date().toISOString(), fleetSchema: 1, simTime: this.simTime, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
-        players: [...this.players.values()].map((p) => ({ ...p, hail: null, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1 })),
+        savedAt: new Date().toISOString(), fleetSchema: 1, simTime: this.simTime, ww: this.ww ? this.ww.toSave() : undefined, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
+        players: [...this.players.values()].map((p) => ({ ...p, hail: null, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1, ...(this.wwOn ? { radio: p.radio ? { ...p.radio, open: false } : undefined, radioLastTx: 0, radioLastDsc: 0, radioMiss: null, lockStay: null } : {}) })),
       };
       const tmp = this.stateFile + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(s));
@@ -390,6 +456,7 @@ export class Game {
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
       weather: this.weatherFor(p), tide: this.tideFor(p.ship.lat, p.ship.lon),
+      ...(this.ww ? this.wwYou(p) : {}),             // BRIDGES & LOCKS: air, water, lockStay, nextObjects
       berth: p.berth || null, assist: p.assist ? { harbor: p.assist.harbor, berthId: p.assist.berthId, berthName: p.assist.berthName, until: p.assist.until, from: p.assist.from, to: p.assist.to, ...assistExtra(this, p) } : null,
       nearBerth: this.nearBerthFor(p), serviceDue: p.serviceDue, serviceMul: round2(serviceWearMul(p.serviceDue, this.simTime)),
       stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
@@ -397,15 +464,34 @@ export class Game {
       shipTime: round1(p.shipTime), shipRate: this.shipRate(p), // V6 item 5: the ship's clock (s) and how fast it runs now
       warpRun: p.warpRun ? { shipStart: round1(p.warpRun.shipStart), worldStart: round1(p.warpRun.worldStart) } : null,
       ...this.fleet.youFields(p),                     // v6: aboard, vesselName, home, homeName, fleet {n, atSea, laidUp, owed, unread}
+      ...(this.radio ? { radio: this.radio.youFields(p) } : {}),   // VHF {on, ch, dual, power, powerEff, inland, lang, vol, dmg}
+      ...(this.mh && p.ship ? { mhNear: this.mh.near(p.ship.lat, p.ship.lon, 3).slice(0, 3).map((h) => ({ id: h.id, name: h.name, tier: h.tier, vhf: h.vhf })) } : {}),
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
+    };
+  }
+  wwYou(p) {
+    const Hs = this.weatherFor(p).waveH || 0, wl = waterLevelAt(p.ship.lat, p.ship.lon, this.simTime, { levels: this.levels });
+    return {
+      air: airPublic(p.ship.cls, { cargo: p.cargo, fuelT: p.fuel, ballastT: p.ship.ballastT || 0, ballastTarget: p.ship.ballastTarget ?? null, fold: p.ship.fold || {} }, Hs),
+      water: { h: Math.round(wl.h * 100) / 100, ref: wl.ref },
+      lockStay: p.lockStay || null,
+      nextObjects: this.ww.verdicts(p, p.ship.lat, p.ship.lon, 3000).filter((v) => {   // ahead (±90° of the heading) or right here
+        const o = this.ww.get(v.id), q = o && (o.p || o.line?.[0]); if (!q || v.distM < 150) return true;
+        return Math.abs(angleDiff(p.ship.hdg || 0, bearing(p.ship.lat, p.ship.lon, q[0], q[1]))) <= 90;
+      }).slice(0, 3),
     };
   }
   // The weather a skipper is told about: the real thing, or (SALTLINE_DEBUG=1 'debug_sea') a forced Beaufort sea.
   weatherFor(p) {
     const w = this.weatherPublic(p.ship.lat, p.ship.lon);
-    if (p.debugBft == null || process.env.SALTLINE_DEBUG !== '1') return w;
+    if (p.debugBft == null || process.env.SALTLINE_DEBUG !== '1') return this.sheltered(w, p);
     const f = seaForBeaufort(p.debugBft), d = douglas(f.waveH);
-    return { ...w, ...f, waveDir: w.windDir, swellDir: (w.windDir + 340) % 360, seaState: d.code, seaWord: d.word, forced: true };
+    return this.sheltered({ ...w, ...f, waveDir: w.windDir, swellDir: (w.windDir + 340) % 360, seaState: d.code, seaWord: d.word, forced: true }, p);
+  }
+  /** §4.11 (BRIDGES & LOCKS): fetch-limited sea state in sheltered water (canals, docks, locks); the open sea is unchanged. */
+  sheltered(w, p) {
+    if (!this.shelter) return w;
+    try { return this.shelter.apply(w, p.ship.lat, p.ship.lon) || w; } catch { return w; }
   }
   // Flat, rounded weather for the wire (ocean.setSea / weatherFx.set read these names directly).
   weatherPublic(lat, lon) {
@@ -426,6 +512,7 @@ export class Game {
       patches: allSubPatches(HARBORS),   // V7 big ports: extra harbour patches over the port areas (server/bigports.js)
       fishing: FISHING_GROUNDS, platforms: PLATFORMS, classes: SHIP_CLASSES, goods: GOODS, layers: LAYERS, interact: INTERACT, law: LAW, fees: FEES, warp: WARP,
       scale: GEO.SCALE, motionScale: SIM.MOTION_SCALE, clockScale: SIM.CLOCK_SCALE,
+      ...(this.ww ? { ww: true, radio: !!this.radio, wwAttribution: 'Bridges, locks & harbours NL: © Rijkswaterstaat / Vaarweginformatie.nl (CC0)' } : {}),   // BRIDGES & LOCKS / VHF
     };
   }
 
@@ -581,12 +668,18 @@ export class Game {
     try {
       switch (a) {
         case 'quay_query': return quayQuery(this, p);
-        case 'quay_dock': return quayDock(this, p, m);
+        case 'quay_dock': if (this.ww && p.lockStay && this.ww.makeFast(p.lockStay.lockId, p.id)) { this.event(p, 'info', 'Made fast in the lock chamber.'); return this.sendYou(p); } return quayDock(this, p, m);   // in a lock: Moor = make fast
         case 'quay_tugs': return quayTugs(this, p, m);
         case 'dock': return this.dock(p);
         case 'undock': return this.undock(p);
         case 'tug_assist': return this.tugAssist(p);
         case 'set_warp': return this.setWarp(p, m);
+        case 'ballast': return this.ww ? this.ballastCmd(p, m) : this.event(p, 'warn', `Unknown action ${a}`);   // BRIDGES & LOCKS
+        case 'fold': return this.ww ? this.foldCmd(p, m) : this.event(p, 'warn', `Unknown action ${a}`);
+        case 'ww_query': return this.ww ? this.send(p, { t: 'ww_static', objects: this.ww.statics(+m.lat, +m.lon, Math.min(15000, (+m.r || 8) * (+m.r > 100 ? 1 : 1000))) }) : this.event(p, 'warn', `Unknown action ${a}`);
+        case 'ww_button': return this.ww ? this.wwButton(p, m) : this.event(p, 'warn', `Unknown action ${a}`);
+        case 'lock_register': return this.ww ? this.lockRegister(p, m) : this.event(p, 'warn', `Unknown action ${a}`);
+        case 'mh_query': { if (!this.mh) return this.event(p, 'warn', `Unknown action ${a}`); const b = String(m.bbox || '').split(',').map(Number); if (this.mh && b.length === 4 && b.every(Number.isFinite)) this.send(p, { t: 'mh_list', harbours: this.mh.inBbox(b, Number(m.z) || 11) }); return; }
         case 'collision': return this.collision(p, m);
         case 'sell_ship': return this.sellShip(p);
         case 'service': return this.service(p);
@@ -625,6 +718,7 @@ export class Game {
         case 'convoy_invite': return this.convoyInvite(p, m.targetId);
         case 'convoy_accept': return this.convoyAccept(p, m.convoyId);
         case 'convoy_leave': return this.convoyLeave(p);
+        case 'vhf_set': case 'vhf_tx': case 'dsc': return this.radio ? this.radio.onAction(p, m) : this.event(p, 'warn', `Unknown action ${a}`);   // VHF (§8.2)
         case 'rename': p.name = cleanName(m.name) || p.name; this.sendYou(p); this.broadcast({ t: 'rename', id: p.id, name: p.name }); return;
         case 'debug_sea': {   // SALTLINE_DEBUG=1 only: force this skipper's reported sea state to Beaufort 0..12 (null = real weather)
           if (process.env.SALTLINE_DEBUG !== '1') return this.event(p, 'warn', `Unknown action ${a}`);
@@ -956,6 +1050,7 @@ export class Game {
       p.cond += gain; p.money = 0; p.flooding = 0;
       this.event(p, 'info', `Partial repairs: condition now ${Math.round(p.cond)} %.`);
     } else { p.money -= cost; p.cond = 100; p.flooding = 0; this.event(p, 'info', `Full overhaul for ${fmt(cost)} cr. Condition 100 %.`); }
+    if (p.antennaDmg) { p.antennaDmg = false; p.radioDamage = null; }   // VHF antenna (bridge strike) renewed with the repairs
     this.sendYou(p); this.sendHarbor(p);
   }
   buyKit(p) {
@@ -1390,8 +1485,14 @@ export class Game {
       this.stepAtSea(p, simHours);                  // v6: the at-sea block, shared with the captains (server/captain.js)
       if (p.wanted > 0 && this.simTime - p.wantedAt > LAW.WANTED_DECAY_SIM_HOURS * 3600) { p.wanted--; p.wantedAt = this.simTime; this.event(p, 'law', `Wanted level dropped to ${p.wanted}.`); }
     }
+    if (this.ww) { try { this.tickWaterworks(dt); } catch (e) { this.log(`[ww] tick failed: ${e.stack || e}`); } }   // BRIDGES & LOCKS
     this.fleet.tick(dt);                              // v6: drift booking, owed bills, captains, storage, `fleet` pushes
     this.yard.tick(this.simTime);                     // SHIPYARD: instalments, milestones, delays, delivery (runs once per sim second)
+    this.radio?.tick(dt);                             // VHF: operator replies due, `vhf_st` pushes to open sets
+    if (this.mh && (this._mhAt = (this._mhAt || 0) + dt) >= 10) {              // inland harbours: squares around online ships every 10 s
+      this._mhAt = 0;
+      for (const p of this.byId.values()) if (p.online && p.ship) this.mh.ensureNear(p.ship.lat, p.ship.lon, 25).catch(() => {});
+    }
     this.updateCutters(dt);
     // Job boards regen lazily on dock; markets drift every minute; wrecks expire.
     if (Date.now() - this.lastEcon > 60000) this.driftMarkets();
@@ -1651,6 +1752,104 @@ export class Game {
   // Movement budget factor: the current level, or the level just dropped from while states sent before the drop arrive.
   warpBudgetFactor(p, now = Date.now()) { return Math.max(this.warpOf(p), p.warpGraceUntil > now && WARP.LEVELS.includes(p.warpGraceFactor) ? p.warpGraceFactor : 1); }
   // `action: set_warp {factor, route}`. 1× is always accepted; higher levels only while every condition holds.
+  // ------------------------------------------------------------------ BRIDGES & LOCKS (docs/WATERWAYS-LANE1-PHASE2.md §3)
+  airDraftNow(p) { try { return p?.ship ? airDraftNow(p.ship.cls, { cargo: p.cargo || [], fuelT: p.fuel, ballastT: p.ship.ballastT || 0, fold: p.ship.fold || {} }) : null; } catch { return null; } }
+  waterAt(lat, lon) { return this.levels ? waterLevelAt(lat, lon, this.simTime, { levels: this.levels }) : null; }
+  ballastCmd(p, m) {
+    const prof = profileOf(p.ship.cls);
+    if (!(prof.ballastMax > 0)) return this.event(p, 'warn', 'This ship has no ballast tanks.');
+    if (m.op === 'stop') p.ship.ballastTarget = p.ship.ballastT || 0;
+    else p.ship.ballastTarget = m.op === 'fill' ? (Number.isFinite(+m.target) && m.target !== null && m.target !== '' ? clamp(+m.target, 0, prof.ballastMax) : prof.ballastMax) : (Number.isFinite(+m.target) && m.target !== null && m.target !== '' ? clamp(+m.target, 0, prof.ballastMax) : 0);
+    this.sendYou(p);
+  }
+  foldCmd(p, m) {
+    const part = String(m.part || '');
+    if (!FOLD_TIME[part]) return this.event(p, 'warn', 'Nothing to fold there.');
+    const r = canFold(p.ship.cls, part, !!m.down, { cargo: p.cargo, sogKn: Math.abs(p.ship.spd || 0) });
+    if (!r.ok) return this.event(p, 'warn', r.why);
+    p.ship.foldOp = { part, down: !!m.down, until: this.simTime + (FOLD_TIME[part] || 60) };
+    this.event(p, 'info', `${part[0].toUpperCase()}${part.slice(1)} ${m.down ? 'lowering' : 'raising'} — ${Math.round(FOLD_TIME[part] / 60)} min.`);
+    this.sendYou(p);
+  }
+  wwButton(p, m) {
+    const r = this.ww?.request(String(m.id || ''), p, 60, { button: true });
+    if (!r) return;
+    if (!r.ok) return this.event(p, 'warn', r.reason === 'range' ? 'Too far from the push button (300 m).' : r.reason === 'hours' ? `No service until ${r.next}.` : r.reason === 'never' ? 'You will not fit through, even open.' : 'The bridge does not answer.');
+    this.event(p, 'info', r.verdict === 'opening' ? `Opening requested — you are number ${r.n}.` : 'You fit under — no opening needed.');
+  }
+  lockRegister(p, m) {
+    const r = this.ww?.registerLock(String(m.id || ''), p, m.side === 1 ? 1 : 0);
+    if (r && r.ok) this.event(p, 'info', `Registered for chamber ${r.chamber}: number ${r.n}${r.fee ? `, lock fee ${r.fee} credits` : ''}.`);
+    else if (r) this.event(p, 'warn', r.reason === 'fit' ? `Your ship does not fit this lock (${r.why}).` : r.reason === 'hours' ? `The lock is closed until ${r.next}.` : 'The lock does not answer.');
+  }
+  stepBallastFold(p, dt) {
+    const s = p.ship, warp = this.shipRate ? this.shipRate(p) : 1;
+    if (Number.isFinite(s.ballastTarget) && s.ballastTarget !== s.ballastT)
+      s.ballastT = ballastStep(s.cls, s.ballastT || 0, s.ballastTarget, dt * warp, { cargoT: cargoMass(p.cargo), fuelT: p.fuel });
+    if (s.foldOp && this.simTime >= s.foldOp.until) { s.fold = { ...(s.fold || {}), [s.foldOp.part]: s.foldOp.down ? 1 : 0 }; s.foldOp = null; this.sendYou(p); }
+  }
+  onStrike(p, s) {
+    if (s.part === 'pier') return this.collision(p, { kind: 'bridge_pier', id: s.id, speedKn: Math.abs(p.ship.spd || 0) });
+    const d = s.damage || {};
+    if (d.dismast) this.rigEvent?.(p, { kind: 'dismast' });
+    if (d.antennaMul < 1) { p.radioDamage = d.antennaMul; p.antennaDmg = true; }
+    if (d.condLoss) p.cond = Math.max(0, p.cond - 100 * d.condLoss);
+    if (d.teuLost && d.after?.cargo) { p.cargo = d.after.cargo; p.money -= d.pollutionFine || 0; }
+    if (d.stop) { p.ship.spd = 0; p.ship.throttle = 0; }
+    p.money -= s.fee || 0;
+    this.send(p, { t: 'strike', id: s.id, part: s.part, overlap: s.overlap, damage: d, fee: s.fee });
+    this.event(p, 'warn', `Bridge strike (${s.part}, ${Number(s.overlap || 0).toFixed(2)} m): damage bill ${s.fee} credits.`, { lawHook: 'bridge_strike' });
+    this.dropWarp(p, 'Bridge strike.', false);
+    this.sendYou(p);
+  }
+  /** Per tick: lock stays, ballast / fold, strikes (only near a bridge), and every second the `ww` deltas within 15 km. */
+  tickWaterworks(dt) {
+    const pts = []; for (const p of this.byId.values()) if (p.online && p.ship) pts.push([p.ship.lat, p.ship.lon]);
+    this.ww.tick(pts);                                   // only objects near online ships (or with something going on)
+    const push = Date.now() - (this.wwPushAt || 0) >= 1000;
+    if (push) this.wwPushAt = Date.now();
+    for (const p of this.byId.values()) {
+      if (!p.online || !p.ship || p.isActor) continue;
+      if (push) this.pushWw(p);
+      if (p.docked || p.rescue) continue;
+      this.stepBallastFold(p, dt);
+      const stay = this.ww.lockStay(p.id);
+      if (!!stay !== !!p.lockStay) { p.lockStay = stay; this.sendYou(p); } else p.lockStay = stay;
+      if (stay) { p.ship.spd = Math.min(p.ship.spd, 1); continue; }   // held at the slot like docked; y = stay.y on the client
+      if (!this.ww.near(p.ship.lat, p.ship.lon, 600).some((o) => o.type === 'bridge')) continue;
+      const st = this.ww.strikeCheck({ ...p, Hs: this.weatherFor(p).waveH || 0 });
+      if (st) this.onStrike(p, st);
+    }
+  }
+  pushWw(p) {
+    let seen = this.wwRev.get(p); if (!seen) { seen = new Map(); this.wwRev.set(p, seen); }
+    const ids = new Set();
+    for (const o of this.ww.near(p.ship.lat, p.ship.lon, 15000)) {
+      ids.add(o.id);
+      const st = this.ww.state(o.id); if (!st) continue;
+      if (seen.get(o.id) === st.rev) continue;
+      seen.set(o.id, st.rev);
+      if (st.rev > 0 || o.type === 'lock') this.send(p, { t: 'ww', ...st });
+    }
+    for (const id of seen.keys()) if (!ids.has(id)) seen.delete(id);
+  }
+  wwWarpCap(p) {
+    if (!this.ww || p.docked) return null;
+    if (p.lockStay) return { max: 1, reason: 'Inside a lock chamber.' };
+    const near = this.ww.verdicts(p, p.ship.lat, p.ship.lon, 2000);
+    if (near.some((v) => v.verdict === 'opening' || v.verdict === 'tight' || v.verdict === 'never' || v.verdict === 'closed')) return { max: 5, reason: 'Bridge or lock within 2 km — 5× at most.' };
+    return null;
+  }
+  /** Inland harbour board (§2.6): made when its card is first opened, then every 24 h. Shown on the card (accepting needs the jobs engine). */
+  mhBoard(h) {
+    const b = this.mhBoards.get(h.id);
+    if (b && b.at > this.simTime - 86400) return b.jobs;
+    const ports = [...INLAND_TERMINALS, ...this.mh.near(h.lat, h.lon, 400).filter((x) => x.tier !== 'ferry')];
+    const jobs = mhBoardFor(h, { rnd: Math.random, simTime: this.simTime, ports, graph: this.inlandGraph, lane: this.mh.lane() });
+    if (this.mhBoards.size > 200) this.mhBoards.delete(this.mhBoards.keys().next().value);   // small: boards of recently opened cards only
+    this.mhBoards.set(h.id, { at: this.simTime, jobs });
+    return jobs;
+  }
   setWarp(p, m) {
     const f = Number(m && m.factor);
     if (!WARP.LEVELS.includes(f)) return this.event(p, 'warn', `Time warp levels are ${WARP.LEVELS.map((l) => `${l}×`).join(', ')}.`);
@@ -1677,6 +1876,7 @@ export class Game {
     if (why) return why;
     const zone = this.harbourZone(p);
     if (zone && f > WARP.HARBOR_MAX) return `${this.zoneWhere(zone)} — inside harbours time warp is limited to ${WARP.HARBOR_MAX}×.`;
+    { const c = this.wwWarpCap(p); if (c && f > c.max) return c.reason.replace(/^./, (x) => x.toLowerCase()); }   // BRIDGES & LOCKS
     if (f > WARP.MAX_NO_ROUTE && !routed) return `above ${WARP.MAX_NO_ROUTE}× the crew needs a route to follow — plot one on the chart and sail it.`;
     if (f > WARP.LAND_CHECK_ABOVE) {
       const sh = this.shallowAhead(p, this.warpLookahead(p, f));
@@ -1692,6 +1892,7 @@ export class Game {
     if (p.hail) return 'the coast guard is hailing you.';
     if (p.rescue || p.flooding >= 1) return 'you are in the life raft.';
     if (p.docked || p.assist) return null; // moored or under tugs: fuel, flooding, storm and other skippers do not matter
+    if (p.lockStay) return 'you are in a lock chamber.';                  // BRIDGES & LOCKS
     const s = p.ship, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
     // Out of fuel = no propulsion; a sailing yacht with her sails set is still driven by the wind.
     if (!(p.fuel > 0) && !(C.sail && p.sailsUp !== false && (!rigOf(s.cls) || anyHoisted(this.rigFor(p))))) return 'out of fuel.';
@@ -1815,6 +2016,7 @@ export class Game {
     const harbour = zone ? { id: zone.harbor.id, name: zone.harbor.name, distM: Math.round(zone.distM), kind: zone.kind } : null;
     if (why) return harbour ? { max: 1, reason: capitalise(why), routeAbove: WARP.MAX_NO_ROUTE, harbour } : { max: 1, reason: capitalise(why), routeAbove: WARP.MAX_NO_ROUTE };
     if (harbour) return { max: WARP.HARBOR_MAX, reason: `${capitalise(this.zoneWhere(zone))} — ${WARP.HARBOR_MAX}× at most inside harbours.`, routeAbove: WARP.MAX_NO_ROUTE, harbour };
+    { const c = this.wwWarpCap(p); if (c) return { max: Math.min(c.max, top), reason: c.reason, routeAbove: WARP.MAX_NO_ROUTE }; }   // BRIDGES & LOCKS
     const sh = this.shallowAhead(p, this.warpLookahead(p, top));
     if (!sh) return { max: top, reason: null, routeAbove: WARP.MAX_NO_ROUTE };
     let max = 1;

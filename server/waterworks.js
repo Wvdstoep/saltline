@@ -191,6 +191,10 @@ export function createWaterworks(game, fis, opts = {}) {
   function registerLock(id, ship0, side = 0) {
     const lock = objs.get(id); const ship = shipView(ship0);
     if (!lock || lock.type !== 'lock') return { ok: false, reason: 'unknown' };
+    if (side !== 0 && side !== 1) {   // unknown side (e.g. a radio call): the head nearest the ship, else the outer head
+      const ax = lock.chambers?.[0]?.axis;
+      side = ax && ship.lat != null ? (distM([ship.lat, ship.lon], ax[0]) <= distM([ship.lat, ship.lon], ax[ax.length - 1]) ? 0 : 1) : 0;
+    }
     const t = now();
     if (lock.hours && !inHours(lock.hours, t)) { const n = nextService(lock.hours, t); return { ok: false, reason: 'hours', next: n && n.hhmm }; }
     const c = chamberFor(lock, ship, t);
@@ -301,10 +305,21 @@ export function createWaterworks(game, fis, opts = {}) {
   }
 
   // ---------------------------------------------------------------------------------------------- tick, strikes
-  function tick() {
+  /** points (optional) = [[lat, lon]…] of ships that matter: then only objects within HOT_M of one of them, plus every
+   *  object with something going on (a plan, a moving span, an outage, a lock cycle or queue), are stepped (4,000 objects
+   *  every tick cost tens of ms; idle locks near a ship every 10 s). Without points every object is stepped. */
+  const HOT_M = 20000;
+  const bridgeBusy = (st) => !!st.out || st.plans.some((p) => p.length) || st.spans.some((s) => s.st !== 'closed');
+  const lockBusy = (L) => L.chambers.some((c) => (c.st !== 'idle' && c.st !== 'standsopen') || c.queue[0].length || c.queue[1].length);
+  function tick(points = null) {
     const t = now();
-    for (const [id, st] of bstate) { const o = objs.get(id); if (!o.lockId || st.out) tickBridge(o, st, t); else tickHead(o, st, t); }
-    for (const [id, L] of lstate) tickLock(objs.get(id), L, t);
+    let hot = null;
+    if (points) { hot = new Set(); for (const [la, lo] of points) for (const o of near(la, lo, HOT_M)) hot.add(o.id); }
+    for (const [id, st] of bstate) { if (hot && !bridgeBusy(st)) continue; const o = objs.get(id); if (!o.lockId || st.out) tickBridge(o, st, t); else tickHead(o, st, t); }   // closed, no plan: nothing to step
+    for (const [id, L] of lstate) {
+      if (hot && !lockBusy(L)) { if (!hot.has(id) || t - (L.idleAt || 0) < 10) continue; L.idleAt = t; }   // idle near a ship: stands-open check every 10 s
+      tickLock(objs.get(id), L, t);
+    }
   }
   function tickHead(o, st, t) {   // lock-operated bridges: timed transitions only
     o.spans.forEach((span, i) => {
@@ -419,14 +434,15 @@ export function createWaterworks(game, fis, opts = {}) {
     const L = lstate.get(id), lv = levelsOf(o, t);
     return {
       id, rev: L.rev, levels: lv.map(r2),
-      chambers: L.chambers.map((cs, i) => ({ id: o.chambers[i].id, st: cs.st, side: cs.side, t0: cs.t0, dur: cs.dur, level0: r2(cs.level0 ?? lv[cs.side]), level1: r2(cs.level1 ?? lv[1 - cs.side]),
+      chambers: L.chambers.map((cs, i) => ({ id: o.chambers[i].id, st: cs.st, side: cs.st === 'opening' || cs.st === 'release' ? 1 - cs.side : cs.side,   /* wire: the head the phase concerns (lane C §1.2) */ t0: cs.t0, dur: cs.dur, level0: r2(cs.level0 ?? lv[cs.side]), level1: r2(cs.level1 ?? lv[1 - cs.side]),
         level: r2(chamberLevel(o.chambers[i], cs, t, lv)), sig: lockSignals(cs), plan: cs.plan.map((p) => ({ ship: p.id, x: p.x, y: p.y, L: p.l, B: p.w, fast: !!p.fast })),
         queue: [0, 1].flatMap((sd) => queueOrder(cs.queue[sd]).map((s, k) => ({ name: s.name, kind: s.kind, n: k + 1, side: sd }))) })),
     };
   }
   function stationsOn(ch, lat, lon, rM = 40000) {
-    return near(lat, lon, rM).filter((o) => o.vhf === ch && o.call === 'vhf' && !o.lockId).map((o) => ({
+    return near(lat, lon, rM).filter((o) => (ch == null ? o.vhf != null : o.vhf === ch) && o.call === 'vhf' && !o.lockId).map((o) => ({   // ch null = every channel (radio call-by-name)
       id: o.id, kind: o.type, callName: o.callName || o.name, ch: o.vhf, pos: posOf(o), h: 15, hours: o.hours || null, inHours: inHours(o.hours, now()),
+      ...(o.type === 'lock' ? { bridges: o.bridges || [], axis: o.chambers?.[0]?.axis || null } : {}),
     }));
   }
   function lockStay(shipId) {
