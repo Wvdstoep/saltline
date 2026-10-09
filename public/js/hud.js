@@ -30,12 +30,13 @@ const RANGES_KM = [2, 5, 10, 20, 50, 100, 250, 1000];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const CATS = ['cargo', 'working', 'passenger', 'motor yacht', 'sailing yacht'];
 const CAT_LABEL = { cargo: 'Cargo', working: 'Working', passenger: 'Passenger', 'motor yacht': 'Motor yachts', 'sailing yacht': 'Sailing yachts' };
-const TABS = ['overview', 'jobs', 'boards', 'market', 'shipyard', 'services', 'shady', 'office', 'players'];
+const TABS = ['overview', 'jobs', 'boards', 'market', 'rules', 'shipyard', 'services', 'shady', 'office', 'players'];
 const TAB_ALIAS = { info: 'overview', port: 'overview', harbour: 'overview', harbor: 'overview', contracts: 'jobs', contract: 'jobs', harbourmaster: 'jobs', harbormaster: 'jobs', job: 'jobs',
   board: 'boards', jobboards: 'boards', yard: 'shipyard', ships: 'shipyard', ship: 'shipyard', chandler: 'services', fuel: 'services', repair: 'services', service: 'services',
   bar: 'shady', blackmarket: 'shady', black: 'shady', look: 'shady', lookaround: 'shady', crew: 'players', skippers: 'players',
-  office: 'office', fleet: 'office', storage: 'office' }; // v6 fleet
-const JOB_LABEL = { freight: 'Freight', passengers: 'Passengers', charter: 'Charter', fishing: 'Fishing', supply: 'Offshore supply', tow: 'Tow', smuggling: 'Smuggling' };
+  office: 'office', fleet: 'office', storage: 'office', rules: 'rules', law: 'rules', customs: 'rules', sanctions: 'rules' }; // v6 fleet; world politics
+const JOB_LABEL = { freight: 'Freight', passengers: 'Passengers', charter: 'Charter', fishing: 'Fishing', supply: 'Offshore supply', tow: 'Tow', smuggling: 'Smuggling',
+  aid: 'Humanitarian aid', corridor: 'Grain corridor', state: 'State charter', avoid: 'Avoid-route freight', evac: 'Assisted departure' };   // world politics
 const NM = 1852;
 const DEFAULT_WARP = [1, 5, 20, 100, 400];
 
@@ -378,7 +379,7 @@ export class Hud {
   // ---------------------------------------------------------------- log / chat / alerts
   event(ev) {
     const d = document.createElement('div');
-    d.className = `ev ${ev.kind || 'info'}`; d.textContent = ev.text;
+    d.className = `ev ${ev.kind === 'risk' ? 'warn risk' : ev.kind || 'info'}`; d.textContent = ev.text;   // world politics: `risk` is amber like warn
     $('log').appendChild(d);
     this.logEntries.push({ el: d, t: performance.now() });
     const max = this.touch ? 3 : 7;
@@ -997,6 +998,7 @@ export class Hud {
         case 'shady': html = this.tabShady(h, you, C); break;
         case 'players': html = this.tabPlayers(h); break;
         case 'office': html = this.app.fleetUi ? this.app.fleetUi.tabOffice(h, you) : ''; break; // v6 fleet (fleet.js)
+        case 'rules': html = this.app.politics ? this.app.politics.rulesTabHTML(h, you) : ''; break; // world politics (politics.js)
       }
     } catch (e) { console.error('[hud] render', t, e); html = `<div class="empty">${ic('warning')}<span>This section could not be shown (${esc(e.message)}).</span></div>`; }
     el.innerHTML = html;
@@ -1028,13 +1030,14 @@ export class Hud {
       ['shipyard', 'shipyard', 'Shipyard', `${newN} new · ${usedN} used`],
       ['services', 'wrench', 'Services', `fuel ${fmt(h.fuelPrice)} cr/t · hull ${Math.round(you.cond)} %`],
       ['boards', 'board', 'Job boards', 'every harbour'],
+      ...(this.app.politics ? [this.app.politics.quickTile(h)] : []),   // world politics: ['rules', 'flag', 'Rules', 'Restricted · …', 'warn']
       ['shady', 'mask', 'Black market', h.contactLooked ? (h.contact ? 'contact found' : 'nobody today') : 'look around'],
     ];
     const ashoreBtn = you.docked ? `<button data-act="ashore">${ic('walk')}<b>${this.ashoreOn ? 'Back aboard' : 'Go ashore'}</b><small>walk the real quay</small></button>` : '';
     return `<div class="banner"><img id="hBanner" data-h="${esc(h.id)}" alt=""${bannerUrl ? ` src="${bannerUrl}" class="loaded"` : ''}>
-        <div class="bannerTxt"><div><h2>${esc(short(h.name))}</h2><div class="chips"><span class="chip">${ic('flag')}${esc(h.country)}</span><span class="chip">${ic('anchor')}${esc(h.size)} port</span>${h.geomSource ? `<span class="chip">${ic('chart')}${h.geomSource === 'osm' ? 'OSM survey' : 'synthetic chart'}</span>` : ''}</div></div>
+        <div class="bannerTxt"><div><h2>${esc(short(h.name))}</h2><div class="chips"><span class="chip">${ic('flag')}${esc(h.country)}</span>${this.app.politics?.bannerChips(h) || ''}<span class="chip">${ic('anchor')}${esc(h.size)} port</span>${h.geomSource ? `<span class="chip">${ic('chart')}${h.geomSource === 'osm' ? 'OSM survey' : 'synthetic chart'}</span>` : ''}</div></div>
         ${berth ? `<span class="chip good">${ic('pier')}moored · ${esc(berth.name || berth.id)}</span>` : ''}</div></div>
-      <div class="quick">${quick.map(([tab, i, t, s]) => `<button data-act="tab" data-tab="${tab}">${ic(i)}<b>${t}</b><small>${esc(s)}</small></button>`).join('')}${ashoreBtn}</div>
+      <div class="quick">${quick.map(([tab, i, t, s, tone]) => `<button data-act="tab" data-tab="${tab}"${tone ? ` class="pol-${tone}"` : ''}>${ic(i)}<b>${t}</b><small>${esc(s)}</small></button>`).join('')}${ashoreBtn}</div>
       <div class="cards">
         <article class="card"><h3>${ic('ship')}Your ship</h3>
           <div class="myShip">${this.thumbHTML(you.ship.cls, { w: 264, h: 164, angle: 'quarter', wear: 1 - you.cond / 100 })}
@@ -1077,7 +1080,7 @@ export class Hud {
     return '';
   }
   jobCard(j, fromHarbor, you, C, mass, shady) {
-    const why = this.whyNot(j, you, C, mass);
+    const why = this.whyNot(j, you, C, mass) || this.app.politics?.blockedWhy(j) || null;   // world politics: "Not for your company — …" disables Accept
     const type = shady || j.contraband ? 'smuggling' : j.type;
     const [a, b] = this.routeOf(j, fromHarbor);
     const dl = this.deadlineSec(j);
@@ -1095,6 +1098,7 @@ export class Hud {
       ${est.label && !why ? `<div class="estLine ${est.ok ? 'ok' : 'slow'}" title="${esc(`Ship hours with your ${C.name.toLowerCase()} at service speed; the contract allows ${budget.replace(' of ship time', '')}.`)}">${ic('clock')}<span>${esc(est.label.split(' (≈')[0])}${est.label.includes(' (≈') ? ` <span class="estReal">(≈${esc(est.label.split(' (≈')[1])}</span>` : ''}</span></div>` : ''}
       <div class="muted small">${esc(this.cargoOf(j))}${j.needsCat ? ' · needs a yacht or ferry' : ''}</div>
       <div class="payRow"><span class="pay">${fmt(j.pay)}<small>cr</small></span><span class="perT">${per}</span></div>
+      ${this.app.politics?.badgesFor(j) || ''}
       <div class="elig ${why ? 'bad' : slow ? 'slow' : 'ok'}">${ic(why ? 'x' : slow ? 'clock' : 'check')}${esc(eligTxt)}</div>
       <div class="actions"><button class="${why || slow ? '' : 'primary'}" data-act="accept" data-job="${esc(j.id)}"${slow ? ` data-slow="1" data-need="${esc(fmtShipH(est.needH))}" data-budget="${esc(String(est.budgetH))}"` : ''} ${why ? `disabled title="${esc(why)}"` : ''}>${slow ? 'Accept anyway' : 'Accept'}</button></div>
     </article>`;

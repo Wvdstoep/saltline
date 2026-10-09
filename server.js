@@ -147,6 +147,12 @@ app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
 app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), quays: game.quayFinder ? game.quayFinder.stats() : null, wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576), mem: memReport() }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
+app.get('/api/politics', (req, res) => {          // world politics dataset for the client (docs/WORLD-POLITICS-PHASE2.md H24)
+  if (!game.politics) return res.status(404).end();
+  const c = game.politics.clientPayload();                     // everything except trade.json; ETag = dataset version
+  if (req.headers['if-none-match'] === c.etag) return res.status(304).end();
+  res.set({ ETag: c.etag, 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' }).send(c.json);
+});
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);
 const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);

@@ -284,6 +284,7 @@ export class Chart {
     if (this.layers.fishing) this.drawFishing();
     if (this.layers.platforms) this.drawPlatforms();
     if (this.layers.storms) this.drawStorms();
+    this.app.politics?.drawChartLayers(this, this.ctx);   // world politics: war risk, corridors, ECA, piracy, warnings + legend
     if (this.layers.wrecks) this.drawWrecks();
     if (this.layers.track) this.drawTrack();
     this.drawRoute();
@@ -829,6 +830,7 @@ export class Chart {
   click(x, y) {
     const wi = this.hitWaypoint(x, y);
     if (wi >= 0) { this.showWaypointPopup(wi); return; }
+    if (this.app.politics?.chartClick(this, x, y)) return;   // world politics: a tap on an area label (any mode) or inside an area (select mode)
     const h = this.hitHarbor(x, y);
     if (h) { this.showHarborPopup(h); return; }
     const s = this.hitShip(x, y, 10);
@@ -951,6 +953,7 @@ export class Chart {
       const b = document.createElement('b'); b.textContent = 'Position'; head.appendChild(b);
       const p = document.createElement('div'); p.textContent = `${fmtDMS(lat, true)} ${fmtDMS(lon, false)}${s ? ` · ${fmtDistance(haversine(s.lat, s.lon, lat, lon))} ${String(Math.round(bearing(s.lat, s.lon, lat, lon))).padStart(3, '0')}°` : ''}`; body.appendChild(p);
       const row = document.createElement('div'); row.className = 'inline';
+      this.app.politics?.pointPopupRows(lat, lon, body);   // world politics: listed areas at this point
       row.append(this.btn('Add waypoint', () => { this.addWaypoint(lat, lon); this.hidePopup(); }, 'primary'));
       const nm = s ? haversine(s.lat, s.lon, lat, lon) / NM : 0;
       row.append(this.btn(`Express passage (${fmtN(nm * SIM.EXPRESS_CR_PER_NM)} cr)`, () => { if (confirm(`Pay ${fmtN(nm * SIM.EXPRESS_CR_PER_NM)} cr plus fuel and wear to arrive there now?`)) { a.net.action('express', { lat, lon }); this.hidePopup(); } }));

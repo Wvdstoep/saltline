@@ -123,6 +123,7 @@ export class Fleet {
     if (v.orders != null) { const o = normalizeOrder(v.orders, isHarbor); v.orders = o.ok ? o.order : null; }
     if (v.cap != null && (typeof v.cap !== 'object' || typeof v.cap.phase !== 'string')) v.cap = null;
     if (v.voyageEnd === undefined) v.voyageEnd = null;
+    this.game.politics?.healVesselPol(v, harborById(office?.home)?.country);   // world politics: flag, built, PSC, holds
     if (v.status === 'laidup') { v.orders = null; v.cap = null; }
     if (v.ship && typeof v.ship === 'object' && (rigOf(v.ship.cls) || v.ship.rig !== undefined)) v.sailsUp = this.sailRig(v.ship, !v.docked && v.status !== 'laidup', v.sailsUp);   // sailing: save migration (§3.6); engine-class records stay byte-identical
     return v;
@@ -134,6 +135,7 @@ export class Fleet {
     out.slots = Math.max(FLEET.SLOTS_FREE, Math.min(FLEET.SLOTS_MAX, Math.floor(Number(out.slots) || FLEET.SLOTS_FREE)));
     out.owed = Math.max(0, Math.floor(Number(out.owed) || 0));
     out.homeSetAt = Number.isFinite(out.homeSetAt) ? out.homeSetAt : 0;
+    out.pol = this.game.politics ? this.game.politics.healOfficePol(out.pol) : out.pol;
     out.homeMoves = Math.max(0, Math.floor(Number(out.homeMoves) || 0));
     out.lastSwitchAt = 0;
     out.unread = Math.max(0, Math.floor(Number(out.unread) || 0));
@@ -238,6 +240,7 @@ export class Fleet {
     });
     v.flooding = 0; v.assist = null; v.lastValid = { lat: spawn.lat, lon: spawn.lon };
     p.fleet = [v]; p.aboard = v.id; p.office = newOffice(harbor);
+    this.game.politics?.newVesselFlag(p, v, { builtIn: harborById(harbor)?.country || null });   // shipyard country = builtIn (§4.10)
     bindPlayer(p, this); this.index(v);
     this.m0.set(p.id, p.money);
     return v;
@@ -447,6 +450,7 @@ export class Fleet {
       serviceDue: used ? sim + SERVICE_INTERVAL_S * (0.2 + 0.6 * (cond / 100)) : sim + SERVICE_INTERVAL_S, shipTime: sim, acquiredAt: Math.floor(sim), acquiredPrice: price,
     });
     v.cap = captain.newCap(g, 'idle');
+    this.game.politics?.newVesselFlag(p, v, { builtIn: h.country || null });   // the yard's (or listing's) country = builtIn (§4.10)
     p.fleet.push(v); this.index(v);
     if (listing) st.used = st.used.filter((x) => x !== listing);
     const where = spot.berth ? `moored at ${short(h.name)}, ${spot.berth.name}` : `lying at ${short(h.name)} anchorage`;
@@ -564,6 +568,11 @@ export class Fleet {
     if (p.docked !== m.harbor) return this.warn(p, `Moor in ${short(harborById(m.harbor).name)} to move your office there.`);
     const h = harborById(m.harbor), hm = this.homeMove(p, h);
     if (hm.allowed !== true) return this.warn(p, hm.allowed);
+    if (this.game.politics) {
+      const r = this.game.politics.homeStart(p, h, { baseCost: hm.cost });   // books move + formation + re-flags, starts the wait
+      if (!r.ok) return this.warn(p, r.text);
+      return this.refresh(p);
+    }
     if (hm.cost > 0) this.book(p, '_', 'fees', -hm.cost);
     const o = p.office;
     o.home = h.id; o.homeSetAt = this.game.simTime; o.homeMoves++;
@@ -606,8 +615,8 @@ export class Fleet {
     for (const c of stacks) {
       if (left <= 1e-9) break;
       const k = Math.min(c.qty, left); c.qty = c.caught ? Math.round((c.qty - k) * 1e6) / 1e6 : c.qty - k; left -= k;
-      const dst = b.cargo.find((x) => x.good === good && !x.jobId && !!x.contraband === !!c.contraband && !!x.caught === !!c.caught);
-      if (dst) dst.qty += k; else b.cargo.push({ good, qty: k, contraband: !!c.contraband, jobId: null, ...(c.caught ? { caught: true } : {}) });
+      const dst = b.cargo.find((x) => x.good === good && !x.jobId && !!x.contraband === !!c.contraband && !!x.caught === !!c.caught && (x.origin ?? null) === (c.origin ?? null));
+      if (dst) dst.qty += k; else b.cargo.push({ good, qty: k, contraband: !!c.contraband, jobId: null, ...(c.caught ? { caught: true } : {}), origin: c.origin ?? null });
     }
     a.cargo = a.cargo.filter((c) => c.qty > 1e-6);
     this.tell(p, 'info', `Moved ${fmtT(q)} of ${GOODS[good].name} from ${a.name} to ${b.name}.`, b);
@@ -624,7 +633,7 @@ export class Fleet {
     if (!job) return this.warn(p, `${a.name} does not hold that contract.`);
     if (a.towing === job.id || (job.type === 'tow' && job.pickedUp)) return this.warn(p, 'A tow on the line stays with her ship.');
     if (job.type === 'supply' && job.loaded === false) return this.warn(p, 'Those supplies are already delivered.');
-    if (p.aboard !== b.id) { const r = captainRefusal(job); if (r) return this.warn(p, r); }
+    if (p.aboard !== b.id) { const r = captainRefusalFor(this.game, p, b, job); if (r) return this.warn(p, r); }
     const Cb = clsOf(b.ship.cls);
     const stack = a.cargo.find((c) => c.jobId === job.id);
     const paxUsed = b.jobs.filter((j) => j.pax).reduce((s, j) => s + j.pax, 0);
@@ -681,7 +690,7 @@ export class Fleet {
     try { g.regenHarbor?.(h, st, false); } catch { /* keep the board as it is */ }
     const C = clsOf(v.ship.cls), paxUsed = v.jobs.filter((j) => j.pax).reduce((s, j) => s + j.pax, 0);
     const ship = { cls: v.ship.cls, holdFreeT: C.capacity - cargoMass(v.cargo), paxFree: C.pax - paxUsed, warp: 1 };
-    const jobs = (st.jobs || []).filter(Boolean).map((j) => ({ ...publicJob(j), est: estimateJob(j, ship), why: hardReason(j, ship) || captainRefusal(j) || null }));
+    const jobs = (st.jobs || []).filter(Boolean).map((j) => ({ ...publicJob(j), est: estimateJob(j, ship), why: hardReason(j, ship) || captainRefusalFor(g, p, v, j) || null }));
     g.send(p, { t: 'fleet_board', vesselId: v.id, harbor: h.id, harborName: h.name, jobs });
   }
   acceptAction(p, m) {
@@ -693,7 +702,7 @@ export class Fleet {
     if (p.office.owed > 0) return this.warn(p, "Settle the office's unpaid bills first.");
     const st = this.game.harbors[v.docked], job = (st?.jobs || []).find((j) => j && j.id === m.jobId);
     if (!job) return this.warn(p, 'That contract is gone.');
-    const r = captainRefusal(job); if (r) return this.warn(p, r);
+    const r = captainRefusalFor(this.game, p, v, job); if (r) return this.warn(p, r);
     const then = m.then === 'home' ? 'home' : 'stay';
     const a = this.actorOf(v);
     this.game.acceptJob(a, m.jobId);
@@ -930,6 +939,7 @@ export class Fleet {
       stepped++;
       if (!v.docked) { const p = this.ownerOf(v); if (p) this.dirty(p); }
     }
+    if (g.politics) for (const p of g.byId.values()) if (p.office) g.politics.tick(p);   // holds, re-flags, pending home move
     if (g.simTime - this.lastDaily >= 60) { this.lastDaily = g.simTime; this.daily(g.simTime); }
     const now = Date.now();
     // the switch cooldown ran out: push a fresh view so the helm buttons / dialog enable again (nothing else may change)
@@ -974,6 +984,7 @@ export class Fleet {
   /** Storage fees of laid-up ships, whole days (from the tick once a minute). */
   daily(now) {
     void now;
+    if (this.game.politics) for (const p of this.game.byId.values()) if (p.office) this.game.politics.dailyTick(p);   // self-limits to once per day
     for (const v of this.vessels.values()) {
       if (v.status !== 'laidup') continue;
       const p = this.ownerOf(v); if (!p) continue;
@@ -1057,11 +1068,13 @@ export class Fleet {
     const here = (p.fleet || []).filter((v) => v.docked === h.id).sort((a, b) => (a.id === p.aboard ? -1 : b.id === p.aboard ? 1 : a.name.localeCompare(b.name)));
     return {
       office: { isHome: o.home === h.id, home: o.home, homeName: home ? home.name : o.home, slots: o.slots, slotsMax: FLEET.SLOTS_MAX, slotPrice: FLEET.SLOT_PRICE,
-        used: this.laidUpCount(p), storagePerDay: this.storagePerDay(p), homeMove: { allowed: hm.allowed, cost: hm.cost } },
+        used: this.laidUpCount(p), storagePerDay: this.storagePerDay(p), homeMove: { allowed: hm.allowed, cost: hm.cost, plan: this.homePlan(p, h, hm) } },
       fleetHere: here.map((v) => this.vesselView(p, v)),
       fleetFull: p.fleet.length >= FLEET.MAX_VESSELS, fleetN: p.fleet.length,
     };
   }
+  /** World politics: what moving the company to h (the harbour moored in) would change, or null. */
+  homePlan(p, h, hm) { const pol = this.game.politics; if (!pol || !h || p.office?.home === h.id) return null; try { return pol.homeMovePlan(p, h, { baseCost: hm.cost }); } catch { return null; } }
   storagePerDay(p) { return (p.fleet || []).filter((v) => v.status === 'laidup').reduce((s, v) => s + storageFeePerDay(v.ship.cls), 0); }
   costPerH(p) { return (p.fleet || []).filter((v) => v.status === 'active' && v.id !== p.aboard).reduce((s, v) => s + wageRateMcrH(v.ship.cls, captain.dutyOf(v), !!v.towing) / 1000, 0); }
   vesselView(p, v) {
@@ -1109,7 +1122,8 @@ export class Fleet {
     return {
       home: o.home, homeName: home ? home.name : o.home, slots: o.slots, slotsMax: FLEET.SLOTS_MAX, slotPrice: FLEET.SLOT_PRICE, used: this.laidUpCount(p), max: FLEET.MAX_VESSELS, n: p.fleet.length,
       cash: Math.floor(p.money), owed: o.owed, value: p.fleet.reduce((s, v) => s + shipValue(v.ship.cls, v.cond), 0), costPerH: Math.round(this.costPerH(p)), storagePerDay: this.storagePerDay(p), unread: o.unread || 0,
-      homeMove: { allowed: hm.allowed, cost: hm.cost },
+      homeMove: { allowed: hm.allowed, cost: hm.cost, plan: this.homePlan(p, p.docked ? harborById(p.docked) : null, hm) },
+      compliance: this.game.politics?.officeView(p) ?? null,
       vessels,
       money: {
         today: totals(days, [dayKey(sim)]), d7: totals(days, keys7),
@@ -1128,6 +1142,10 @@ export function captainRefusal(job) {
   if (job.type === 'tow') return 'Captains do not take tows — sail her yourself.';
   if (!CAPTAIN_JOB_TYPES.includes(job.type)) return 'Captains do not take this kind of work.';
   return null;
+}
+/** captainRefusal plus the office's world-politics checks (measures, entry rules, risk policy) for vessel v. */
+export function captainRefusalFor(game, owner, v, job) {
+  return captainRefusal(job) || (game.politics ? game.politics.captainCheck(owner, job, owner.office?.pol?.riskPolicy || 'avoid', v) : null);
 }
 /** Every n-th point, first and last kept, at most n points. */
 export function decimate(route, n) {

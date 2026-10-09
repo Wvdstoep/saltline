@@ -15,7 +15,7 @@ import {
   hullValue, hullBasis, warPremium, pDayOf, transitChance, piracyChance, guardsCost, incidentOutcome, pickShare,
   tradeCheck, jobCheck, entryCheck, harbourRules, riskCheck, avoidDiscs, pscRegimeOf, pscChance, vesselAge,
   registryOf, registryOwnerOk, reflagCost, inTerritory, portStatus, cabotageOf, tradeShare, destWeightFor, tradeProfileMul,
-  srcShort, fmtDate, RISK_POLICIES, ecaPerT,
+  srcShort, fmtDate, RISK_POLICIES, ecaPerT, pointInArea,
 } from '../shared/politics.js';
 import { HARBORS } from './harbors.js';
 
@@ -23,6 +23,18 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_DIR = path.resolve(HERE, '../shared/politics');
 export const DATA_FILES = ['meta', 'sources', 'countries', 'ports', 'registries', 'regimes', 'areas', 'agreements', 'tariffs', 'psc', 'trade'];
 export const CLIENT_KEYS = ['meta', 'sources', 'countries', 'ports', 'registries', 'regimes', 'areas', 'agreements', 'tariffs', 'psc'];
+/** Does the straight lon/lat segment a→b touch area x (an end inside, or crossing an edge)? */
+function segHitsPoly(x, a, b) {
+  if (pointInArea(x, a.lat, a.lon) || pointInArea(x, b.lat, b.lon)) return true;
+  const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const A = [a.lon, a.lat], B = [b.lon, b.lat];
+  for (const ring of x.poly) for (let i = 1; i < ring.length; i++) {
+    const C = ring[i - 1], D = ring[i];
+    if ((cross(A, B, C) > 0) !== (cross(A, B, D) > 0) && (cross(C, D, A) > 0) !== (cross(C, D, B) > 0)) return true;
+  }
+  return false;
+}
+const RISK_CACHES = new WeakMap();   // harbour table → Map('from|to|version|day' → { tier, areas })
 const RECORDS_MAX = 40, CALLS_MAX = 200, FLAG_HISTORY = 10, ASK_TIMEOUT_S = 600;
 
 export function readParts(dir = DEFAULT_DIR) {
@@ -81,7 +93,8 @@ export class Politics {
     this.hmap = new Map(this.harbors.map((h) => [h.id, h]));
     this.ds = opts.dataset || loadDataset({ ...readParts(opts.dir || DEFAULT_DIR), harbors: this.harbors });
     this.rt = new Map();          // vessel key → { inAreas: Set, ask: {}, offCorr: false }
-    this.riskCache = new Map();
+    this.riskCache = RISK_CACHES.get(this.harbors) || new Map();   // shared by every engine on the same harbour table (keys carry version + day)
+    RISK_CACHES.set(this.harbors, this.riskCache);
     this.log = opts.log || game?.log || (() => {});
     this.log(`[politics] dataset ${this.ds.meta.version} (valid as of ${this.ds.meta.validAsOf}): ${this.ds.areas.length} areas, ${this.ds.measures.length} measures`);
   }
@@ -208,6 +221,8 @@ export class Politics {
     if (!h || !e?.clearance) return { ok: false, text: 'No clearance needed there.' };
     const ctx = this.ctxOf(p);
     if (e.deniedWhen && matches(e.deniedWhen, ctx)) return { ok: false, text: fill(TEMPLATES.refusal, { harbour: h.name, measureText: 'entry denied for this vessel', srcShort: srcShort(this.ds, e.src) }) };
+    const t0 = pol.clearanceFrom[hid] ?? 0, t1 = pol.clearance[hid] ?? 0;   // already requested or valid: no second request (it would push the issue time out)
+    if (t1 > this.now && t0 > 0) return { ok: true, from: t0, until: t1, again: true, text: t0 > this.now ? `Clearance for ${h.name} already requested: issued in ${Math.max(1, Math.ceil((t0 - this.now) / 3600))} h.` : `Clearance for ${h.name} is valid for ${Math.max(1, Math.floor((t1 - this.now) / 3600))} h more.` };
     const from = this.now + (e.clearanceH ?? POL.CLEARANCE_H) * 3600;
     pol.clearanceFrom[hid] = from; pol.clearance[hid] = from + (e.validH ?? POL.CLEARANCE_VALID_H) * 3600;
     return { ok: true, from, until: pol.clearance[hid], text: `Clearance for ${h.name} requested: issued in ${e.clearanceH ?? POL.CLEARANCE_H} h, valid ${e.validH ?? POL.CLEARANCE_VALID_H} h.` };
@@ -498,18 +513,33 @@ export class Politics {
 
   // ------------------------------------------------------------------------------------------ economy hooks (H2–H5)
   riskOf(fromId, toId) {
-    const k = `${fromId}|${toId}|${this.version}`;
+    const k = `${fromId}|${toId}|${this.version}|${dateOf(this.now)}`;
     if (this.riskCache.has(k)) return this.riskCache.get(k);
     const a = this.harborById(fromId), b = this.harborById(toId);
     let res = { tier: 0, areas: [] };
     if (a && b) {
-      const ex = routeExposure(this.ds, a, [[b.lat, b.lon]], 12, this.now);
-      const ids = new Set(ex.areas.filter((x) => x.kind === 'war_risk' || x.kind === 'piracy').map((x) => x.id));
+      // Which risk areas the direct line touches: only areas whose box overlaps the line's box are sampled (every ≤ 10 km),
+      // so a board regen over ~340 harbours stays cheap (routeExposure's 5 km sampling of every area was ~15 ms a pair).
+      const ids = new Set(), pad = 0.25;
+      const w = Math.min(a.lon, b.lon) - pad, e = Math.max(a.lon, b.lon) + pad, s = Math.min(a.lat, b.lat) - pad, n = Math.max(a.lat, b.lat) + pad;
+      const cands = this.ds.areas.filter((x) => (x.kind === 'war_risk' || x.kind === 'piracy' || x.kind === 'corridor') && isActive(x, this.now) && !(x.bbox[2] < w || x.bbox[0] > e || x.bbox[3] < s || x.bbox[1] > n));
+      if (cands.length) {
+        const steps = Math.max(1, Math.ceil(haversine(a.lat, a.lon, b.lat, b.lon) / 10000));
+        const span = (p0, p1, lo, hi) => { if (p0 === p1) return p0 >= lo && p0 <= hi ? [0, 1] : null; const f0 = (lo - p0) / (p1 - p0), f1 = (hi - p0) / (p1 - p0); return [Math.max(0, Math.min(f0, f1)), Math.min(1, Math.max(f0, f1))]; };
+        for (const x of cands) {                                 // only the stretch of the line inside the area's (padded) box
+          const fl = span(a.lon, b.lon, x.bbox[0] - pad, x.bbox[2] + pad), ft = span(a.lat, b.lat, x.bbox[1] - pad, x.bbox[3] + pad);
+          if (!fl || !ft) continue;
+          const k0 = Math.floor(Math.max(fl[0], ft[0]) * steps), k1 = Math.ceil(Math.min(fl[1], ft[1]) * steps);
+          if (x.poly.length) { if (segHitsPoly(x, a, b)) ids.add(x.id); continue; }   // polygons: exact segment test (the same straight lon/lat line)
+          for (let k = k0; k <= k1; k++) { const f = k / steps; if (pointInArea(x, a.lat + (b.lat - a.lat) * f, a.lon + (b.lon - a.lon) * f)) { ids.add(x.id); break; } }
+        }
+      }
       for (const x of areasAt(this.ds, b.lat, b.lon, ['war_risk', 'piracy'], this.now)) ids.add(x.id);
+      for (const hid of [a.id, b.id]) { const c = this.ds.ports[hid]?.entry?.corridor; if (c && this.ds.areaById[c]) ids.add(c); }   // the corridor a restricted end port requires
       const tier = Math.max(0, ...[...ids].map((id) => this.ds.areaById[id]).filter((x) => x.kind === 'war_risk').map((x) => x.tier));
       res = { tier, areas: [...ids] };
     }
-    if (this.riskCache.size > 20000) this.riskCache.clear();
+    if (this.riskCache.size > 80000) this.riskCache.clear();   // ~340 harbours × ~150 major ports fit (the avoid-route offers scan them)
     this.riskCache.set(k, res);
     return res;
   }
@@ -668,9 +698,10 @@ export class Politics {
   }
   dailyTick(p) {
     const pol = this.polOf(p), t = this.now, cc = this.homeCc(p);
-    const days = pol.lastDaily ? Math.floor((t - pol.lastDaily) / 86400) : 1;
+    if (!pol.lastDaily) { pol.lastDaily = t; return { days: 0 }; }   // first sight (new company, old save): the clock starts, nothing is due yet
+    const days = Math.floor((t - pol.lastDaily) / 86400);
     if (days < 1) return { days: 0 };
-    pol.lastDaily = pol.lastDaily ? pol.lastDaily + days * 86400 : t;
+    pol.lastDaily += days * 86400;
     let tax = 0, agent = 0;
     for (const v of this.vesselsOf(p)) {
       const reg = registryOf(this.ds, v.flag?.registry, cc); if (!reg) continue;
@@ -705,7 +736,7 @@ export class Politics {
   youView(p) {
     const v = this.vesselOf(p), ctx = this.ctxOf(p, v), pol = this.polOf(p), key = this.vkey(v, p), cover = {};
     for (const [k, u] of Object.entries(pol.cover)) if (k.startsWith(`${key}|`) && u > this.now) cover[k.slice(key.length + 1)] = u;
-    return { ctx: { home: ctx.home, follows: [...ctx.follows], flag: ctx.flag, customs: ctx.customs, rep: pol.rep }, inAreas: [...this.rtOf(key).inAreas], cover, held: v?.held || null, clearance: { ...ctx.clearance }, pending: pol.pending, version: this.version };
+    return { ctx: { home: ctx.home, follows: [...ctx.follows], flag: ctx.flag, customs: ctx.customs, rep: pol.rep }, inAreas: [...this.rtOf(key).inAreas], cover, held: v?.held || null, clearance: { ...ctx.clearance }, clearancePending: Object.fromEntries(Object.entries(pol.clearanceFrom).filter(([, f]) => f > this.now)), pending: pol.pending, version: this.version };
   }
   officeView(p) {
     const pol = this.polOf(p);

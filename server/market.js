@@ -11,6 +11,7 @@ import { HARBORS, harborById } from './harbors.js';
 import {
   MARKET_GOODS, ECON, TRADE, priceOf, marketTrend, tradeQuote, portDues, pilotageFee, berthFeePerDay, repairCostFor,
 } from './economy.js';
+import { tradeCheck, makeCtx } from '../shared/politics.js';   // world politics H23
 
 export const MARKET = {
   SAMPLE_S: 3600,        // price history: one sample per harbour × good every hour (on the hour)
@@ -126,6 +127,7 @@ function rowsFrom(game, routeTable, A, q, bestOnly = false) {
   const stA = game.harbors?.[A.id]; if (!stA || !stA.stock) return [];
   const C = SHIP_CLASSES[q.cls], cap = C.capacity;
   const goods = q.good ? [q.good] : MARKET_GOODS;
+  const polCtx = q.home && q.flag && game.politics ? makeCtx(game.politics.ds, { home: q.home, flag: q.flag, simTime: game.simTime }) : null;
   const fuelPrice = game.fuelPrice ? game.fuelPrice(A) : (stA.market?.fuel || GOODS.fuel.base) * (A.fuelMul || 1);
   const pointCr = repairCostFor(q.cls, 99);
   const wearH = serviceWearPerH(q.cls);
@@ -146,6 +148,7 @@ function rowsFrom(game, routeTable, A, q, bestOnly = false) {
   for (const g of goods) {
     const stock = stA.stock[g] ?? 0;
     if (!(stock >= 1)) continue;
+    if (polCtx && tradeCheck(game.politics.ds, polCtx, { harbor: A, good: g, side: 'buy' }).ok === false) continue;   // world politics H23: not for this company
     const cap0 = Math.min(q.hold, stock);
     const qty = affordableQty(A, stA, g, cap0, q.cash);
     if (qty < 1) continue;

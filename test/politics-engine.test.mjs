@@ -76,7 +76,7 @@ test('entering a listed area buys cover (coaster 78 % → 901 cr) and rolls the 
   const { pol, game } = makePolitics(), p = at(player({ home: 'hc1' }), 44, 30);
   game.rolls = [0.0001, 0.2, 0.5];                    // pHour(0.006, 1 h) = 0.00025 → hit; mine; minor
   const r = pol.stepSea(p, 1);
-  assert.deepEqual(r.entered, ['war4']);
+  assert.deepEqual(r.entered, ['war4', 'fx-corr']);          // on the corridor line (within OFF_CORRIDOR_KM)
   assert.equal(r.incidents[0].kind, 'mine'); assert.equal(r.incidents[0].outcome, 'minor');
   assert.equal(p.money, 1000000 - 901); assert.equal(p.cond, 70);
   assert.ok(game.events.some((e) => e.text === 'War risk additional premium — Fixture listed area T4 (JWC): 901 cr.'));
@@ -216,7 +216,7 @@ test('daily tick: tonnage tax accrues, negative standing recovers 1 per day, exp
   pol.dailyTick(p);
   game.simTime = T0 + 3 * 86400; const r = pol.dailyTick(p);
   assert.equal(r.days, 3);
-  assert.deepEqual(p.office.pol.rep, { XD: -1, XA: 3 });   // first tick counts 1 day, then 3: −5 → −1
-  // lr: 0.2 cr/t/year × 3,200 t = 1.7534 cr/day → 4 days accrued → 7 cr charged, remainder kept
-  assert.equal(p.money, 1000000 - 7);
+  assert.deepEqual(p.office.pol.rep, { XD: -2, XA: 3 });   // the first tick only starts the clock, then 3 days: −5 → −2
+  // lr: 0.2 cr/t/year × 3,200 t = 1.7534 cr/day → 3 days accrued → 5 cr charged, remainder kept
+  assert.equal(p.money, 1000000 - 5);
 });

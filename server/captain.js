@@ -311,7 +311,11 @@ function requestPlan(fleet, v, tgt) {
   const to = { lat: tgt.lat, lon: tgt.lon };
   if (!planner) { rt.plan = directPlan(fleet, v, from, tgt); return; }
   const gen = rt.gen;
-  const opts = { toHarbor: tgt.kind === 'harbor' ? tgt.harbor : undefined, draft: C.draft, beam: C.beam, length: C.length, avoid: tgt.avoid || stormsNear(g, from, to), simTime: now };
+  const owner = fleet.ownerOf(v), policy = owner?.office?.pol?.riskPolicy || 'avoid';
+  const storms = tgt.avoid || stormsNear(g, from, to);
+  const polDiscs = g.politics ? g.politics.avoidDiscs(policy, from, to, Math.max(0, 8 - storms.length)) : [];   // world politics: storms first (§6.4)
+  const wp = g.politics && tgt.kind === 'harbor' && policy === 'accept' ? g.politics.corridorWaypoints(tgt.harbor) : null;
+  const opts = { toHarbor: tgt.kind === 'harbor' ? tgt.harbor : undefined, draft: C.draft, beam: C.beam, length: C.length, avoid: [...storms, ...polDiscs].slice(0, 8), ...(wp ? { wp: wp.slice(0, 50) } : {}), simTime: now };
   let pr;
   try { pr = planner.plan(from, to, opts, { priority: 'high' }); } catch { pr = null; }
   rt.pending = Promise.resolve(pr).then((r) => {
@@ -370,6 +374,11 @@ function departureBlocked(fleet, v, plan) {
   if ((w && w.storm >= FLEET.DEPART_STORM) || wind >= windMax) { wait(fleet, v, `waiting for weather (${galeText(Math.max(wind, w.storm >= FLEET.DEPART_STORM ? 17.2 : 0))} at ${short(h?.name)})`, FLEET.WEATHER_RECHECK_S); return true; }
   if (v.cond < FLEET.MIN_COND_DEPART) { fail(fleet, v, `Hull at ${Math.round(v.cond)} % — repair her before she sails`); return true; }
   if (v.cargo.some((c) => c.contraband)) { fail(fleet, v, 'No captain will carry that — unload the contraband first'); return true; }
+  const tgtH = plan?.target?.kind === 'harbor' ? plan.target.harbor : null;   // world politics: entry rules at the destination (H21)
+  const dc = tgtH && g.politics ? g.politics.departureCheck(a, v, tgtH) : null;
+  if (dc?.wait) { wait(fleet, v, dc.text, Math.max(60, dc.until - g.simTime)); return true; }
+  if (dc?.fail) { fail(fleet, v, dc.text); return true; }
+  const held = g.politics?.heldText(v); if (held) { wait(fleet, v, held, 600); return true; }
   if (!C.sail) {
     const load = Math.min(1, cargoMass(v.cargo) / C.capacity), burn = serviceBurnTph(s.cls, load), km = plan.distM / 1000;
     const need = (burn * km) / (serviceKn(s.cls, load) * 1.852) * FLEET.FUEL_RESERVE + burn * FLEET.FUEL_RESERVE_H;

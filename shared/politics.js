@@ -64,7 +64,8 @@ export function fill(tpl, vars = {}) { return String(tpl).replace(/\{(\w+)\}/g, 
 
 // ---------------------------------------------------------------------------------------------- dates and scaling
 export const DAY_S = 86400;
-export function dateOf(simTime) { return new Date(simTime * 1000).toISOString().slice(0, 10); }
+let dateMemo = [NaN, ''];   // isActive runs per sample point: one Date per UTC day, not per call
+export function dateOf(simTime) { const day = Math.floor(simTime / DAY_S); if (day !== dateMemo[0]) dateMemo = [day, new Date(simTime * 1000).toISOString().slice(0, 10)]; return dateMemo[1]; }
 export function dateToS(iso) { return Date.parse(iso + 'T00:00:00Z') / 1000; }
 /** Real-world days of waiting → seconds of world clock (POL.DAY_TO_H game hours per day). */
 export function scaledS(days) { return days * POL.DAY_TO_H * 3600; }
@@ -98,7 +99,7 @@ export function loadDataset(parts) {
   ds.areaById = {}; for (const a of ds.areas) ds.areaById[a.id] = a;
   ds.grid = new Map();
   for (const a of ds.areas) {
-    const [w, s, e, n] = a.bbox;
+    const pad = !a.poly.length && a.line?.length ? 0.2 : 0, [w, s, e, n] = a.bbox.map((x, i) => x + (i < 2 ? -pad : pad));   // line areas: OFF_CORRIDOR_KM margin
     for (let la = Math.floor(s); la <= Math.floor(n); la++) for (let lo = Math.floor(w); lo <= Math.floor(e); lo++) {
       const k = la * 1000 + lo; let l = ds.grid.get(k); if (!l) ds.grid.set(k, l = []); l.push(a.id);
     }
@@ -144,8 +145,19 @@ export function pointInRing(lon, lat, ring) {
 }
 export function pointInArea(area, lat, lon) {
   const [w, s, e, n] = area.bbox;
+  if (!area.poly?.length && area.line?.length > 1) return !(lon < w - 0.2 || lon > e + 0.2 || lat < s - 0.2 || lat > n + 0.2) && nearLine(area.line, lat, lon, POL.OFF_CORRIDOR_KM);   // corridors are lines: within OFF_CORRIDOR_KM
   if (lon < w || lon > e || lat < s || lat > n) return false;
   return area.poly.some((r) => pointInRing(lon, lat, r));
+}
+/** True when (lat, lon) lies within `km` of the polyline `line` ([[lon, lat], …]); local equirectangular metric. */
+export function nearLine(line, lat, lon, km) {
+  const ky = 111.2, kx = 111.2 * Math.cos((lat * Math.PI) / 180);
+  for (let i = 1; i < line.length; i++) {
+    const ax = (line[i - 1][0] - lon) * kx, ay = (line[i - 1][1] - lat) * ky, bx = (line[i][0] - lon) * kx, by = (line[i][1] - lat) * ky;
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy, f = L > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L)) : 0;
+    if (Math.hypot(ax + f * dx, ay + f * dy) <= km) return true;
+  }
+  return false;
 }
 export function areasAt(ds, lat, lon, kinds = null, simTime = null) {
   const ids = ds.grid.get(Math.floor(lat) * 1000 + Math.floor(lon));
