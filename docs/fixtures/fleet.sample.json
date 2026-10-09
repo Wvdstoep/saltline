@@ -1151,15 +1151,15 @@
   {
    "id": "hull",
    "name": "Hull",
-   "lat": 53.73,
-   "lon": -0.28,
+   "lat": 53.74196,
+   "lon": -0.26668,
    "size": "major"
   },
   {
    "id": "esbjerg",
    "name": "Esbjerg",
-   "lat": 55.47,
-   "lon": 8.42,
+   "lat": 55.46003,
+   "lon": 8.44205,
    "size": "regional"
   },
   {
@@ -1179,36 +1179,36 @@
   {
    "id": "dunkirk",
    "name": "Dunkirk",
-   "lat": 51.05,
-   "lon": 2.18,
+   "lat": 51.03519,
+   "lon": 2.26293,
    "size": "major"
   },
   {
    "id": "immingham",
    "name": "Immingham / Grimsby",
-   "lat": 53.63,
-   "lon": -0.17,
+   "lat": 53.6281,
+   "lon": -0.19183,
    "size": "major"
   },
   {
    "id": "ostend",
    "name": "Ostend",
-   "lat": 51.24,
-   "lon": 2.92,
+   "lat": 51.23274,
+   "lon": 2.92932,
    "size": "minor"
   },
   {
    "id": "vlissingen",
    "name": "Vlissingen",
-   "lat": 51.44,
-   "lon": 3.58,
+   "lat": 51.44668,
+   "lon": 3.59845,
    "size": "regional"
   },
   {
    "id": "aberdeen",
    "name": "Aberdeen",
-   "lat": 57.14,
-   "lon": -2.05,
+   "lat": 57.14234,
+   "lon": -2.07805,
    "size": "regional"
   }
  ]

@@ -17,7 +17,7 @@ export const ROUTE_TABLE = { VERSION: 1, SAVE_EVERY: 50 };
 export function routesKey(extra = '') {
   let h = 0x811c9dc5;
   const feed = (s) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } };
-  feed(JSON.stringify(HARBORS.map((x) => [x.id, x.lat, x.lon])));
+  feed(JSON.stringify(HARBORS.map((x) => (x.roads ? [x.id, x.lat, x.lon, x.roads.lat, x.roads.lon, (x.way || []).length] : [x.id, x.lat, x.lon]))));   // audited harbours: their roads / way too
   feed(JSON.stringify(LANE_NODES)); feed(JSON.stringify(LANE_EDGES));
   feed(JSON.stringify(carvingsForWorld()));
   feed(String(PLANNER_VERSION ?? 1)); feed(String(extra));

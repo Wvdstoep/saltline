@@ -1,100 +1,130 @@
-// Real-world harbours (lat/lon at the harbour entrance / roadstead), navigable channel carvings and
-// fishing grounds. Coordinates are WGS84. Sizes drive job volume, prices and port-authority presence.
+// Real-world harbours, navigable channel carvings and fishing grounds. Coordinates are WGS84. Sizes drive job volume,
+// prices and port-authority presence.
+//
+// lat/lon is the harbour ANCHOR: berth-able water in the main commercial basin next to the real quays (the centre of the
+// harbour patch, server/harborgeom.js). Since the harbour position audit (scripts/audit-harbours.mjs, 2026-10-09) every
+// audited harbour also carries, from server/harbor-positions.js (merged below):
+//   approach {lat, lon, hdg}  ~400 m outside the entrance, hdg = the inbound heading
+//   entrance {lat, lon}       the harbour mouth (narrowest point on the way out)
+//   roads    {lat, lon}       the outer anchorage on open water (AI ships wait there; lanes link there)
+//   way      [{lat, lon}]     the real water path anchor → … → roads (lane graph chain + raster channel carving)
+//   area     {bbox: [latMin, lonMin, latMax, lonMax], hull: [[lat, lon]]}   the port area
+//   prev     {lat, lon}       the position before the audit (saved ships docked there are moved, server/fleet.js)
+//   audit    {conf, movedM, roads: how the roads was found}
 import { WORLD_HARBORS, WORLD_FISHING_GROUNDS, WORLD_PLATFORMS } from './harbors-world.js';
 import { portCarvings } from './bigports.js';
+import { HARBOR_POSITIONS } from './harbor-positions.js';
 
 export const HARBORS = [
   // ---- Detail region: North Sea, Channel, Skagerrak/Kattegat ----
   { id: 'rotterdam', name: 'Rotterdam (Maasvlakte)', country: 'NL', lat: 51.98, lon: 4.03, size: 'mega', fuelMul: 0.92 },
   { id: 'ijmuiden', name: 'IJmuiden / Amsterdam', country: 'NL', lat: 52.465, lon: 4.555, size: 'major', fuelMul: 0.95 },
-  { id: 'vlissingen', name: 'Vlissingen', country: 'NL', lat: 51.44, lon: 3.58, size: 'regional', fuelMul: 0.97 },
+  { id: 'vlissingen', name: 'Vlissingen', country: 'NL', lat: 51.44668, lon: 3.59845, size: 'regional', fuelMul: 0.97 },
   { id: 'antwerp', name: 'Antwerp (Deurganckdok)', country: 'BE', lat: 51.296, lon: 4.265, size: 'mega', fuelMul: 0.93, note: 'via Westerschelde channel' },
   { id: 'zeebrugge', name: 'Zeebrugge', country: 'BE', lat: 51.37, lon: 3.18, size: 'major', fuelMul: 0.96 },
-  { id: 'ostend', name: 'Ostend', country: 'BE', lat: 51.24, lon: 2.92, size: 'minor', fuelMul: 1.0 },
-  { id: 'dunkirk', name: 'Dunkirk', country: 'FR', lat: 51.05, lon: 2.18, size: 'major', fuelMul: 0.98 },
-  { id: 'calais', name: 'Calais', country: 'FR', lat: 50.97, lon: 1.85, size: 'regional', fuelMul: 1.02 },
-  { id: 'dover', name: 'Dover', country: 'GB', lat: 51.12, lon: 1.33, size: 'regional', fuelMul: 1.05 },
+  { id: 'ostend', name: 'Ostend', country: 'BE', lat: 51.23274, lon: 2.92932, size: 'minor', fuelMul: 1.0 },
+  { id: 'dunkirk', name: 'Dunkirk', country: 'FR', lat: 51.03519, lon: 2.26293, size: 'major', fuelMul: 0.98 },
+  { id: 'calais', name: 'Calais', country: 'FR', lat: 50.96821, lon: 1.85248, size: 'regional', fuelMul: 1.02 },
+  { id: 'dover', name: 'Dover', country: 'GB', lat: 51.12427, lon: 1.33784, size: 'regional', fuelMul: 1.05 },
   { id: 'felixstowe', name: 'Felixstowe / Harwich', country: 'GB', lat: 51.94, lon: 1.33, size: 'mega', fuelMul: 1.0 },
-  { id: 'tilbury', name: 'London (Tilbury)', country: 'GB', lat: 51.45, lon: 0.36, size: 'major', fuelMul: 1.06, note: 'via Thames channel' },
-  { id: 'hull', name: 'Hull', country: 'GB', lat: 53.73, lon: -0.28, size: 'major', fuelMul: 1.0, note: 'via Humber channel' },
-  { id: 'immingham', name: 'Immingham / Grimsby', country: 'GB', lat: 53.63, lon: -0.17, size: 'major', fuelMul: 0.98 },
-  { id: 'newcastle', name: 'Newcastle (Tyne)', country: 'GB', lat: 55.01, lon: -1.40, size: 'regional', fuelMul: 1.0 },
-  { id: 'leith', name: 'Edinburgh (Leith)', country: 'GB', lat: 55.99, lon: -3.17, size: 'regional', fuelMul: 1.03 },
-  { id: 'aberdeen', name: 'Aberdeen', country: 'GB', lat: 57.14, lon: -2.05, size: 'regional', fuelMul: 1.0 },
-  { id: 'peterhead', name: 'Peterhead', country: 'GB', lat: 57.49, lon: -1.78, size: 'minor', fuelMul: 1.02 },
-  { id: 'inverness', name: 'Inverness', country: 'GB', lat: 57.49, lon: -4.23, size: 'minor', fuelMul: 1.08, note: 'via Moray Firth channel' },
-  { id: 'kirkwall', name: 'Kirkwall (Orkney)', country: 'GB', lat: 59, lon: -2.96, size: 'minor', fuelMul: 1.1 },
-  { id: 'lerwick', name: 'Lerwick (Shetland)', country: 'GB', lat: 60.15, lon: -1.13, size: 'minor', fuelMul: 1.12 },
-  { id: 'lowestoft', name: 'Lowestoft', country: 'GB', lat: 52.47, lon: 1.77, size: 'minor', fuelMul: 1.03 },
-  { id: 'southampton', name: 'Southampton', country: 'GB', lat: 50.88, lon: -1.39, size: 'major', fuelMul: 1.02, note: 'via Solent channel' },
-  { id: 'portsmouth', name: 'Portsmouth', country: 'GB', lat: 50.79, lon: -1.11, size: 'regional', fuelMul: 1.04 },
-  { id: 'plymouth', name: 'Plymouth', country: 'GB', lat: 50.34, lon: -4.14, size: 'regional', fuelMul: 1.03 },
-  { id: 'brest', name: 'Brest', country: 'FR', lat: 48.37, lon: -4.47, size: 'regional', fuelMul: 1.0 },
-  { id: 'cherbourg', name: 'Cherbourg', country: 'FR', lat: 49.66, lon: -1.62, size: 'regional', fuelMul: 1.01 },
+  { id: 'tilbury', name: 'London (Tilbury)', country: 'GB', lat: 51.45149, lon: 0.34066, size: 'major', fuelMul: 1.06, note: 'via Thames channel' },
+  { id: 'hull', name: 'Hull', country: 'GB', lat: 53.74196, lon: -0.26668, size: 'major', fuelMul: 1.0, note: 'via Humber channel' },
+  { id: 'immingham', name: 'Immingham / Grimsby', country: 'GB', lat: 53.6281, lon: -0.19183, size: 'major', fuelMul: 0.98 },
+  { id: 'newcastle', name: 'Newcastle (Tyne)', country: 'GB', lat: 54.99667, lon: -1.4465, size: 'regional', fuelMul: 1.0 },
+  { id: 'leith', name: 'Edinburgh (Leith)', country: 'GB', lat: 55.98268, lon: -3.16964, size: 'regional', fuelMul: 1.03 },
+  { id: 'aberdeen', name: 'Aberdeen', country: 'GB', lat: 57.14234, lon: -2.07805, size: 'regional', fuelMul: 1.0 },
+  { id: 'peterhead', name: 'Peterhead', country: 'GB', lat: 57.49401, lon: -1.78262, size: 'minor', fuelMul: 1.02 },
+  { id: 'inverness', name: 'Inverness', country: 'GB', lat: 57.48682, lon: -4.25145, size: 'minor', fuelMul: 1.08, note: 'via Moray Firth channel' },
+  { id: 'kirkwall', name: 'Kirkwall (Orkney)', country: 'GB', lat: 58.98713, lon: -2.95987, size: 'minor', fuelMul: 1.1 },
+  { id: 'lerwick', name: 'Lerwick (Shetland)', country: 'GB', lat: 60.16863, lon: -1.16, size: 'minor', fuelMul: 1.12 },
+  { id: 'lowestoft', name: 'Lowestoft', country: 'GB', lat: 52.47269, lon: 1.75326, size: 'minor', fuelMul: 1.03 },
+  { id: 'southampton', name: 'Southampton', country: 'GB', lat: 50.89464, lon: -1.38711, size: 'major', fuelMul: 1.02, note: 'via Solent channel' },
+  { id: 'portsmouth', name: 'Portsmouth', country: 'GB', lat: 50.81022, lon: -1.09872, size: 'regional', fuelMul: 1.04 },
+  { id: 'plymouth', name: 'Plymouth', country: 'GB', lat: 50.3603, lon: -4.12253, size: 'regional', fuelMul: 1.03 },
+  { id: 'brest', name: 'Brest', country: 'FR', lat: 48.38026, lon: -4.48525, size: 'regional', fuelMul: 1.0 },
+  { id: 'cherbourg', name: 'Cherbourg', country: 'FR', lat: 49.64557, lon: -1.62074, size: 'regional', fuelMul: 1.01 },
   { id: 'le_havre', name: 'Le Havre', country: 'FR', lat: 49.47, lon: 0.08, size: 'mega', fuelMul: 0.96 },
-  { id: 'dublin', name: 'Dublin', country: 'IE', lat: 53.34, lon: -6.17, size: 'major', fuelMul: 1.04 },
-  { id: 'den_helder', name: 'Den Helder', country: 'NL', lat: 52.96, lon: 4.77, size: 'minor', fuelMul: 1.0 },
-  { id: 'harlingen', name: 'Harlingen', country: 'NL', lat: 53.18, lon: 5.40, size: 'minor', fuelMul: 1.0 },
-  { id: 'eemshaven', name: 'Eemshaven', country: 'NL', lat: 53.46, lon: 6.84, size: 'regional', fuelMul: 0.97 },
-  { id: 'emden', name: 'Emden', country: 'DE', lat: 53.33, lon: 7.18, size: 'regional', fuelMul: 0.98 },
-  { id: 'wilhelmshaven', name: 'Wilhelmshaven', country: 'DE', lat: 53.59, lon: 8.15, size: 'major', fuelMul: 0.95 },
+  { id: 'dublin', name: 'Dublin', country: 'IE', lat: 53.34486, lon: -6.19912, size: 'major', fuelMul: 1.04 },
+  { id: 'den_helder', name: 'Den Helder', country: 'NL', lat: 52.95738, lon: 4.77279, size: 'minor', fuelMul: 1.0 },
+  { id: 'harlingen', name: 'Harlingen', country: 'NL', lat: 53.17842, lon: 5.41755, size: 'minor', fuelMul: 1.0 },
+  { id: 'eemshaven', name: 'Eemshaven', country: 'NL', lat: 53.45049, lon: 6.81968, size: 'regional', fuelMul: 0.97 },
+  { id: 'emden', name: 'Emden', country: 'DE', lat: 53.35091, lon: 7.21278, size: 'regional', fuelMul: 0.98 },
+  { id: 'wilhelmshaven', name: 'Wilhelmshaven', country: 'DE', lat: 53.58237, lon: 8.15057, size: 'major', fuelMul: 0.95 },
   { id: 'bremerhaven', name: 'Bremerhaven', country: 'DE', lat: 53.58, lon: 8.52, size: 'mega', fuelMul: 0.95 },
-  { id: 'cuxhaven', name: 'Cuxhaven', country: 'DE', lat: 53.88, lon: 8.71, size: 'minor', fuelMul: 1.0 },
+  { id: 'cuxhaven', name: 'Cuxhaven', country: 'DE', lat: 53.86625, lon: 8.70761, size: 'minor', fuelMul: 1.0 },
   { id: 'hamburg', name: 'Hamburg', country: 'DE', lat: 53.54, lon: 9.93, size: 'mega', fuelMul: 0.94, note: 'via Elbe channel' },
-  { id: 'kiel', name: 'Kiel', country: 'DE', lat: 54.36, lon: 10.16, size: 'regional', fuelMul: 1.0 },
-  { id: 'esbjerg', name: 'Esbjerg', country: 'DK', lat: 55.47, lon: 8.42, size: 'regional', fuelMul: 1.02 },
-  { id: 'hirtshals', name: 'Hirtshals', country: 'DK', lat: 57.60, lon: 9.96, size: 'minor', fuelMul: 1.04 },
-  { id: 'frederikshavn', name: 'Frederikshavn', country: 'DK', lat: 57.44, lon: 10.55, size: 'minor', fuelMul: 1.04 },
-  { id: 'copenhagen', name: 'Copenhagen', country: 'DK', lat: 55.70, lon: 12.64, size: 'major', fuelMul: 1.03 },
+  { id: 'kiel', name: 'Kiel', country: 'DE', lat: 54.32128, lon: 10.15094, size: 'regional', fuelMul: 1.0 },
+  { id: 'esbjerg', name: 'Esbjerg', country: 'DK', lat: 55.46003, lon: 8.44205, size: 'regional', fuelMul: 1.02 },
+  { id: 'hirtshals', name: 'Hirtshals', country: 'DK', lat: 57.59295, lon: 9.96383, size: 'minor', fuelMul: 1.04 },
+  { id: 'frederikshavn', name: 'Frederikshavn', country: 'DK', lat: 57.43825, lon: 10.54696, size: 'minor', fuelMul: 1.04 },
+  { id: 'copenhagen', name: 'Copenhagen', country: 'DK', lat: 55.71401, lon: 12.59059, size: 'major', fuelMul: 1.03 },
   { id: 'gothenburg', name: 'Gothenburg', country: 'SE', lat: 57.68, lon: 11.82, size: 'major', fuelMul: 1.02 },
-  { id: 'oslo', name: 'Oslo', country: 'NO', lat: 59.89, lon: 10.73, size: 'major', fuelMul: 1.08, note: 'via Oslofjord' },
-  { id: 'kristiansand', name: 'Kristiansand', country: 'NO', lat: 58.13, lon: 8.00, size: 'minor', fuelMul: 1.07 },
-  { id: 'stavanger', name: 'Stavanger', country: 'NO', lat: 58.98, lon: 5.73, size: 'regional', fuelMul: 1.06 },
-  { id: 'bergen', name: 'Bergen', country: 'NO', lat: 60.4, lon: 5.3, size: 'regional', fuelMul: 1.08, note: 'via Byfjorden' },
+  { id: 'oslo', name: 'Oslo', country: 'NO', lat: 59.91248, lon: 10.69528, size: 'major', fuelMul: 1.08, note: 'via Oslofjord' },
+  { id: 'kristiansand', name: 'Kristiansand', country: 'NO', lat: 58.14168, lon: 8.00002, size: 'minor', fuelMul: 1.07 },
+  { id: 'stavanger', name: 'Stavanger', country: 'NO', lat: 58.9743, lon: 5.74182, size: 'regional', fuelMul: 1.06 },
+  { id: 'bergen', name: 'Bergen', country: 'NO', lat: 60.38914, lon: 5.30734, size: 'regional', fuelMul: 1.08, note: 'via Byfjorden' },
   // ---- Global ports (coarse layer) ----
-  { id: 'reykjavik', name: 'Reykjavík', country: 'IS', lat: 64.16, lon: -21.94, size: 'regional', fuelMul: 1.15 },
-  { id: 'lisbon', name: 'Lisbon', country: 'PT', lat: 38.69, lon: -9.19, size: 'major', fuelMul: 1.0 },
-  { id: 'gibraltar', name: 'Gibraltar', country: 'GI', lat: 36.14, lon: -5.37, size: 'regional', fuelMul: 0.9 },
-  { id: 'marseille', name: 'Marseille (Fos)', country: 'FR', lat: 43.33, lon: 5.0, size: 'major', fuelMul: 1.0 },
-  { id: 'genoa', name: 'Genoa', country: 'IT', lat: 44.4, lon: 8.91, size: 'major', fuelMul: 1.02 },
-  { id: 'piraeus', name: 'Piraeus', country: 'GR', lat: 37.93, lon: 23.62, size: 'major', fuelMul: 1.0 },
-  { id: 'istanbul', name: 'Istanbul (Ambarlı)', country: 'TR', lat: 40.96, lon: 28.68, size: 'major', fuelMul: 0.98 },
-  { id: 'alexandria', name: 'Alexandria', country: 'EG', lat: 31.18, lon: 29.86, size: 'major', fuelMul: 0.95 },
-  { id: 'dubai_jebel_ali', name: 'Jebel Ali (Dubai)', country: 'AE', lat: 25.03, lon: 55.04, size: 'mega', fuelMul: 0.8 },
-  { id: 'mumbai', name: 'Mumbai (JNPT)', country: 'IN', lat: 18.93, lon: 72.87, size: 'mega', fuelMul: 0.92 },
-  { id: 'colombo', name: 'Colombo', country: 'LK', lat: 6.95, lon: 79.84, size: 'major', fuelMul: 0.95 },
-  { id: 'singapore', name: 'Singapore', country: 'SG', lat: 1.24, lon: 103.78, size: 'mega', fuelMul: 0.85 },
-  { id: 'jakarta', name: 'Jakarta (Tanjung Priok)', country: 'ID', lat: -6.09, lon: 106.89, size: 'major', fuelMul: 0.93 },
-  { id: 'manila', name: 'Manila', country: 'PH', lat: 14.59, lon: 120.95, size: 'major', fuelMul: 0.98 },
-  { id: 'hong_kong', name: 'Hong Kong', country: 'HK', lat: 22.29, lon: 114.17, size: 'mega', fuelMul: 0.9 },
-  { id: 'shanghai', name: 'Shanghai (Yangshan)', country: 'CN', lat: 30.61, lon: 122.06, size: 'mega', fuelMul: 0.9 },
-  { id: 'busan', name: 'Busan', country: 'KR', lat: 35.08, lon: 129.05, size: 'mega', fuelMul: 0.93 },
-  { id: 'tokyo', name: 'Tokyo (Yokohama)', country: 'JP', lat: 35.6, lon: 139.8, size: 'mega', fuelMul: 1.0 },
-  { id: 'sydney', name: 'Sydney (Botany)', country: 'AU', lat: -33.83, lon: 151.28, size: 'major', fuelMul: 1.05 },
-  { id: 'auckland', name: 'Auckland', country: 'NZ', lat: -36.83, lon: 174.78, size: 'regional', fuelMul: 1.08 },
-  { id: 'cape_town', name: 'Cape Town', country: 'ZA', lat: -33.89, lon: 18.43, size: 'major', fuelMul: 1.0 },
-  { id: 'mombasa', name: 'Mombasa', country: 'KE', lat: -4.07, lon: 39.65, size: 'regional', fuelMul: 1.02 },
-  { id: 'dakar', name: 'Dakar', country: 'SN', lat: 14.68, lon: -17.42, size: 'regional', fuelMul: 1.0 },
-  { id: 'las_palmas', name: 'Las Palmas', country: 'ES', lat: 28.14, lon: -15.40, size: 'regional', fuelMul: 0.96 },
-  { id: 'rio_de_janeiro', name: 'Rio de Janeiro', country: 'BR', lat: -22.9, lon: -43.15, size: 'major', fuelMul: 1.0 },
-  { id: 'santos', name: 'Santos', country: 'BR', lat: -23.98, lon: -46.3, size: 'mega', fuelMul: 0.98 },
-  { id: 'buenos_aires', name: 'Buenos Aires', country: 'AR', lat: -34.57, lon: -58.35, size: 'major', fuelMul: 1.0 },
-  { id: 'valparaiso', name: 'Valparaíso', country: 'CL', lat: -33.03, lon: -71.62, size: 'regional', fuelMul: 1.03 },
-  { id: 'panama_colon', name: 'Colón (Panama)', country: 'PA', lat: 9.37, lon: -79.92, size: 'major', fuelMul: 0.95 },
-  { id: 'galveston', name: 'Galveston / Houston', country: 'US', lat: 29.33, lon: -94.78, size: 'major', fuelMul: 0.88 },
-  { id: 'new_york', name: 'New York / New Jersey', country: 'US', lat: 40.61, lon: -74.04, size: 'mega', fuelMul: 1.0 },
-  { id: 'halifax', name: 'Halifax', country: 'CA', lat: 44.63, lon: -63.55, size: 'regional', fuelMul: 1.0 },
-  { id: 'los_angeles', name: 'Los Angeles / Long Beach', country: 'US', lat: 33.72, lon: -118.24, size: 'mega', fuelMul: 1.0 },
-  { id: 'vancouver', name: 'Vancouver', country: 'CA', lat: 49.3, lon: -123.1, size: 'major', fuelMul: 1.02 },
-  { id: 'honolulu', name: 'Honolulu', country: 'US', lat: 21.3, lon: -157.87, size: 'regional', fuelMul: 1.12 },
-  { id: 'st_petersburg', name: 'St. Petersburg', country: 'RU', lat: 59.92, lon: 30.2, size: 'major', fuelMul: 0.95 },
-  { id: 'gdansk', name: 'Gdańsk', country: 'PL', lat: 54.4, lon: 18.68, size: 'major', fuelMul: 0.97 },
-  { id: 'stockholm', name: 'Stockholm', country: 'SE', lat: 59.33, lon: 18.12, size: 'regional', fuelMul: 1.05 },
-  { id: 'helsinki', name: 'Helsinki', country: 'FI', lat: 60.15, lon: 24.96, size: 'regional', fuelMul: 1.05 },
+  { id: 'reykjavik', name: 'Reykjavík', country: 'IS', lat: 64.15326, lon: -21.94236, size: 'regional', fuelMul: 1.15 },
+  { id: 'lisbon', name: 'Lisbon', country: 'PT', lat: 38.70072, lon: -9.16011, size: 'major', fuelMul: 1.0 },
+  { id: 'gibraltar', name: 'Gibraltar', country: 'GI', lat: 36.13739, lon: -5.36056, size: 'regional', fuelMul: 0.9 },
+  { id: 'marseille', name: 'Marseille (Fos)', country: 'FR', lat: 43.35396, lon: 5.02238, size: 'major', fuelMul: 1.0 },
+  { id: 'genoa', name: 'Genoa', country: 'IT', lat: 44.40417, lon: 8.92665, size: 'major', fuelMul: 1.02 },
+  { id: 'piraeus', name: 'Piraeus', country: 'GR', lat: 37.94223, lon: 23.63477, size: 'major', fuelMul: 1.0 },
+  { id: 'istanbul', name: 'Istanbul (Ambarlı)', country: 'TR', lat: 40.97258, lon: 28.69775, size: 'major', fuelMul: 0.98 },
+  { id: 'alexandria', name: 'Alexandria', country: 'EG', lat: 31.18659, lon: 29.87826, size: 'major', fuelMul: 0.95 },
+  { id: 'dubai_jebel_ali', name: 'Jebel Ali (Dubai)', country: 'AE', lat: 25.0045, lon: 55.07146, size: 'mega', fuelMul: 0.8 },
+  { id: 'mumbai', name: 'Mumbai (JNPT)', country: 'IN', lat: 18.94437, lon: 72.84734, size: 'mega', fuelMul: 0.92 },
+  { id: 'colombo', name: 'Colombo', country: 'LK', lat: 6.95582, lon: 79.8549, size: 'major', fuelMul: 0.95 },
+  { id: 'singapore', name: 'Singapore', country: 'SG', lat: 1.24144, lon: 103.84217, size: 'mega', fuelMul: 0.85 },
+  { id: 'jakarta', name: 'Jakarta (Tanjung Priok)', country: 'ID', lat: -6.10104, lon: 106.87783, size: 'major', fuelMul: 0.93 },
+  { id: 'manila', name: 'Manila', country: 'PH', lat: 14.58533, lon: 120.96248, size: 'major', fuelMul: 0.98 },
+  { id: 'hong_kong', name: 'Hong Kong', country: 'HK', lat: 22.3238, lon: 114.14357, size: 'mega', fuelMul: 0.9 },
+  { id: 'shanghai', name: 'Shanghai (Yangshan)', country: 'CN', lat: 30.60224, lon: 122.10042, size: 'mega', fuelMul: 0.9 },
+  { id: 'busan', name: 'Busan', country: 'KR', lat: 35.10074, lon: 129.05168, size: 'mega', fuelMul: 0.93 },
+  { id: 'tokyo', name: 'Tokyo (Yokohama)', country: 'JP', lat: 35.61914, lon: 139.78686, size: 'mega', fuelMul: 1.0 },
+  { id: 'sydney', name: 'Sydney (Botany)', country: 'AU', lat: -33.80533, lon: 151.24732, size: 'major', fuelMul: 1.05 },
+  { id: 'auckland', name: 'Auckland', country: 'NZ', lat: -36.84123, lon: 174.76647, size: 'regional', fuelMul: 1.08 },
+  { id: 'cape_town', name: 'Cape Town', country: 'ZA', lat: -33.91694, lon: 18.44201, size: 'major', fuelMul: 1.0 },
+  { id: 'mombasa', name: 'Mombasa', country: 'KE', lat: -4.06796, lon: 39.65747, size: 'regional', fuelMul: 1.02 },
+  { id: 'dakar', name: 'Dakar', country: 'SN', lat: 14.67884, lon: -17.43024, size: 'regional', fuelMul: 1.0 },
+  { id: 'las_palmas', name: 'Las Palmas', country: 'ES', lat: 28.14322, lon: -15.4194, size: 'regional', fuelMul: 0.96 },
+  { id: 'rio_de_janeiro', name: 'Rio de Janeiro', country: 'BR', lat: -22.89903, lon: -43.17344, size: 'major', fuelMul: 1.0 },
+  { id: 'santos', name: 'Santos', country: 'BR', lat: -23.98539, lon: -46.28789, size: 'mega', fuelMul: 0.98 },
+  { id: 'buenos_aires', name: 'Buenos Aires', country: 'AR', lat: -34.58086, lon: -58.36581, size: 'major', fuelMul: 1.0 },
+  { id: 'valparaiso', name: 'Valparaíso', country: 'CL', lat: -33.03047, lon: -71.62511, size: 'regional', fuelMul: 1.03 },
+  { id: 'panama_colon', name: 'Colón (Panama)', country: 'PA', lat: 9.3499, lon: -79.90657, size: 'major', fuelMul: 0.95 },
+  { id: 'galveston', name: 'Galveston / Houston', country: 'US', lat: 29.31282, lon: -94.79733, size: 'major', fuelMul: 0.88 },
+  { id: 'new_york', name: 'New York / New Jersey', country: 'US', lat: 40.66938, lon: -74.01566, size: 'mega', fuelMul: 1.0 },
+  { id: 'halifax', name: 'Halifax', country: 'CA', lat: 44.63379, lon: -63.56492, size: 'regional', fuelMul: 1.0 },
+  { id: 'los_angeles', name: 'Los Angeles / Long Beach', country: 'US', lat: 33.71584, lon: -118.27804, size: 'mega', fuelMul: 1.0 },
+  { id: 'vancouver', name: 'Vancouver', country: 'CA', lat: 49.29328, lon: -123.12524, size: 'major', fuelMul: 1.02 },
+  { id: 'honolulu', name: 'Honolulu', country: 'US', lat: 21.30929, lon: -157.86881, size: 'regional', fuelMul: 1.12 },
+  { id: 'st_petersburg', name: 'St. Petersburg', country: 'RU', lat: 59.88674, lon: 30.22656, size: 'major', fuelMul: 0.95 },
+  { id: 'gdansk', name: 'Gdańsk', country: 'PL', lat: 54.3898, lon: 18.67066, size: 'major', fuelMul: 0.97 },
+  { id: 'stockholm', name: 'Stockholm', country: 'SE', lat: 59.32798, lon: 18.0865, size: 'regional', fuelMul: 1.05 },
+  { id: 'helsinki', name: 'Helsinki', country: 'FI', lat: 60.16581, lon: 24.95879, size: 'regional', fuelMul: 1.05 },
   { id: 'murmansk', name: 'Murmansk', country: 'RU', lat: 68.98, lon: 33.07, size: 'regional', fuelMul: 1.1 },
   // ---- World coverage (v7 step 0): ~250 more ports on every continent, server/harbors-world.js ----
   ...WORLD_HARBORS,
 ];
+applyHarborPositions(HARBORS, HARBOR_POSITIONS);
+
+/** Merge the audited approach / entrance / roads / way / area of server/harbor-positions.js into the harbour objects. */
+export function applyHarborPositions(list, table) {
+  const ll = (p) => (Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) ? { lat: p[0], lon: p[1] } : null);
+  for (const h of list) {
+    const a = table && table[h.id];
+    if (!a) continue;
+    if (Array.isArray(a.approach)) h.approach = { lat: a.approach[0], lon: a.approach[1], hdg: a.approach[2] };
+    if (a.entrance) h.entrance = ll(a.entrance);
+    if (a.roads) h.roads = ll(a.roads);
+    if (Array.isArray(a.way)) h.way = a.way.map(ll).filter(Boolean);
+    if (Array.isArray(a.area)) h.area = { bbox: a.area, hull: Array.isArray(a.hull) ? a.hull : null };
+    if (a.prev) h.prev = ll(a.prev);
+    h.audit = { conf: a.conf || null, movedM: a.movedM || 0, roads: a.ev?.roads || null };
+  }
+  return list;
+}
 
 // Navigable channels carved as water in the land mask (lat, lon polylines). widthM in real metres.
 export const CHANNELS = [
@@ -185,7 +215,15 @@ export const PATROLS = [
 
 export function carvingsForWorld() {
   const c = [];
-  for (const h of HARBORS) c.push({ type: 'basin', lat: h.lat, lon: h.lon, radiusM: h.size === 'mega' ? 2600 : h.size === 'major' ? 2200 : 1800 });
+  for (const h of HARBORS) {
+    if (Array.isArray(h.way) && h.way.length) {
+      // audited harbour: the anchor lies in the real basin, so only a small basin there plus the real water path out to
+      // the roads (the coarse raster does not resolve docks; the detail tiles and the harbour patch have the real shape)
+      c.push({ type: 'basin', lat: h.lat, lon: h.lon, radiusM: 300 });
+      c.push({ type: 'channel', pts: [[h.lat, h.lon], ...h.way.map((p) => [p.lat, p.lon])], widthM: 300 });
+      c.push({ type: 'basin', lat: h.roads.lat, lon: h.roads.lon, radiusM: h.size === 'mega' ? 2600 : h.size === 'major' ? 2200 : 1800 });
+    } else c.push({ type: 'basin', lat: h.lat, lon: h.lon, radiusM: h.size === 'mega' ? 2600 : h.size === 'major' ? 2200 : 1800 });
+  }
   for (const ch of CHANNELS) c.push({ type: 'channel', pts: ch.pts, widthM: ch.widthM });
   for (const pc of portCarvings()) c.push(pc);   // V7 step 0 big ports: OSM water of whole port areas (server/bigports.js)
   return c;

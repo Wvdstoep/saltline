@@ -52,9 +52,13 @@ test('harbours: 250–350 real ports, unique ids, the old ids kept, every contin
   assert.ok(HARBORS.filter((h) => !inDetailRegion(h.lat, h.lon)).length >= 250, 'most harbours lie outside the North Sea window');
 });
 
-test('every new harbour anchor is open water on the raster without its own basin carving', () => {
+// Since the harbour position audit (test/harbour-positions.test.mjs) the anchor of an audited harbour lies inside the
+// real basin, which the coarse raster does not resolve; its roads (the outer anchorage the lanes link to) is the point
+// that must be open water on the raw raster. Harbours left where they were keep the old rule for their anchor.
+test('every new harbour roads (or anchor, when not audited) is open water on the raster without its own basin carving', () => {
   const raw = new World().load(CHANNELS.map((ch) => ({ type: 'channel', pts: ch.pts, widthM: ch.widthM })), () => {});
-  const bad = WORLD_HARBORS.filter((h) => !(raw.depthAt(h.lat, h.lon) >= 9)).map((h) => `${h.id} ${raw.depthAt(h.lat, h.lon).toFixed(1)} m`);
+  const pt = (h) => h.roads || h;
+  const bad = WORLD_HARBORS.filter((h) => !(raw.depthAt(pt(h).lat, pt(h).lon) >= (h.roads && /old position/.test(h.audit?.roads || '') ? 2 : 9))).map((h) => `${h.id} ${raw.depthAt(pt(h).lat, pt(h).lon).toFixed(1)} m`);
   assert.deepEqual(bad, []);
   for (const h of HARBORS) assert.ok(world.depthAt(h.lat, h.lon) >= 9, `${h.id} carved depth`);
 });

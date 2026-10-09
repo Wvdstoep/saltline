@@ -31,7 +31,8 @@ test('world lane edges (outside the North Sea detail raster) are deep enough on 
     const k = u < e.to ? `${u}|${e.to}` : `${e.to}|${u}`;
     if (seen.has(k) || e.canal) continue; seen.add(k);
     const A = graph.nodes.get(u), B = graph.nodes.get(e.to);
-    if ([A.kind, B.kind].some((x) => x === 'harbor' || x === 'river')) continue;
+    // harbour links (since the position audit: the harbour's own way out to its roads, kind 'approach') are the harbour's
+    if ([A.kind, B.kind].some((x) => x === 'harbor' || x === 'river' || x === 'approach')) continue;
     if (inDetailRegion(A.lat, A.lon) && inDetailRegion(B.lat, B.lon)) continue;
     const m = edgeMin(A, B);
     if (m < 5.5 + 2) bad.push(`${u}-${e.to} ${m.toFixed(1)} m`);

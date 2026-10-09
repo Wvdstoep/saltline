@@ -1831,6 +1831,7 @@ export class Game {
       const score = (a, b) => -Math.abs(fromAnchor(a, b) - EXPRESS_SAFE.APPROACH_M);
       // the approach 1.5–2 km out (fairway, else the most open bearing); a deep hull on a shoal coast further out
       const tries = [[harbourAim({ anchor, fairway: geom?.fairway, depthLW: o.depthLW }), 2500], [harbourAim({ anchor, depthLW: o.depthLW }), 6000], [harbourAim({ anchor, depthLW: o.depthLW, distM: 6000 }), 9000]];
+      if (harbor.roads) tries.push([{ lat: harbor.roads.lat, lon: harbor.roads.lon }, 9000]);   // audited harbours: their roads (deep hulls)
       for (const [aim, maxRadiusM] of tries) {
         const spot = findSafeSpot(aim, { ...o, score, maxRadiusM });
         if (spot) return { ok: true, lat: spot.lat, lon: spot.lon, hdg: bearing(spot.lat, spot.lon, anchor.lat, anchor.lon), offM: fromAnchor(spot.lat, spot.lon), harbor };

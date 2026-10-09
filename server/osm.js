@@ -760,12 +760,21 @@ export function classifyFeatures(features, origin = null) {
 // ---------------------------------------------------------------------------------------------------------------
 
 /** Sync read of data/osm/<id>.json → the cached payload (any age) or null. */
-export function loadCachedOSM(id) {
+/**
+ * The cached Overpass answer of a harbour, or null. With `harbor` ({lat, lon, prev?}) a cache fetched round another
+ * centre is not used: its `center` is > 300 m away, or it has no `center` and the harbour was moved (`prev`, the
+ * harbour position audit) — the street layer would belong to the old spot.
+ */
+export function loadCachedOSM(id, harbor = null) {
   try {
     const f = osmCachePath(id);
     if (!fs.existsSync(f)) return null;
     const j = JSON.parse(fs.readFileSync(f, 'utf8'));
     if (!j || typeof j !== 'object' || !Array.isArray(j.features) || !Array.isArray(j.coastline)) return null;
+    if (harbor && Number.isFinite(harbor.lat)) {
+      const c = j.center;
+      if (c && Number.isFinite(c.lat) ? Math.hypot(c.lat - harbor.lat, (c.lon - harbor.lon) * Math.cos((harbor.lat * Math.PI) / 180)) * 111320 > 300 : !!harbor.prev) return null;
+    }
     return j;
   } catch { return null; }
 }
@@ -826,11 +835,11 @@ export async function fetchHarborOSM(harbor, opts = {}) {
     const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
     const log = typeof opts.log === 'function' ? opts.log : () => {};
     if (!opts.force) {
-      const cached = loadCachedOSM(harbor.id);
+      const cached = loadCachedOSM(harbor.id, harbor);
       if (cached && isOSMFresh(cached) && cached.radiusM >= radiusM - 1) return cached;
     }
     const fetchImpl = opts.fetchImpl || globalThis.fetch;
-    if (typeof fetchImpl !== 'function') return staleFallback(harbor.id);
+    if (typeof fetchImpl !== 'function') return staleFallback(harbor);
     const endpoints = Array.isArray(opts.endpoints) && opts.endpoints.length ? opts.endpoints : OVERPASS_ENDPOINTS;
     const query = buildOverpassQuery(harbor.lat, harbor.lon, radiusM, Math.max(10, Math.min(180, timeoutMs / 1000)));
     let lastErr = null;
@@ -839,7 +848,7 @@ export async function fetchHarborOSM(harbor, opts = {}) {
       try {
         const json = await postOverpass(endpoint, query, timeoutMs, fetchImpl);
         const { coastline, features } = parseOverpass(json, { buildingCap: opts.buildingCap, origin: { lat: harbor.lat, lon: harbor.lon } });
-        const payload = { id: harbor.id, schema: OSM_SCHEMA, fetchedAt: Date.now(), radiusM, endpoint, coastline, features };
+        const payload = { id: harbor.id, schema: OSM_SCHEMA, fetchedAt: Date.now(), radiusM, endpoint, center: { lat: harbor.lat, lon: harbor.lon }, coastline, features };
         saveCachedOSM(harbor.id, payload);
         return payload;
       } catch (err) {
@@ -848,11 +857,11 @@ export async function fetchHarborOSM(harbor, opts = {}) {
       }
     }
     void lastErr;
-    return staleFallback(harbor.id);
+    return staleFallback(harbor);
   } catch {
     return null;
   }
 }
 
-function staleFallback(id) { const c = loadCachedOSM(id); return c || null; }
+function staleFallback(harbor) { const c = loadCachedOSM(harbor.id, harbor); return c || null; }
 function hostOf(url) { try { return new URL(url).host; } catch { return String(url); } }

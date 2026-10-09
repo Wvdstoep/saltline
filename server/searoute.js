@@ -243,7 +243,7 @@ function dijkstra(ctx, from) {
     open.delete(u); done.add(u);
     for (const e of edgesOf(ctx, u)) {
       if (done.has(e.to)) continue;
-      const penalty = nodeOf(ctx, e.to)?.kind === 'harbor' ? HARBOR_PENALTY_M : 0;
+      const tn = nodeOf(ctx, e.to), penalty = tn?.kind === 'harbor' || tn?.roads ? HARBOR_PENALTY_M : 0;
       const nd = best + e.w + penalty;
       if (nd < (dist.get(e.to) ?? Infinity)) { dist.set(e.to, nd); prev.set(e.to, u); open.set(e.to, nd); }
     }

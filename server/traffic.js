@@ -100,8 +100,11 @@ export class Traffic {
       if (!tgt) { this.moor(s, this.byId.get(s.dest)); continue; }
       const dist = haversine(s.lat, s.lon, tgt[0], tgt[1]);
       const last = s.wp === s.path.length - 1;
-      // anchor in the roads before a busy port for a while
-      if (last && s.anchorStop && !s.anchored && dist < 6000) { s.anchored = true; s.state = 'anchored'; s.spd = 0; s.until = this.t + (0.5 + this.rnd() * 1.5) * 3600; continue; }
+      // anchor in the roads before a busy port for a while (audited harbours: at their roads point, else 6 km out)
+      if (s.anchorStop && !s.anchored) {
+        const dh = this.byId.get(s.dest), rd = dh && dh.roads;
+        if (rd ? haversine(s.lat, s.lon, rd.lat, rd.lon) < 1200 : last && dist < 6000) { s.anchored = true; s.state = 'anchored'; s.spd = 0; s.until = this.t + (0.5 + this.rnd() * 1.5) * 3600; continue; }
+      }
       const want = s.kn * (s.wxMul ?? 1) * (last && dist < 3000 ? Math.max(0.25, dist / 3000) : 1);
       s.spd += (want - s.spd) * Math.min(1, dt / 40);
       const brg = bearing(s.lat, s.lon, tgt[0], tgt[1]);

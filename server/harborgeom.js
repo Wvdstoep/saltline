@@ -2063,10 +2063,13 @@ function readGeomMeta(id) {
     // the street layer is required (v4+), except for a tile-built patch without a cached Overpass answer
     if (!Array.isArray(meta.geom.features?.pois) || (!meta.geom.features.pois.length && !meta.geom.sub && meta.source !== 'tiles') || !Array.isArray(meta.geom.features.roads)) return null;
     const harbor = geomHarbor(id); if (!harbor) return null;
+    // per-harbour stamp: a patch built round another centre (the harbour was moved by the position audit) is rebuilt
+    const o = meta.geom.origin;
+    if (o && (Math.abs(o.lat - harbor.lat) > 1e-9 || Math.abs(o.lon - harbor.lon) > 1e-9)) return null;
     const port = bigports.portForHarbor(harbor);
     // built without (this) big-port data: rebuilt when a rebuild can use OSM (network, or an OSM cache on disk), so an
     // offline box without OSM keeps its real geometry rather than falling back to the port data alone
-    if (port && meta.geom.bigport !== bigports.geomStamp(port) && (networkAllowed() || osm.loadCachedOSM(id) || harbor.sub)) return null;
+    if (port && meta.geom.bigport !== bigports.geomStamp(port) && (networkAllowed() || osm.loadCachedOSM(id, harbor) || harbor.sub)) return null;
     return { meta, harbor, b, textLen: text.length };
   } catch { return null; }
 }
@@ -2214,7 +2217,7 @@ async function buildHarbor(h, opts) {
     osmData = r.data;
     if (!osmData || !osmUsable(osmData, h)) osmFailedAt.set(h.id, Date.now());
   } else {
-    osmData = osm.loadCachedOSM(h.id);
+    osmData = osm.loadCachedOSM(h.id, h);
   }
   if (disk && !(osmData && osmUsable(osmData, h))) return disk.geom;
   await new Promise((r) => setImmediate(r));
@@ -2290,7 +2293,7 @@ async function entryFromTiles(h, { prio = 0, timeoutMs = 8000 } = {}) {
     if (!tiles) return null;
     await new Promise((res) => setImmediate(res));
     const t0 = Date.now();
-    const build = buildFromTiles(h, tiles, osm.loadCachedOSM(h.id), world);
+    const build = buildFromTiles(h, tiles, osm.loadCachedOSM(h.id, h), world);
     if (!build) return null;
     if (!h.sub && !build.geom.berths.length) { cfg.log(`[geom] ${h.id}: tile build has no berth — keeping the old patch`); return null; }
     const port = bigports.portForHarbor(h);

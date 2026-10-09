@@ -17,6 +17,7 @@ import { harborById } from './harbors.js';
 import { tugsPublic } from './tugassist.js';
 import { bindPlayer, takeVesselFields, makeActor } from './vessel.js';
 import * as captain from './captain.js';
+import { relocateDocked } from './harbormove.js';
 
 const SERVICE_INTERVAL_S = FEES.SERVICE_INTERVAL_DAYS * 86400;
 const START_HARBOR = 'rotterdam';
@@ -203,6 +204,8 @@ export class Fleet {
   /** §3.5 after the players loop of loadState. savedAtS = unix s of the save. */
   afterLoad(savedAtS) {
     const g = this.game, down = Number.isFinite(savedAtS) ? Math.max(0, g.simTime - savedAtS) : 0;
+    // harbours moved by the position audit: ships (players' and fleet) saved docked at the old spot move with them
+    try { relocateDocked([...this.vessels.values()], harborById, (m) => g.log?.(m)); } catch (e) { g.log?.(`[fleet] harbour relocation failed: ${e.message}`); }
     for (const v of this.vessels.values()) {
       if (this.isAboard(v)) continue;
       const a = this.actorOf(v);

@@ -497,13 +497,13 @@ export function buildGraph(world, opts = {}) {
 
   const seaNodes = LANE_NODES.filter((n) => n.kind !== 'river');
   // Nearest reachable sea-lane nodes for a point (candidates by distance; the first/last 3 km may touch land).
-  const nearestLinks = (p, maxLinks, maxFirstD, allowForced) => {
+  const nearestLinks = (p, maxLinks, maxFirstD, allowForced, slackM = HARBOR_SLACK_M) => {
     const cand = seaNodes.map((n) => ({ n, d: haversine(p.lat, p.lon, n.lat, n.lon) })).sort((x, y) => x.d - y.d);
     const links = [];
     for (let i = 0; i < cand.length && links.length < maxLinks; i++) {
       const { n, d } = cand[i];
       if (links.length === 0 ? d > maxFirstD * 4 : d > Math.max(150000, 3 * links[0].d)) break;
-      if (landSamples(world, p, n, HARBOR_SLACK_M) > 0) continue;
+      if (landSamples(world, p, n, slackM) > 0) continue;
       links.push({ id: n.id, d });
     }
     if (links.length === 0 && allowForced && cand.length) {
@@ -530,16 +530,31 @@ export function buildGraph(world, opts = {}) {
   for (const h of harbors) {
     const hn = { id: h.id, name: h.name, lat: h.lat, lon: h.lon, kind: 'harbor' };
     nodes.set(h.id, hn);
+    // Audited harbours (server/harbor-positions.js): the anchor lies inside the real basin, so the harbour reaches the
+    // lanes along its real way out — a chain of approach nodes anchor → entrance → … → roads (carved into the raster by
+    // carvingsForWorld) — and the lane links start at the roads.
+    let head = hn;
+    if (Array.isArray(h.way) && h.way.length) {
+      h.way.forEach((p, k) => {
+        const id = `${h.id}~${k + 1}`;
+        nodes.set(id, { id, name: k === h.way.length - 1 ? `${h.name} roads` : `${h.name} approach`, lat: p.lat, lon: p.lon, kind: 'approach', harbor: h.id, ...(k === h.way.length - 1 ? { roads: true } : {}) });
+        link(head.id, id, haversine(head.lat, head.lon, p.lat, p.lon), false);
+        head = nodes.get(id);
+      });
+    }
     const links = [];
     // River harbours link to the nearest river node(s) first.
-    const rc = riverNodes.map((n) => ({ n, d: haversine(h.lat, h.lon, n.lat, n.lon) })).filter((x) => x.d < 25000).sort((x, y) => x.d - y.d);
-    for (const { n, d } of rc.slice(0, 2)) if (landSamples(world, h, n, HARBOR_SLACK_M) === 0) links.push({ id: n.id, d });
+    const rc = riverNodes.map((n) => ({ n, d: haversine(head.lat, head.lon, n.lat, n.lon) })).filter((x) => x.d < 25000).sort((x, y) => x.d - y.d);
+    for (const { n, d } of rc.slice(0, 2)) if (landSamples(world, head, n, HARBOR_SLACK_M) === 0) links.push({ id: n.id, d });
     const maxFirstD = inDetailRegion(h.lat, h.lon) ? 250000 : 1500000;
-    for (const l of nearestLinks(h, 3 - links.length, maxFirstD, links.length === 0)) {
+    // a roads point is open water: its links must be clean all the way (the slack is for harbour points on the coast)
+    let more = head !== hn && links.length < 3 ? nearestLinks(head, 3 - links.length, maxFirstD, false, 0) : [];
+    if (!more.length) more = nearestLinks(head, 3 - links.length, maxFirstD, links.length === 0);
+    for (const l of more) {
       if (l.bad !== undefined) { forced++; log(`[lanes] harbour ${h.id}: no clean link, forced ${l.id} (${l.bad} land samples)`); }
       links.push(l);
     }
-    for (const l of links) link(h.id, l.id, l.d, false);
+    for (const l of links) link(head.id, l.id, l.d, false);
     harborLinks.set(h.id, links.map((l) => l.id));
   }
   log(`[lanes] graph: ${nodes.size} nodes, ${kept} edges kept, ${dropped} dropped for crossing land, ${harbors.length} harbours linked (${forced} forced)`);
@@ -557,7 +572,7 @@ export function buildGraph(world, opts = {}) {
       for (const e of adj.get(u) || []) {
         if (done.has(e.to)) continue;
         // Routing through another harbour is allowed but penalised so lanes are preferred to port-hopping.
-        const penalty = nodes.get(e.to).kind === 'harbor' ? 60000 : 0;
+        const tn = nodes.get(e.to), penalty = tn.kind === 'harbor' || tn.roads ? 60000 : 0;   // a harbour's roads counts as the harbour
         const nd = best + e.w + penalty;
         if (nd < (dist.get(e.to) ?? Infinity)) { dist.set(e.to, nd); prev.set(e.to, u); open.set(e.to, nd); }
       }
