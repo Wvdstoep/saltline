@@ -15,6 +15,7 @@ import { findSafeSpot, spotProblem, harbourAim, clearRadius, separation, SAFE } 
 import { SHIP_CLASSES } from '../shared/constants.js';
 import { haversine, destination, bearing } from '../shared/geo.js';
 import { tideAt, lowWaterAt } from '../shared/tide.js';
+import { areasAt } from '../shared/politics.js';
 
 process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
 const world = new World().load(carvingsForWorld(), () => {});
@@ -111,14 +112,22 @@ test('safespot: harbourAim walks the fairway out, else picks the open bearing', 
 // ------------------------------------------------------------------------------------------------ every harbour
 test('express to every harbour arrives 1.5–2 km out on safe water and never grounds (coaster)', async () => {
   const g = mkGame();
+  const warZone = [];
   for (const h of HARBORS) {
     const start = destination(h.lat, h.lon, 0, 60000);
     const { p, ws } = atSea(g, `X${h.id}`.slice(0, 15), start);
     p.shallowSince = Date.now() - 3000; p.lastValid = { lat: 0, lon: 0 }; // stale grounding state from before the passage
     const money = p.money;
     await g.expressPassage(p, h.lat, h.lon);
-    assert.match(lastEvent(ws), /Express passage/, `${h.id}: ${lastEvent(ws)}`);
-    assert.ok(p.money < money);
+    // World politics (WORLD-POLITICS-CONTRACT §H17): an express passage may not end inside a tier 3/4 war-risk area —
+    // harbours in one are refused before anything is charged.
+    if (/cannot end inside a listed area/.test(lastEvent(ws))) {
+      assert.ok(areasAt(g.politics.ds, h.lat, h.lon, ['war_risk'], g.politics.now).some((a) => a.tier >= 3), `${h.id}: refused but not in a tier ≥ 3 area`);
+      assert.equal(p.money, money, `${h.id}: refused express must not charge`);
+      warZone.push(h.id); g.disconnect(p); g.players.delete(p.id); continue;
+    }
+    assert.match(lastEvent(ws), /^Express passage/, `${h.id}: ${lastEvent(ws)}`);
+    assert.ok(p.money < money, `${h.id}: money ${money} -> ${p.money}; ${lastEvent(ws)}`);
     assert.equal(p.shallowSince, 0); assert.deepEqual(p.lastValid, { lat: p.ship.lat, lon: p.ship.lon });
     const a = g.harborAnchor(h), off = haversine(a.lat, a.lon, p.ship.lat, p.ship.lon);
     assert.ok(off >= 900 && off <= 3500, `${h.id}: ${off.toFixed(0)} m off the anchor`);
@@ -128,6 +137,7 @@ test('express to every harbour arrives 1.5–2 km out on safe water and never gr
     assertNoGrounding(g, p, ws, h.id);
     g.disconnect(p); g.players.delete(p.id);
   }
+  assert.ok(warZone.length <= HARBORS.length / 10, `refused in war-risk areas: ${warZone.join(', ')}`);
 });
 test('express with deep hulls: a bulk carrier and a container ship still arrive safe (or are refused uncharged)', async () => {
   const g = mkGame();

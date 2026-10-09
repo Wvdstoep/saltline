@@ -122,6 +122,11 @@ test('cargo transfer in one harbour: exact stacks, hold limits, same harbour, co
   p.cargo.push({ good: 'steel', qty: 50, contraband: false, jobId: 'jst1' });
   f.onAction(p, { action: 'fleet_transfer', fromId: p.aboard, toId: tr.id, good: 'steel', qty: 10 });
   assert.match(events(ws).at(-1), /Contract cargo moves with its contract/);
+  // origin (politics: sanctions / origin rules) travels with the stack and keeps origins apart; none stays absent
+  p.cargo.push({ good: 'machinery', qty: 20, contraband: false, jobId: null, origin: 'RU' }, { good: 'machinery', qty: 20, contraband: false, jobId: null, origin: 'NL' });
+  f.onAction(p, { action: 'fleet_transfer', fromId: p.aboard, toId: tr.id, good: 'machinery', qty: 30 });
+  assert.deepEqual(tr.cargo.filter((c) => c.good === 'machinery').map((c) => [c.origin, c.qty]).sort(), [['NL', 10], ['RU', 20]]);
+  assert.ok(!('origin' in tr.cargo.find((c) => c.good === 'grain')), 'no origin key on a stack that never had one');
 });
 
 test('fleet_move_job: the contract and its cargo move together and the due date keeps the time left', () => {

@@ -11,6 +11,7 @@ import { carvingsForWorld, harborById } from '../server/harbors.js';
 import { Game } from '../server/game.js';
 import { WARP, SHIP_CLASSES } from '../shared/constants.js';
 import { haversine, destination } from '../shared/geo.js';
+import { POL } from '../shared/politics.js';
 
 process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
 const world = new World().load(carvingsForWorld(), () => {});
@@ -182,7 +183,10 @@ test('warp: the movement budget scales with the factor and keeps the old factor 
   a.p.flooding = 0; assert.equal(tryJump(400), true, '400 m in 2 s is within the 20× budget during the grace');
 });
 
-test('warp: fuel, hull wear, crew wages and the fishing catch scale with the factor', () => {
+test('warp: fuel, hull wear, crew wages and the fishing catch scale with the factor', (t) => {
+  // The North Sea is an ECA: the politics layer adds a fuel surcharge in whole credits to p.money. Switch it off here so
+  // the money delta is the crew wages alone (the surcharge is accrued per whole credit and would skew the ratio).
+  const ecaWas = POL.ECA_ON; POL.ECA_ON = false; t.after(() => { POL.ECA_ON = ecaWas; });
   const g = mkGame();
   const ship = { cls: 'coaster', hdg: 0, spd: 14, throttle: 1 };
   const a = atSea(g, 'Ann', OPEN_B, ship), b = atSea(g, 'Bob', OPEN_A, ship);

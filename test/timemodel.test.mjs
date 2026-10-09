@@ -19,6 +19,7 @@ import { fuelBurnPerSimHour, wearPerSimHour, headwindFactor } from '../shared/ph
 import { RATES, serviceKn, catchRate, serviceBurnTph, kmHours } from '../shared/rates.js';
 import { JOBTIME, needFor, budgetFor, estimateJob, hardReason, fmtShipH, fmtRealHM, jobLabel, refClassFor } from '../shared/jobtime.js';
 import { haversine, bearing } from '../shared/geo.js';
+import { POL } from '../shared/politics.js';
 
 process.env.SALTLINE_DATA = process.env.SALTLINE_DATA || new URL('../data/', import.meta.url).pathname;
 const world = new World().load(carvingsForWorld(), () => {});
@@ -202,7 +203,9 @@ test('under tugs the ship clock runs at the tug op time compression (rate 3 → 
 });
 
 // ------------------------------------------------------------------------------------------------ 5. exact accounting
-test('fuel, wear, wages, flooding and the catch add up exactly per ship hour at every warp level (10 Hz)', () => {
+test('fuel, wear, wages, flooding and the catch add up exactly per ship hour at every warp level (10 Hz)', (t) => {
+  // The North Sea is an ECA: the politics fuel surcharge also comes off p.money. Off here so the money delta is wages only.
+  const ecaWas = POL.ECA_ON; POL.ECA_ON = false; t.after(() => { POL.ECA_ON = ecaWas; });
   const perHour = {};
   for (const L of [1, 5, 20, 100, 400]) {
     const g = mkGame();

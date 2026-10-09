@@ -52,7 +52,9 @@ export function modelOf(cls) {
   let m = null;
   try { m = src?.modelOf?.(key) ?? src?.MODELS?.[mid] ?? null; } catch { m = null; }
   if (!m) {
-    const row = SHIP_CLASSES[mid];
+    // Only the table's own (legacy) rows: SHIP_CLASSES also resolves catalogue model ids through its variant prototype
+    // (ships/classes.js), and a stand-in built from such a row would have no handling/units — unknown here means null.
+    const row = Object.prototype.hasOwnProperty.call(SHIP_CLASSES, mid) ? SHIP_CLASSES[mid] : null;
     if (row) {
       const L = LEGACY[mid] || { type: CAT_TYPE[row.cat] || 'general', handling: [], units: {}, eq: [] };
       m = { ...row, id: mid, base: mid, era: 'classic', type: L.type, handling: L.handling, units: { t: row.capacity, pax: row.pax, ...L.units },

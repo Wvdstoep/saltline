@@ -623,7 +623,7 @@ export class Fleet {
       if (left <= 1e-9) break;
       const k = Math.min(c.qty, left); c.qty = c.caught ? Math.round((c.qty - k) * 1e6) / 1e6 : c.qty - k; left -= k;
       const dst = b.cargo.find((x) => x.good === good && !x.jobId && !!x.contraband === !!c.contraband && !!x.caught === !!c.caught && (x.origin ?? null) === (c.origin ?? null));
-      if (dst) dst.qty += k; else b.cargo.push({ good, qty: k, contraband: !!c.contraband, jobId: null, ...(c.caught ? { caught: true } : {}), origin: c.origin ?? null });
+      if (dst) dst.qty += k; else b.cargo.push({ good, qty: k, contraband: !!c.contraband, jobId: null, ...(c.caught ? { caught: true } : {}), ...(c.origin != null ? { origin: c.origin } : {}) });
     }
     a.cargo = a.cargo.filter((c) => c.qty > 1e-6);
     this.tell(p, 'info', `Moved ${fmtT(q)} of ${GOODS[good].name} from ${a.name} to ${b.name}.`, b);

@@ -303,7 +303,8 @@ test('sources: Terrarium PNG decoding, compact overlays, converter hints', () =>
   assert.equal(dm.length, 65536); assert.equal(dm[0], -2560); assert.equal(dm[65535], -2560);
   assert.equal(decodeTerrarium(Buffer.from('nope')), null);
   const ov = compactOverlay({ elements: [{ type: 'way', id: 2, tags: { man_made: 'quay', name: 'Kade', fixme: 'x' }, geometry: [{ lat: 1, lon: 2 }, { lat: 1.1, lon: 2.2 }] }, { type: 'node', id: 1, lat: 1, lon: 2, tags: { highway: 'x' } }] }, 3, 4, '2026-10-08');
-  assert.deepEqual(ov, { v: 1, date: '2026-10-08', x: 3, y: 4, f: [{ id: 'w2', k: 'quay', t: { man_made: 'quay', name: 'Kade' }, g: [1, 2, 1.1, 2.2], c: 0 }] });
+  // v2: the waterways overlay (bridges, locks, CEMT fairways, harbour tags); v1 only with SALTLINE_WW_OFF=1
+  assert.deepEqual(ov, { v: process.env.SALTLINE_WW_OFF === '1' ? 1 : 2, date: '2026-10-08', x: 3, y: 4, f: [{ id: 'w2', k: 'quay', t: { man_made: 'quay', name: 'Kade' }, g: [1, 2, 1.1, 2.2], c: 0 }] });
   const { fx, fy } = tileF(14, 51.968, 4.035);
   const h = hintsFor(14, Math.floor(fx), Math.floor(fy));
   assert.deepEqual([h.size, h.port, h.bigport, h.iala], ['mega', true, 'rotterdam', 'A']);
