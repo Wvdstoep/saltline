@@ -1,0 +1,13 @@
+{
+"odesa": {"status":{"value":"restricted","reasons":["corridor route required","martial law in force"],"src":["ua-navy-routes-2023","ukranews-odesa-2026","liga-martial-law-2026-07"],"asOf":"2026-10-09","reviewBy":"2026-10-31","basis":"source","verify":false,"note":"Martial law extended to 31 Oct 2026; Sea Ports Authority reports entry rules unchanged (Aug 2026)."},"entry":{"clearance":true,"clearanceH":2,"validH":72,"corridor":"ua-corridor","basis":"game","src":["ua-navy-routes-2023"],"asOf":"2026-10-09","note":"Clearance step is a game rule standing in for corridor registration."},"psc":"blacksea","programmes":["ua-grain-corridor"],"portIncident":{"pCall":0.015,"basis":"game","src":["ukranews-odesa-2026","mex-blacksea-2026"],"asOf":"2026-10-09"}},
+"novorossiysk": {"psc":"blacksea"},
+"vladivostok": {"psc":"tokyo"},
+"nakhodka": {"psc":"tokyo"},
+"korsakov": {"psc":"tokyo"},
+"petropavlovsk": {"psc":"tokyo"},
+"vancouver": {"psc":"tokyo"},
+"prince_rupert": {"psc":"tokyo"},
+"istanbul": {"psc":"med"},
+"izmir": {"psc":"med"},
+"mersin": {"psc":"med"}
+}

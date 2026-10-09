@@ -1,0 +1,376 @@
+[
+ {
+  "id": "war4",
+  "kind": "war_risk",
+  "name": "Fixture listed area T4",
+  "tier": 4,
+  "apPct": 1,
+  "apBasis": "source",
+  "pDay": 0.006,
+  "pBasis": "game",
+  "mix": {
+   "mine": 0.5,
+   "projectile": 0.45,
+   "detention": 0.05
+  },
+  "profile": null,
+  "poly": [
+   [
+    [
+     29,
+     43
+    ],
+    [
+     31,
+     43
+    ],
+    [
+     31,
+     45
+    ],
+    [
+     29,
+     45
+    ],
+    [
+     29,
+     43
+    ]
+   ]
+  ],
+  "from": "2022-03-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "war3",
+  "kind": "war_risk",
+  "name": "Fixture listed area T3",
+  "tier": 3,
+  "apPct": 0.7,
+  "apBasis": "source",
+  "pDay": 0.004,
+  "pBasis": "game",
+  "mix": {
+   "mine": 0.1,
+   "projectile": 0.8,
+   "detention": 0.1
+  },
+  "profile": null,
+  "poly": [
+   [
+    [
+     0,
+     20
+    ],
+    [
+     5,
+     20
+    ],
+    [
+     5,
+     25
+    ],
+    [
+     0,
+     25
+    ],
+    [
+     0,
+     20
+    ]
+   ]
+  ],
+  "from": "2022-03-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "war1",
+  "kind": "war_risk",
+  "name": "Fixture listed area T1",
+  "tier": 1,
+  "apPct": null,
+  "apBasis": "game",
+  "pDay": null,
+  "pBasis": "game",
+  "mix": {
+   "projectile": 1
+  },
+  "profile": null,
+  "poly": [
+   [
+    [
+     10,
+     20
+    ],
+    [
+     12,
+     20
+    ],
+    [
+     12,
+     22
+    ],
+    [
+     10,
+     22
+    ],
+    [
+     10,
+     20
+    ]
+   ]
+  ],
+  "from": "2022-03-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "wl",
+  "kind": "warlike",
+  "name": "Fixture warlike area",
+  "crewPayMul": 2,
+  "poly": [
+   [
+    [
+     31,
+     43
+    ],
+    [
+     33,
+     43
+    ],
+    [
+     33,
+     45
+    ],
+    [
+     31,
+     45
+    ],
+    [
+     31,
+     43
+    ]
+   ]
+  ],
+  "from": "2022-03-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "eca1",
+  "kind": "eca",
+  "name": "Fixture ECA",
+  "sulphurPct": 0.1,
+  "nox": "tier3",
+  "noxBuiltFrom": 2021,
+  "poly": [
+   [
+    [
+     -2,
+     49
+    ],
+    [
+     2,
+     49
+    ],
+    [
+     2,
+     53
+    ],
+    [
+     -2,
+     53
+    ],
+    [
+     -2,
+     49
+    ]
+   ]
+  ],
+  "from": "2015-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "eca-future",
+  "kind": "eca",
+  "name": "Fixture future ECA",
+  "sulphurPct": 0.1,
+  "nox": null,
+  "poly": [
+   [
+    [
+     -2,
+     39
+    ],
+    [
+     2,
+     39
+    ],
+    [
+     2,
+     41
+    ],
+    [
+     -2,
+     41
+    ],
+    [
+     -2,
+     39
+    ]
+   ]
+  ],
+  "from": "2030-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "pir",
+  "kind": "piracy",
+  "name": "Fixture piracy area",
+  "p100": 0.004,
+  "pBasis": "game",
+  "kinds": {
+   "robbery": 0.7,
+   "repelled": 0.25,
+   "hijack": 0.05
+  },
+  "poly": [
+   [
+    [
+     5,
+     -5
+    ],
+    [
+     15,
+     -5
+    ],
+    [
+     15,
+     5
+    ],
+    [
+     5,
+     5
+    ],
+    [
+     5,
+     -5
+    ]
+   ]
+  ],
+  "from": "2020-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "fx-corr",
+  "kind": "corridor",
+  "name": "Fixture corridor",
+  "line": [
+   [
+    30,
+    42
+   ],
+   [
+    30,
+    43.5
+   ],
+   [
+    30,
+    44
+   ]
+  ],
+  "poly": [],
+  "to": [
+   "hr"
+  ],
+  "escort": false,
+  "inspection": null,
+  "from": "2023-08-08",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "gnss",
+  "kind": "warning",
+  "name": "Fixture GNSS warning",
+  "text": "GNSS interference reported",
+  "poly": [
+   [
+    [
+     19,
+     44
+    ],
+    [
+     21,
+     44
+    ],
+    [
+     21,
+     46
+    ],
+    [
+     19,
+     46
+    ],
+    [
+     19,
+     44
+    ]
+   ]
+  ],
+  "from": "2026-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ }
+]

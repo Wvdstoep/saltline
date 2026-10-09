@@ -163,3 +163,25 @@ test('crash jibe damage: only with the helper off, at most once per 10 s', PH2, 
   g.onAction(p, { action: 'rig', cmd: { auto: 'hint' } }); g.rigLimits.get(p).jibeAt -= 11000;
   const c2 = p.cond; g.onAction(p, { action: 'rig_event', kind: 'crash_jibe', aws: 12 }); assert.equal(p.cond, c2, 'helper hint: no damage');
 });
+
+// Found in the browser run (phase 2): buying a yacht at the quay (trade-in keeps the vessel, only ship.cls changes)
+// sent `you` with no rig and sailsUp true, so the client built the new yacht with every sail set while moored; on
+// cast-off the server then lazily created a rig with the sails set as well.
+test('a yacht bought at the quay arrives with her sails down (you.ship.rig, sailsUp false) and stays down on cast-off', PH2, async () => {
+  const g = await mkGame();
+  for (const cls of Object.keys(RIGS)) {
+    const { p, ws } = join(g, 'Buyer ' + cls);
+    assert.ok(p.docked, 'starts moored');
+    p.money = 5e6;
+    g.onAction(p, { action: 'buy_ship', cls });
+    assert.equal(p.ship.cls, cls);
+    const you = last(ws, 'you').you;
+    assert.ok(you.ship.rig && you.ship.rig.cls === cls, `${cls}: rig in you`);
+    assert.equal(anyHoisted(you.ship.rig), false, `${cls}: moored → sails down`);
+    assert.equal(you.sailsUp, false, `${cls}: sailsUp follows the rig`);
+    g.onAction(p, { action: 'undock' });
+    assert.equal(anyHoisted(p.ship.rig), false, `${cls}: still down after cast-off`);
+    g.onAction(p, { action: 'sails', up: true });
+    assert.equal(anyHoisted(p.ship.rig), true, `${cls}: the Sails button hoists them`);
+  }
+});

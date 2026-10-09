@@ -226,6 +226,7 @@ function sanitize(s, o) {
   o.speedKn = clamp(Math.abs(fin(s.speedKn)), 0, 60);
   o.windSpd = clamp(fin(s.windSpd), 0, 60);
   o.windRelDeg = fin(s.windRelDeg);
+  o.sailFlog = clamp(fin(s.sailFlog), 0, 1);                                // sailing: flapping / luffing cloth (area-weighted) 0…1
   o.waveH = clamp(fin(s.waveH), 0, 15);
   o.rain = clamp(fin(s.rain), 0, 1);
   o.storm = clamp(fin(s.storm), 0, 1);
@@ -861,7 +862,8 @@ export class SoundEngine {
     if (!v) return;
     this._set(v.bp.frequency, (180 + 26 * aw + 140 * g) * env.windLP, 0.25);
     this._set(v.bp.Q, 0.6 + 0.015 * aw, 0.5);
-    this._set(v.out.gain, lvl, 0.25);
+    const flog = s.sailFlog > 0.02 ? s.sailFlog * (0.5 + 0.5 * Math.sin(this.ctx.currentTime * 2 * Math.PI * (2.5 + aw / 8))) : 0;   // sailing: cloth flapping at 2–4 Hz
+    this._set(v.out.gain, lvl * (1 + 1.6 * flog) + 0.02 * flog, flog ? 0.03 : 0.25);
     if (v.pan) this._set(v.pan.pan, Math.sin(aang) * (env.key === 'deck' || env.key === 'ashore' ? 0.55 : 0.2), 0.4);
     // whistle/howl in rigging, aerials and window seals above ~15 m/s
     const wl = clamp((aw - 14) / 12, 0, 1) * env.whistle * g * g * wf * 0.1 * rig;
@@ -1132,6 +1134,7 @@ export class SoundEngine {
         case 'collision': return this._gap('collision', 0.35) && !!this._collision(k, env);
         case 'grounding': return this._gap('grounding', 1.2) && !!this._grounding(k, env);
         case 'creak': return !!this._creak(k);
+        case 'jibe_bang': return this._gap('jibe', 1.5) && !!this._collision(Math.min(1, 0.35 + 0.5 * k), env);   // sailing: crash jibe
         case 'splash': return !!this._splash(k, env.key === 'bridge');
         case 'thunder': return !!this._thunder(k);
         case 'tug': return !!this._tug(k, env);

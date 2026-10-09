@@ -106,17 +106,19 @@ export function stepMotion(st, ctx, dt) {
   const rb = (wFrom - hdg / D2R) * D2R, sinRb = Math.sin(rb); // wind on the starboard side → sinRb > 0 → heel to port (roll > 0)
   let heel;
   // sails: heel grows with the square of the wind up to ~12 m/s, then the crew reefs (heel held, then eased)
-  if (st.sail && ctx.sails !== false) heel = Math.min(25, st.windHeel * (U / 12) * (U / 12)) * D2R * Math.sign(sinRb) * Math.pow(Math.abs(sinRb), 0.6) * (U > 13 ? Math.pow(13 / U, 1.5) : 1);
+  const physHeel = st.sail && Number.isFinite(ctx.heelDeg);   // sailing physics heel (rig.heel / rv), + = starboard rail down (§4.4)
+  if (physHeel) heel = -ctx.heelDeg * D2R;                   // roll > 0 = heeled to port
+  else if (st.sail && ctx.sails !== false) heel = Math.min(25, st.windHeel * (U / 12) * (U / 12)) * D2R * Math.sign(sinRb) * Math.pow(Math.abs(sinRb), 0.6) * (U > 13 ? Math.pow(13 / U, 1.5) : 1);
   else heel = st.windHeel * (U / 20) * (U / 20) * D2R * sinRb;
   // gusts: wind pressure goes with U², so a squall heels her harder for a few seconds (deterministic in time; `gust`
   // = the gust speed from the weather, m/s). Sails are reefed above ~13 m/s, so this mostly shows on high-sided hulls.
   const Ug = Number.isFinite(ctx.gust) && Number.isFinite(t) && U > 3 ? Math.max(U, ctx.gust) : U;
-  if (Ug > U) {
+  if (Ug > U && !physHeel) {                                 // the sail physics already has its gusts
     const gn = Math.max(0, Math.sin(t * 0.41 + 1.7 * Math.sin(t * 0.13)) * 0.7 + Math.sin(t * 1.07) * 0.3);
     heel *= 1 + ((Ug / U) * (Ug / U) - 1) * gn;
   }
   heel += st.turnHeel * D2R * Math.max(-1, Math.min(1, ctx.rudder || 0)) * vr * vr;
-  heel = Math.max(-0.5, Math.min(0.5, heel));
+  heel = physHeel ? Math.max(-1.2, Math.min(1.2, heel)) : Math.max(-0.5, Math.min(0.5, heel));   // an overpowered yacht heels past 30°
   const list = flood * 0.25, trim = -flood * 0.035;
   // roll is excited by the effective wave slope: the pressure field decays over the draft (Smith effect, ≈ 0.85)
   const eqH = mean * exc, eqP = Math.atan(as) * exc + trim, eqR = Math.atan(at) * 0.85 * exc + (docked ? 0 : heel) + list;

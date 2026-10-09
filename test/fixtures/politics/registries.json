@@ -1,0 +1,124 @@
+{
+ "lr": {
+  "name": "Open L",
+  "flag": "XL",
+  "kind": "open",
+  "owner": {
+   "rule": "any"
+  },
+  "age": {
+   "maxYears": null,
+   "inspectOverYears": 20
+  },
+  "crew": {
+   "rule": "any"
+  },
+  "setupDays": 1,
+  "crewCostMul": 1,
+  "fees": {
+   "initialCr": 2000,
+   "perTCr": 0.5,
+   "annualPerTCr": 0.2,
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "pa": {
+  "name": "Open P",
+  "flag": "XP",
+  "kind": "open",
+  "owner": {
+   "rule": "any"
+  },
+  "age": {
+   "maxYears": 25,
+   "inspectOverYears": 20
+  },
+  "crew": {
+   "rule": "any"
+  },
+  "setupDays": 1,
+  "crewCostMul": 1,
+  "fees": {
+   "initialCr": 2500,
+   "perTCr": 0.5,
+   "annualPerTCr": 0.2,
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "xus": {
+  "name": "Alpha national",
+  "flag": "XA",
+  "kind": "national",
+  "owner": {
+   "rule": "home_in",
+   "cc": [
+    "XA"
+   ]
+  },
+  "age": {
+   "maxYears": null,
+   "inspectOverYears": null
+  },
+  "crew": {
+   "rule": "crew_75_national"
+  },
+  "setupDays": 30,
+  "crewCostMul": 2,
+  "fees": {
+   "initialCr": 5000,
+   "perTCr": 1,
+   "annualPerTCr": 0.4,
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "national": {
+  "name": "National template",
+  "kind": "national",
+  "owner": {
+   "rule": "home_in"
+  },
+  "age": {
+   "maxYears": null,
+   "inspectOverYears": null
+  },
+  "crew": {
+   "rule": "master_national"
+  },
+  "setupDays": 10,
+  "crewCostMul": 1.25,
+  "fees": {
+   "initialCr": 3000,
+   "perTCr": 0.8,
+   "annualPerTCr": 0.3,
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "game",
+  "verify": true
+ }
+}

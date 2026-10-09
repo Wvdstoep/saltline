@@ -7,6 +7,8 @@
 import { SHIP_CLASSES, WARP } from '/shared/constants.js';
 import { haversine, bearing, angleDiff, fmtDistance } from '/shared/geo.js';
 import { PILOT, speedCapKn, throttleCap, lookAheadM, firstShoal, offRouteM, shouldReplan, handoverStep, stormOnRoute } from './pilotcore.js';
+import { rigOf, anyHoisted, sailCourse, authOf, crossTrackM, HARBOUR_FURL_M, departurePlan, windOverWater, SAIL_KN } from './sailshared.js';   // sailing (docs/SAILING-CONTRACT.md §3.5)
+import { currentAt } from '/shared/physics.js';
 
 const WARP_MAX_NO_ROUTE = Number.isFinite(WARP?.MAX_NO_ROUTE) ? WARP.MAX_NO_ROUTE : 20;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -147,10 +149,24 @@ export class Autopilot {
     return this.planTo({ lat: last.lat, lon: last.lon, via: pts.slice(0, -1), label, engage: true });
   }
 
+  /** Sailing (§3.5): the rudder for a sail class with a sail set — beats / runs in tacks with the helm feed-forward; null = engine steering. */
+  sailRudder(s, C, brg, wp) {
+    const a = this.app, rig = s.rig;
+    if (!C.sail || !rig || !rigOf(s.cls) || !anyHoisted(rig) || a.you?.sailsUp === false || s.spd < -0.3) return null;
+    const ww = windOverWater({ wind: a.localWind || a.wind, current: currentAt(s.lat, s.lon, a.simTime), tideStream: a.tide?.stream || null });
+    const from = this.legFrom || this.sailFrom || (this.sailFrom = { lat: s.lat, lon: s.lon });
+    const mem = this.sailMem || (this.sailMem = {});
+    const q = { hdg: s.hdg, brg, distM: haversine(s.lat, s.lon, wp.lat, wp.lon), twd: ww.twd, twsKn: ww.tws / SAIL_KN, stwKn: s.spd, helm: rig.helm, auth: authOf(rig.heel), tack: rig.tack, nowS: this.sailClock, xtM: crossTrackM(s.lat, s.lon, from.lat, from.lon, wp.lat, wp.lon) };
+    const out = sailCourse(s.cls, q, mem);
+    if (out.maneuver && out.maneuver !== this.sailManeuver) a.rigCommand?.({ maneuver: out.maneuver });   // the crew stands by (jibe guard)
+    this.sailManeuver = out.maneuver;
+    return clamp(angleDiff(s.hdg, out.hdg) / 25 + out.helmFF, -1, 1);
+  }
   // ---------------------------------------------------------------------------------------------- steering
   /** Per simulation substep: steer + speed. false = the route is finished (autopilot off). */
-  step(s, C) {
+  step(s, C, dt = 0.05) {
     const a = this.app, r = a.route;
+    this.sailClock = (this.sailClock || 0) + (Number(dt) || 0);              // sailing: the ship's own clock for the tactics' leg timers
     if (!r.length) return false;
     if (!this.session) this.startSession();
     if (this.lastWritten != null && Math.abs(a.input.throttleCmd - this.lastWritten) > 1e-4) this.order = a.input.throttleCmd; // the skipper rang a new order
@@ -167,7 +183,8 @@ export class Autopilot {
     }
     const wp = r[0];
     const brg = bearing(s.lat, s.lon, wp.lat, wp.lon);
-    a.input.rudderCmd = s.spd < -0.3 ? 0 : clamp(angleDiff(s.hdg, brg) / 25, -1, 1); // going astern the rudder works backwards: amidships
+    const sailRud = this.sailRudder(s, C, brg, wp);                           // sailing: tack / gybe up- and downwind (§3.5)
+    a.input.rudderCmd = s.spd < -0.3 ? 0 : sailRud ?? clamp(angleDiff(s.hdg, brg) / 25, -1, 1); // going astern the rudder works backwards: amidships
     this.writeThrottle(capKn, C);
     const d = haversine(s.lat, s.lon, wp.lat, wp.lon);
     const reach = r.length > 1 ? Math.max(300, C.length * 3) : Math.max(200, C.length * 2);
@@ -246,8 +263,17 @@ export class Autopilot {
     if (!a.autopilot || !a.route.length || you.docked || you.assist) return;
     const C = this.C;
     // under sail the telegraph cannot slow her
+    const rig = a.ship?.rig && rigOf(a.ship.cls) ? a.ship.rig : null;
     if (C.sail && you.sailsUp !== false && Number.isFinite(speedCapKn(best))) {
-      if (!this.sailWarned) { this.sailWarned = true; a.hud.event({ kind: 'warn', text: 'Furl the sails for the harbour approach — the autopilot cannot slow a ship under sail.' }); }
+      if (rig && rig.auto !== 'off' && best <= HARBOUR_FURL_M) {          // §3.5: the crew furls at the 2,500 m band, the engine takes over at the band throttle
+        if (anyHoisted(rig)) { a.rigCommand?.({ all: 'furl' }); this.furledForHarbour = true; a.hud.event({ kind: 'info', text: 'The crew furls the sails for the harbour approach — engine on.' }); }
+      } else if (!this.sailWarned) { this.sailWarned = true; a.hud.event({ kind: 'warn', text: 'Furl the sails for the harbour approach — the autopilot cannot slow a ship under sail.' }); }
+    }
+    if (rig && this.furledForHarbour && best > HARBOUR_FURL_M + 300 && !anyHoisted(rig)) {   // clear of the harbour again: hoist the plan for this wind
+      const ww = windOverWater({ wind: a.localWind || a.wind, current: null, tideStream: null }), wp = a.route[0];
+      const twa = wp ? angleDiff(bearing(s.lat, s.lon, wp.lat, wp.lon), ww.twd) : 90;
+      a.rigCommand?.(departurePlan(a.ship.cls, ww.tws / SAIL_KN, twa)); this.furledForHarbour = false;
+      a.hud.event({ kind: 'info', text: 'Clear of the harbour — the crew sets sail.' });
     }
     // berth mode: stop off the berth
     if (this.mode === 'berth') {

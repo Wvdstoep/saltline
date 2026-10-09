@@ -1,0 +1,87 @@
+[
+ {
+  "id": "xu",
+  "kind": "customs_union",
+  "name": "X customs union",
+  "members": [
+   "XA",
+   "XB"
+  ],
+  "dutyInside": 0,
+  "paperwork": "none",
+  "goods": "all",
+  "from": "2000-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "xfta",
+  "kind": "fta",
+  "name": "A–C FTA",
+  "members": [
+   "XA",
+   "XC"
+  ],
+  "prefRate": 0,
+  "paperwork": "origin_proof",
+  "goods": "all",
+  "from": "2010-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "xfuture",
+  "kind": "fta",
+  "name": "C–D FTA (signed, not in force)",
+  "members": [
+   "XC",
+   "XD"
+  ],
+  "prefRate": 0,
+  "paperwork": "origin_proof",
+  "goods": "all",
+  "from": null,
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ {
+  "id": "xcoop",
+  "kind": "cooperation",
+  "name": "Fixture corridor exports",
+  "members": [
+   "XE"
+  ],
+  "programme": {
+   "good": "grain",
+   "ports": [
+    "hr"
+   ],
+   "destinations": [
+    "hd1"
+   ]
+  },
+  "from": "2023-08-08",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ }
+]

@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "note": "Sea gates where the inland graph meets the sea graph (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §4.10). sea = a point in open water off the entrance, inland = a point on the inland fairway behind it (the planner snaps it to the nearest graph node within 5 km). Positions read from the chart, about +-300 m.",
+  "date": "2026-10-09",
+  "gates": [
+    { "id": "maasmond", "name": "Maasmond / Hoek van Holland", "sea": [51.9850, 4.0300], "inland": [51.9560, 4.1150], "kind": "open" },
+    { "id": "ijmuiden", "name": "IJmuiden locks", "sea": [52.4650, 4.5300], "inland": [52.4640, 4.6200], "kind": "lock" },
+    { "id": "denhelder", "name": "Den Helder", "sea": [52.9700, 4.7400], "inland": [52.9560, 4.7900], "kind": "lock" },
+    { "id": "harlingen", "name": "Harlingen", "sea": [53.1750, 5.3900], "inland": [53.1720, 5.4300], "kind": "lock" },
+    { "id": "lauwersoog", "name": "Lauwersoog", "sea": [53.4200, 6.2000], "inland": [53.4050, 6.2050], "kind": "lock" },
+    { "id": "delfzijl", "name": "Delfzijl", "sea": [53.3200, 6.9500], "inland": [53.3300, 6.9200], "kind": "lock" },
+    { "id": "vlissingen", "name": "Vlissingen (Kanaal door Walcheren)", "sea": [51.4400, 3.6000], "inland": [51.4500, 3.6050], "kind": "lock" },
+    { "id": "terneuzen", "name": "Terneuzen", "sea": [51.3450, 3.8150], "inland": [51.3300, 3.8300], "kind": "lock" },
+    { "id": "stellendam", "name": "Stellendam (Goereese sluis)", "sea": [51.8350, 4.0200], "inland": [51.8250, 4.0500], "kind": "lock" },
+    { "id": "roompot", "name": "Roompotsluis", "sea": [51.6250, 3.6700], "inland": [51.6100, 3.7000], "kind": "lock" },
+    { "id": "denoever", "name": "Den Oever (Stevinsluizen)", "sea": [52.9400, 5.0300], "inland": [52.9300, 5.0550], "kind": "lock" },
+    { "id": "kornwerderzand", "name": "Kornwerderzand (Lorentzsluizen)", "sea": [53.0750, 5.3250], "inland": [53.0650, 5.3400], "kind": "lock" }
+  ]
+}

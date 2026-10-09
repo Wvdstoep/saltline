@@ -1,0 +1,196 @@
+/* World politics UI (docs/WORLD-POLITICS-CONTRACT.md §5): harbour Rules tab, risk check sheet, HQ Compliance panel,
+   move-home / re-flag cards, contract badges, chart legend and popovers. Uses the design tokens of style.css; colour is
+   never the only signal (marks ● ▲ ✖ ✔ and words carry the meaning). Overlays sit above the sheets (z 33). */
+:root { --pol-amber: #ffbf5a; --pol-amber-soft: rgba(255, 191, 90, 0.14); --pol-red: #ff8a80; --pol-war: rgba(255, 96, 64, 0.16); }
+
+/* ---------------------------------------------------------------- shared bits */
+.polChip b { font-size: 10px; }
+.polSrc { display: inline-flex; align-items: center; gap: 2px; font-size: 11.5px; color: var(--muted); text-decoration: none; white-space: nowrap; border-bottom: 1px dotted rgba(142, 169, 191, 0.5); margin-left: 4px; }
+.polSrc:hover { color: var(--cyan); border-bottom-color: var(--cyan); }
+.polStale { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 650; color: #201500; background: var(--pol-amber); white-space: nowrap; line-height: 18px; }
+.polGame { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted); background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line); line-height: 16px; vertical-align: 1px; white-space: nowrap; }
+.polNote { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+.polNote.warn { color: var(--pol-amber); }
+.polSub { margin: 10px 0 4px; font-size: 12.5px; font-weight: 650; color: var(--fg-2); }
+.polSub.bad { color: var(--pol-red); }
+.polFoot { margin: var(--s4) 0 0; font-size: 12px; color: var(--faint); text-align: center; }
+.polBanner { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin: var(--s2) 0; padding: 8px 12px; border-radius: var(--r2); font-size: 13px; font-weight: 600; }
+.polBanner.bad { background: var(--red-soft); color: #ffc9c9; border: 1px solid rgba(255, 107, 107, 0.4); }
+.polBanner.warn { background: var(--pol-amber-soft); color: var(--pol-amber); border: 1px solid rgba(255, 191, 90, 0.35); }
+.polBanner.info { background: var(--cyan-soft); color: #cdeffd; border: 1px solid rgba(90, 214, 255, 0.35); }
+.polBanner .ic { width: 18px; height: 18px; }
+.polBanner button { margin-left: auto; }
+.polLines { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+.polLine { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 6px; font-size: 13px; line-height: 1.45; color: var(--fg-2); }
+.polMark { font-weight: 700; text-align: center; font-size: 12px; line-height: 1.6; }
+.polLine.ok .polMark, .polRow.ok .polMark { color: var(--green); }
+.polLine.warn .polMark, .polRow.warn .polMark { color: var(--pol-amber); }
+.polLine.bad .polMark, .polRow.block .polMark { color: var(--pol-red); }
+.polLine.info .polMark, .polRow.info .polMark { color: var(--cyan); }
+.polLine.muted { color: var(--faint); }
+.polLine.bad .polTxt b { color: #ffc2c2; }
+.btnRow { display: flex; gap: var(--s2); flex-wrap: wrap; margin-top: var(--s2); }
+.polTable { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: var(--s2); }
+.polTable th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.polTable td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.polTable .num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+.polTable td small { display: block; color: var(--muted); font-size: 11.5px; }
+
+/* ---------------------------------------------------------------- Rules tab cards (details = accordion on phones) */
+.polCards { align-items: start; }
+.polCard { padding: 0; }
+.polCard > summary { list-style: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4); cursor: pointer; min-height: 44px; -webkit-tap-highlight-color: transparent; }
+.polCard > summary::-webkit-details-marker { display: none; }
+.polCard > summary h3 { margin: 0; flex: 1; min-width: 0; }
+.polCard > summary h3 small { margin-left: auto; font-weight: 500; color: var(--muted); font-size: 12px; }
+.polChev { color: var(--faint); transition: transform var(--t); display: inline-flex; }
+.polCard[open] > summary .polChev { transform: rotate(180deg); }
+.polBody { padding: 0 var(--s4) var(--s4); }
+.polWide { grid-column: 1 / -1; }
+.polCard.polWarn { border-color: rgba(255, 191, 90, 0.45); box-shadow: inset 3px 0 0 var(--pol-amber); }
+.polCard.polBad { border-color: rgba(255, 107, 107, 0.55); box-shadow: inset 3px 0 0 var(--red); }
+.polStatus { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
+.polBig { font-size: 16px; font-weight: 700; }
+.polSt-open .polBig b { color: var(--green); } .polSt-restricted .polBig b { color: var(--pol-amber); } .polSt-closed .polBig b { color: var(--pol-red); }
+.polWho { font-size: 13px; color: var(--fg-2); margin: 0 0 6px; }
+.polMore { margin-top: var(--s2); font-size: 13px; }
+.polMore summary { cursor: pointer; color: var(--cyan); min-height: 32px; display: flex; align-items: center; }
+.polArea { padding: var(--s2) 0; border-bottom: 1px dashed var(--line); }
+.polArea:last-of-type { border-bottom: 0; }
+.polAreaH { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-bottom: 6px; font-size: 13px; }
+.polSources { margin: var(--s2) 0 0; padding-left: 22px; display: grid; gap: 6px; font-size: 13px; columns: 2; column-gap: var(--s5); }
+.polSources li { break-inside: avoid; scroll-margin: 80px; border-radius: 6px; transition: background 600ms; }
+.polSources li.flash { background: var(--accent-soft); }
+.polSources a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--line-2); }
+.polSources a:hover { color: var(--cyan); }
+.kv dd .polGame, .kv dt .polGame { vertical-align: 1px; }
+
+/* ---------------------------------------------------------------- overlays: risk check, move home, re-flag */
+.polOverlay { position: fixed; inset: 0; z-index: 33; display: flex; align-items: center; justify-content: center; padding: var(--s4); background: rgba(2, 8, 14, 0.55); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.polRisk, .polModalCard { width: min(720px, 100%); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r4); box-shadow: var(--shadow); overflow: hidden; }
+.polModalCard { overflow-y: auto; }
+.polModalCard > .polFoot { margin: var(--s4) var(--s5) var(--s3); }
+.polModalCard > h4, .polModalCard > p, .polModalCard > ul, .polModalCard > dl, .polModalCard > table, .polModalCard > .polBanner, .polModalCard > .polTableWrap { margin-left: var(--s5); margin-right: var(--s5); }
+.polModalCard > h4 { margin-top: var(--s4); margin-bottom: 4px; font-size: 13.5px; color: var(--fg-2); }
+.polRiskH { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s4) var(--s5) var(--s3); border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+.polRiskH > div { flex: 1; min-width: 0; }
+.polRiskH h3 { display: flex; align-items: center; gap: var(--s2); font-size: 16px; }
+.polRiskH h3 .ic { color: var(--accent); }
+.polRows { list-style: none; margin: 0; padding: var(--s3) var(--s5); overflow-y: auto; display: grid; gap: 8px; flex: 1; }
+.polRow { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; font-size: 13.5px; line-height: 1.45; padding: 6px 8px; border-radius: var(--r2); }
+.polRow.block { background: var(--red-soft); color: #ffd3d3; }
+.polRow.block-soft { background: var(--pol-war); }
+.polRow.block-soft .polMark { color: #ff9c80; }
+.polRow.warn { background: var(--pol-amber-soft); }
+.polRow b { color: var(--fg); }
+.polRow button { margin-left: 6px; }
+.polRisk .polFoot { margin: 0 var(--s5) var(--s2); text-align: left; }
+.polRiskF { display: flex; gap: var(--s2); flex-wrap: wrap; justify-content: flex-end; padding: var(--s3) var(--s5) calc(var(--s3) + var(--sab)); border-top: 1px solid var(--line); background: var(--surface-2); position: sticky; bottom: 0; }
+.polModalCard .polRiskF { margin-top: var(--s4); }
+.polDiff { width: calc(100% - 48px); border-collapse: collapse; font-size: 13px; margin-top: var(--s3); }
+.polDiff th, .polDiff td { padding: 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.polDiff thead th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.polDiff tbody th { color: var(--muted); font-weight: 500; width: 30%; }
+.polDiff tr.chg td:last-child { color: var(--fg); font-weight: 650; }
+.polTableWrap { overflow-x: auto; }
+.polReg tr.no td:not(:last-child) { opacity: 0.55; }
+.polReg tr.cur { background: var(--green-soft); }
+
+/* ---------------------------------------------------------------- contract cards and badges */
+.polBadges { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px; }
+.polBadges .chip { white-space: normal; max-width: 100%; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; }
+.polBanner > span { flex: 1; min-width: 0; }
+.polJob .actions { display: flex; gap: var(--s2); justify-content: flex-end; margin-top: var(--s2); }
+.polJob .jobType .ic { color: var(--accent); }
+.polJob.t-aid { box-shadow: inset 3px 0 0 var(--green); }
+.polJob.t-corridor { box-shadow: inset 3px 0 0 var(--cyan); }
+.polJob.t-state { box-shadow: inset 3px 0 0 var(--violet); }
+.polJob.t-avoid { box-shadow: inset 3px 0 0 var(--pol-amber); }
+.polJob.t-evac { box-shadow: inset 3px 0 0 var(--fg-2); }
+
+/* ---------------------------------------------------------------- HQ Compliance */
+.polHq .hqSecH h2 { display: flex; align-items: center; gap: var(--s2); }
+.polHq .hqSecH h2 .ic { color: var(--accent); }
+.polHqGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
+.polRegs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); font-size: 13px; }
+.polRegs ul { margin: 4px 0 0; padding-left: 18px; color: var(--fg-2); }
+.polFlags { display: grid; gap: var(--s2); }
+.polFlag { display: flex; align-items: center; gap: var(--s3); padding: 8px; border-radius: var(--r2); background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); }
+.polFlagCc { flex: none; width: 40px; height: 30px; border-radius: 6px; display: grid; place-items: center; font: 700 13px/1 var(--mono); background: var(--card-hi); border: 1px solid var(--line-2); }
+.polFlagTxt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.polFlagTxt small { color: var(--muted); }
+.polFlagTxt .chip { align-self: flex-start; }
+.polSeg { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.polSeg.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.polSegBtn { white-space: normal; flex-direction: column; align-items: flex-start; justify-content: flex-start; text-align: left; padding: 8px 10px; min-height: 52px; gap: 2px; }
+.polSegBtn small { font-size: 11.5px; color: var(--muted); line-height: 1.3; }
+.polSegBtn.on { background: var(--accent-soft); border-color: var(--accent); }
+.polSegBtn.on b::before { content: '✔ '; color: var(--accent); }
+.polRep { display: grid; grid-template-columns: 110px minmax(0, 1fr) 40px; align-items: center; gap: 4px 8px; font-size: 13px; padding: 3px 0; }
+.polRep small { grid-column: 2 / -1; color: var(--muted); font-size: 11.5px; }
+.polRepC { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.polRepT { position: relative; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); }
+.polRepT::after { content: ''; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--line-2); }
+.polRepT i { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: var(--fg-2); }
+.polRep.good .polRepT i { background: var(--green); } .polRep.warn .polRepT i { background: var(--pol-amber); } .polRep.bad .polRepT i { background: var(--red); }
+.polRep b { text-align: right; }
+.polRepSep { height: 1px; background: var(--line); margin: 6px 0; }
+.polRecs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12.5px; }
+.polRecs li { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
+.polRecs time { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+
+/* ---------------------------------------------------------------- chart legend and popovers */
+.polLegendWrap { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 24px); pointer-events: none; }
+.polLegend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding: 6px; border-radius: 999px; background: var(--glass-strong); border: 1px solid var(--line); pointer-events: auto; }
+.polLegT, .polLegB { min-height: 32px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; background: transparent; border-color: transparent; color: var(--fg-2); gap: 6px; }
+.polLegT { font-weight: 700; color: var(--fg); }
+.polLegT::after { content: '▾'; font-size: 10px; color: var(--muted); }
+.polLegend.collapsed .polLegT::after { content: '▸'; }
+.polLegend.collapsed .polLegB { display: none; }
+.polLegB:not(.on) { opacity: 0.55; }
+.polLegB:not(.on) span { text-decoration: line-through; text-decoration-color: rgba(195, 213, 227, 0.5); }
+.polLegB.on { background: rgba(255, 255, 255, 0.06); border-color: var(--line-2); color: var(--fg); }
+.polSw { display: inline-block; width: 18px; height: 12px; border-radius: 3px; border: 2px solid; flex: none; }
+.polSw.line { height: 0; border-width: 2px 0 0; border-radius: 0; }
+.polPop { display: grid; gap: var(--s2); max-width: 340px; }
+.polPopA { padding-top: 6px; border-top: 1px solid var(--line); }
+.polPopA:first-child { border-top: 0; padding-top: 0; }
+.polPopH { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin-bottom: 4px; }
+.polPopS { margin-top: 4px; }
+.polPop .kv { font-size: 12.5px; }
+
+/* ---------------------------------------------------------------- phones (§5.5): ≥ 44 px targets, ≥ 14 px text, sheets */
+@media (max-width: 700px) {
+  .polCards { grid-template-columns: minmax(0, 1fr) !important; }
+  .polSources { columns: 1; }
+  .polLine, .polRow, .polTable, .polWho, .kv { font-size: 14px; }
+  .polNote { font-size: 13px; }
+  .polCard button, .polRisk button, .polModalCard button, .polHq button { min-height: 44px; }
+  .polLegT, .polLegB { min-height: 44px; }
+  .polSrc { font-size: 12.5px; min-height: 24px; }
+  .polOverlay { padding: 0; align-items: flex-end; }
+  .polRisk, .polModalCard { width: 100%; max-height: 100dvh; height: 100dvh; border-radius: var(--r4) var(--r4) 0 0; border-left: 0; border-right: 0; border-bottom: 0; }
+  .polModalCard > h4, .polModalCard > p, .polModalCard > ul, .polModalCard > dl, .polModalCard > table, .polModalCard > .polBanner, .polModalCard > .polTableWrap { margin-left: var(--s4); margin-right: var(--s4); }
+  .polDiff { width: calc(100% - 32px); }
+  .polRows { padding: var(--s3) var(--s4); }
+  .polRiskH { padding: var(--s3) var(--s4); }
+  .polRiskF { padding: var(--s3) var(--s4) calc(var(--s3) + var(--sab)); }
+  .polRiskF button { flex: 1 1 auto; }
+  .polRiskF button.primary { flex-basis: 100%; order: -1; }
+  .polHqGrid { grid-template-columns: minmax(0, 1fr); }
+  .polSeg.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .polRep { grid-template-columns: 96px minmax(0, 1fr) 36px; font-size: 14px; }
+  .polRecs li { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .polLegendWrap { top: 8px; }
+  .polPop { max-width: none; }
+  .polReg td small { font-size: 12px; }
+  .polReg thead { display: none; }
+  .polReg, .polReg tbody { display: block; }
+  .polReg tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .polReg td { border: 0; padding: 0; }
+  .polReg td:first-child, .polReg td:last-child { grid-column: 1 / -1; }
+  .polReg td:nth-child(2) { grid-column: 1 / 3; }
+  .polReg td[data-l]::before { content: attr(data-l); display: block; font-size: 11.5px; color: var(--muted); font-family: var(--font); }
+  .polReg td.num { text-align: left; }
+  .polReg td:last-child button { width: 100%; }
+}

@@ -16,8 +16,8 @@ const THR_PAD = 12; // px at each end of the lever track that still read full ah
 const lever = (f, extra = '') => `calc(${THR_PAD}px + ${f.toFixed(4)} * (100% - ${2 * THR_PAD}px)${extra})`;
 const RUD_RATE = 1.4;      // rudder follows the finger at the keys' rate (units per second)
 const RUD_RECENTRE = 2.5;  // exponential recentre rate on release (same as main.js)
-const LABELS = { dock: 'Dock', chart: 'Chart', interior: 'Walk', camera: 'Cam', stop: 'STOP', auto: 'AP', ships: 'Ships', more: '…', ashore: 'Shore' };
-const TITLES = { stop: 'All stop', auto: 'Autopilot (follow the route)', dock: 'Moor / harbour', chart: 'Chart', interior: 'Walk your ship', camera: 'Camera', ships: 'Ships nearby', ashore: 'Go ashore' };
+const LABELS = { dock: 'Dock', chart: 'Chart', interior: 'Walk', camera: 'Cam', stop: 'STOP', auto: 'AP', ships: 'Ships', more: '…', ashore: 'Shore', sails: 'Sails', tack: 'Tack' };
+const TITLES = { stop: 'All stop', auto: 'Autopilot (follow the route)', dock: 'Moor / harbour', chart: 'Chart', interior: 'Walk your ship', camera: 'Camera', ships: 'Ships nearby', ashore: 'Go ashore', sails: 'Sails: trim, reef, hoist', tack: 'Tack / jibe' };
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -168,6 +168,9 @@ export class TouchHelm {
   }
   fire(name) {
     if (name === 'stop') { this.setThrottle(0); this.rudderTarget = 0; this.h.onAllStop?.(); return; }
+    // sailing round buttons (main.js onSails / onTack): hud.js adoptHelm() installs an onAction that only knows the HUD's
+    // own actions, so these must reach their handlers first or a tap does nothing
+    if ((name === 'sails' || name === 'tack') && typeof this.h['on' + cap(name)] === 'function') return this.h['on' + cap(name)]();
     if (typeof this.h.onAction === 'function') return this.h.onAction(name);
     const fn = this.h['on' + cap(name)];
     if (typeof fn === 'function') return fn();
@@ -181,6 +184,8 @@ export class TouchHelm {
   }
   /** Highlight a round button (e.g. the autopilot while it steers). */
   setButtonOn(name, on) { this.btns?.querySelector(`[data-action="${name}"]`)?.classList.toggle('on', !!on); }
+  /** Relabel a round button (the contextual Tack / Jibe). */
+  setButtonLabel(name, text) { const b = this.btns?.querySelector(`[data-action="${name}"]`); if (b && b.textContent !== text) b.textContent = text; }
 
   // ------------------------------------------------------------------ visibility / loop
   show(on) { this.visible = !!on; this.root?.classList.toggle('hidden', !on); }

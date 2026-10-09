@@ -1,5 +1,6 @@
 // WebSocket client: hello/welcome handshake, 10 Hz state upload, actions, chat, latency ping, auto-reconnect.
 // v0.3: `fetchPatch(id)` binary helper for the harbour patch route (decoding lives in harborgeom.js).
+import { packRigView } from './sailshared.js';               // sailing: the rig view in `state` (docs/SAILING-CONTRACT.md §3.7)
 const TOKEN_KEY = 'saltline.token';
 
 export class Net {
@@ -53,7 +54,9 @@ export class Net {
     const now = performance.now();
     if (now - this.lastStateSent < 95) return;
     this.lastStateSent = now;
-    this.send({ t: 'state', lat: s.lat, lon: s.lon, hdg: s.hdg, spd: s.spd, throttle: s.throttle, rudder: s.rudder, vid: this.vid ?? null }); // v6: vid set by main.js onYou
+    const st = { t: 'state', lat: s.lat, lon: s.lon, hdg: s.hdg, spd: s.spd, throttle: s.throttle, rudder: s.rudder, vid: this.vid ?? null }; // v6: vid set by main.js onYou
+    if (s.rig && now - (this.lastRv || 0) >= 500) { const rv = packRigView(s.cls, s.rig); if (rv) { st.rv = rv; this.lastRv = now; } }   // ≤ 2 Hz
+    this.send(st);
   }
   // Envelope fields go last so an extra payload field can never clobber `t` / `action`.
   action(action, extra = {}) { this.send({ ...extra, t: 'action', action }); }

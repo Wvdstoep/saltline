@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "note": "Non-tidal pounds of the Netherlands (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §4.1). Coarse hand-drawn polygons (approx: true) around the water bodies; land inside a polygon is irrelevant (only water points are classified). Levels are streefpeil relative to NAP: Noordzeekanaal / Amsterdam-Rijnkanaal NAP -0.40; IJsselmeer -0.20 winter / -0.10 summer, Markermeer -0.20 winter / -0.10 summer (Rijkswaterstaat peilbesluit, rounded). Refine from FIS sections joined between locks in phase 2.",
+  "source": "hand-drawn, levels from Rijkswaterstaat peilbesluiten (rounded)",
+  "date": "2026-10-09",
+  "pounds": [
+    { "id": "nzk", "name": "Noordzeekanaal / Amsterdam pound", "h": -0.40, "approx": true,
+      "poly": [[52.4700, 4.6050], [52.4720, 4.6400], [52.4500, 4.7400], [52.4300, 4.8200], [52.4050, 4.9000], [52.3900, 4.9530], [52.3700, 4.9530], [52.3500, 4.9200], [52.3300, 4.9300], [52.2500, 4.9900], [52.1000, 5.0600], [52.0900, 5.0300], [52.2400, 4.9500], [52.3400, 4.8800], [52.3900, 4.8000], [52.4300, 4.6800], [52.4550, 4.6050]] },
+    { "id": "ijsselmeer", "name": "IJsselmeer and Markermeer", "h": -0.20, "hSummer": -0.10, "approx": true,
+      "poly": [[52.3700, 4.9600], [52.4200, 5.0400], [52.5200, 5.0500], [52.6200, 5.0200], [52.7300, 5.0500], [52.8800, 5.0800], [52.9300, 5.0350], [53.0000, 5.1000], [53.0700, 5.3000], [53.0300, 5.4500], [52.9000, 5.4000], [52.8500, 5.6500], [52.7500, 5.7500], [52.6200, 5.8500], [52.5500, 5.7000], [52.4500, 5.5500], [52.3800, 5.3500], [52.3300, 5.1500], [52.3400, 5.0200]] }
+  ]
+}

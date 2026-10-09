@@ -711,7 +711,7 @@ export class AisLayer {
       v.sailT = 0.5;
       const sailing = v.mode === 'underway' && (v.nav === 8 || (v.nav !== 0 && v.spd > 3));
       const wf = this._windFrom();
-      ud.setSails(sailing, wf == null ? 90 : normDeg(wf - v.hdg));
+      ud.setSails(sailing, wf == null ? 90 : angleDiff(v.hdg, wf));          // signed relative wind (+ = from starboard): sails to leeward
     }
     return vis.heave + (ud.aisTop || 10) * (v.sy || 1);
   }

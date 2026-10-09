@@ -4,6 +4,9 @@
 import { GEO, SIM, SHIP_CLASSES } from './constants.js';
 import { normDeg, wrapLon, clampLat } from './geo.js';
 import { THROTTLE_MIN, ASTERN_SPEED_FRAC } from './telegraph.js';
+import { stepSail } from './sail/sailphys.js';              // SAIL contract §2.10: the sail branch of stepShip
+import { rigOf, KN as SAIL_KN } from './sail/rigs.js';
+import { polarSpeed } from './sail/polar.js';
 
 const D2R = Math.PI / 180;
 
@@ -89,6 +92,19 @@ export function stepShip(s, input, env, dt) {
   const sea = Math.max(0, Math.min(1, num(env.sea, 0)));           // 0 calm .. 1 storm
   const waveLoss = waveSpeedLoss(s.hdg, env.waveH, env.waveDir);
   const speedPenalty = Math.max(0.1, 1 - 0.35 * (1 - cond) - 0.5 * flooding - 0.15 * loadFrac - 0.35 * sea * sea - waveLoss) * (env.towing ? (C.towPower ? 0.95 : 0.65) : 1);
+  if (C.sail && rigOf(s.cls)) {
+    // Sailing yacht (docs/SAILING-CONTRACT.md §2): shared/sail/sailphys.js integrates surge, heel, leeway, yaw and
+    // position and writes s.rig. Going astern it calls back into the legacy longitudinal model below (legacySurge).
+    const legacySurge = (ut) => {
+      const u0 = s.spd / C.maxKn;
+      let u1;
+      if (ut >= 0 && u0 >= 0 && u0 < ut) u1 = u0 + (ut - u0) * Math.min(1, dt / TAU_ACCEL);
+      else u1 = u0 + (((hullDrag(ut) / bollard(ut)) * bollard(u0) - hullDrag(u0)) / inertiaTau(C)) * dt;
+      s.spd = ((ut - u0) * (ut - u1) < 0 ? ut : u1) * C.maxKn;
+    };
+    const yawExtra = s.throttle < 0 && !TWIN_SCREW.has(C.id) ? PROP_WALK * C.turnRate * Math.min(1, s.throttle / THROTTLE_MIN) * (1 - 0.5 * Math.min(1, Math.abs(s.spd / C.maxKn) / 0.3)) : 0;
+    return stepSail(s, env, dt, { C, speedPenalty, steerPenalty, legacySurge, yawExtra });
+  }
   let ut; // target speed as a fraction of maxKn (signed)
   if (C.sail) {
     // Sailing yacht: wind drives the hull through a simple polar; the auxiliary engine adds up to auxKn.
@@ -169,8 +185,13 @@ export function currentAt(lat, lon, simTimeSec) {
 }
 
 // Sail polar: fraction of hull speed as a function of the true wind angle and strength. No-go zone < 35°.
-export function sailPolar(hdgDeg, wind) {
+export function sailPolar(hdgDeg, wind, cls) {
   if (!wind) return 0;
+  if (cls && rigOf(cls)) {           // SAIL: the generated polar (kn) as a fraction of C.maxKn, for old callers
+    const u = num(wind.u, 0), v = num(wind.v, 0), tws = Math.hypot(u, v);
+    const from = (Math.atan2(-u, -v) * 180) / Math.PI;
+    return polarSpeed(cls, tws / SAIL_KN, (((hdgDeg - from) % 360) + 540) % 360 - 180).kn / (SHIP_CLASSES[cls]?.maxKn || 1);
+  }
   const spd = Math.hypot(num(wind.u, 0), num(wind.v, 0));
   if (spd < 0.5) return 0;
   const fromDeg = (Math.atan2(-num(wind.u, 0), -num(wind.v, 0)) * 180) / Math.PI; // direction the wind blows FROM

@@ -14,10 +14,12 @@ import { hardReason, estimateJob } from '../shared/jobtime.js';
 import { findSafeSpot } from './safespot.js';
 import { shipValue, berthFeePerDay, cargoMass, publicJob } from './economy.js';
 import { harborById } from './harbors.js';
+import { relocateDocked } from './harbormove.js';
 import { tugsPublic } from './tugassist.js';
+import { rigOf } from '../shared/sail/rigs.js';                              // sailing (docs/SAILING-CONTRACT.md §3.6–§3.7)
+import { ensureRig, normalizeRig, anyHoisted, packRigView } from '../shared/sail/state.js';
 import { bindPlayer, takeVesselFields, makeActor } from './vessel.js';
 import * as captain from './captain.js';
-import { relocateDocked } from './harbormove.js';
 
 const SERVICE_INTERVAL_S = FEES.SERVICE_INTERVAL_DAYS * 86400;
 const START_HARBOR = 'rotterdam';
@@ -87,11 +89,18 @@ export class Fleet {
       acquiredAt: Math.floor(Number.isFinite(f.acquiredAt) ? f.acquiredAt : sim), acquiredPrice: Math.round(f.acquiredPrice || 0),
       ship: f.ship, cond: f.cond ?? 100, flooding: 0, fuel: f.fuel ?? C.fuelCap, cargo: [], jobs: [], kits: f.kits ?? 0,
       docked: f.docked ?? null, dockedAt: f.docked ? (f.dockedAt ?? sim) : null, berth: f.berth ?? null, assist: null,
-      serviceDue: f.serviceDue ?? sim + SERVICE_INTERVAL_S, voyage: null, towing: null, fishing: false, fishInfo: null, sailsUp: true,
+      serviceDue: f.serviceDue ?? sim + SERVICE_INTERVAL_S, voyage: null, towing: null, fishing: false, fishInfo: null, sailsUp: this.sailRig(f.ship, !f.docked, f.sailsUp),
       lastValid: { lat: f.ship.lat, lon: f.ship.lon }, guideBerth: null, lowFuelWarned: false, condWarned: false, floodWarned: false,
       serviceWarned: false, fullWarned: false, shipTime: f.shipTime ?? sim, voyageEnd: null,
       orders: null, cap: null, pay: { rem: 0 }, laidUpAt: 0, storagePaidTo: 0, stats: newStats(),
     };
+  }
+  /** Sailing (§3.6): create/repair ship.rig (a newer schema or a class change → a default rig). At sea the sails stay
+   *  as the legacy `sailsUp` says; moored or laid up they are down. → the new sailsUp (engine classes: unchanged). */
+  sailRig(ship, atSea, sailsUp = true) {
+    if (!ship || !rigOf(ship.cls)) { if (ship && ship.rig !== undefined) delete ship.rig; return sailsUp !== false; }
+    ship.rig = normalizeRig(ship.cls, ship.rig, atSea ? sailsUp : false);
+    return anyHoisted(ship.rig);
   }
   /** Defaults for a saved vessel (v6 record) — never throws. */
   healVessel(v, office) {
@@ -115,6 +124,7 @@ export class Fleet {
     if (v.cap != null && (typeof v.cap !== 'object' || typeof v.cap.phase !== 'string')) v.cap = null;
     if (v.voyageEnd === undefined) v.voyageEnd = null;
     if (v.status === 'laidup') { v.orders = null; v.cap = null; }
+    if (v.ship && typeof v.ship === 'object' && (rigOf(v.ship.cls) || v.ship.rig !== undefined)) v.sailsUp = this.sailRig(v.ship, !v.docked && v.status !== 'laidup', v.sailsUp);   // sailing: save migration (§3.6); engine-class records stay byte-identical
     return v;
   }
   healOffice(o, rec) {
@@ -1017,6 +1027,7 @@ export class Fleet {
       fishing: !!v.fishing, towing: !!v.towing, towCls: v.towing ? (v.jobs.find((j) => j.id === v.towing)?.victimCls || 'trawler') : null,
     };
     if (v.assist || (rt && rt.tugsUntil > Date.now())) { let t = null; try { t = tugsPublic(this.game, this.actorOf(v)); } catch { t = null; } if (t) o.tugs = t; }
+    if (rigOf(s.cls)) o.rv = packRigView(s.cls, ensureRig(s, v.docked ? false : v.sailsUp));   // sailing: rig view (§3.7)
     return o;
   }
   /** Per socket: fleet ships within 40 km (≤ 60, under way first, ≤ 40 under way); moored/anchored/laid-up only when `full`. */

@@ -1,0 +1,37 @@
+{
+  "note": "Production probe of the RWS Vaarweginformatie FIS dataservice v1.4 (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §3.4). Raw records, Geometry shortened. Recorded 2026-10-09 from https://www.vaarweginformatie.nl/wfswms/dataservice/1.4/4951/<entity> (geogeneration 4951, published 2026-10-07T10:49:54Z). Licence CC0 1.0, © Rijkswaterstaat / Vaarweginformatie.nl.",
+  "geogeneration": 4951,
+  "bridge": [
+    { "Id": 17838816, "GeoType": "bridge", "Name": "Botlekbrug", "Geometry": "POINT (4.33114528656006 51.8712826454111)", "City": "Rotterdam", "AdministrationId": 7617569, "FairwaySectionId": 7118, "CanOpen": true, "IsRemoteControlled": true, "NumberOfOpenings": 2, "Referencelevel": "NAP", "OperatingTimesId": 20025085, "MhwReferenceLevel": "RIVER", "MhwOffset": 2.26 },
+    { "Id": 61127240, "GeoType": "bridge", "Name": "Calandbrug Rozenburg", "Geometry": "POINT (4.227515794336796 51.90130349255608)", "City": "Rozenburg", "AdministrationId": 23024, "FairwaySectionId": 42483, "CanOpen": true, "IsRemoteControlled": true, "NumberOfOpenings": 2, "Referencelevel": "NAP", "Rotation": -81, "OperatingTimesId": 29224, "MhwReferenceLevel": "RIVER", "MhwOffset": 2.71 },
+    { "Id": 7951, "GeoType": "bridge", "Name": "Brug over binnenhoofd Rozenburgsesluis", "Geometry": "POINT (4.2292944341898 51.8910892469472)", "AdministrationId": 19454, "FairwaySectionId": 56232, "CanOpen": true, "IsRemoteControlled": false, "NumberOfOpenings": 1, "Referencelevel": "NAP", "RelatedBuildingComplexName": "Rozenburgsesluis", "OperatingTimesId": 29224, "MhwReferenceLevel": "RIVER", "MhwOffset": 2.45 },
+    { "Id": 57361, "GeoType": "bridge", "Name": "Brug over buitenhoofd Rozenburgsesluis", "Geometry": "POINT (4.22836303710938 51.8943021710844)", "AdministrationId": 19454, "FairwaySectionId": 28518, "CanOpen": true, "IsRemoteControlled": false, "NumberOfOpenings": 1, "Referencelevel": "NAP", "RelatedBuildingComplexName": "Rozenburgsesluis", "OperatingTimesId": 29224, "MhwReferenceLevel": "RIVER", "MhwOffset": 2.71 },
+    { "Id": 27780191, "GeoType": "bridge", "Name": "Havenspoorlijn over Rozenburgsesluis", "Geometry": "POINT (4.22900676727295 51.8921288027429)", "AdministrationId": 19454, "FairwaySectionId": 56232, "CanOpen": false, "NumberOfOpenings": 1, "Referencelevel": "NAP", "MhwReferenceLevel": "CANAL" }
+  ],
+  "opening": [
+    { "Id": 21600722, "ParentId": 17838816, "Number": 1, "Type": "HEF", "HeightClosed": 14.04, "HeightOpened": 45, "Width": 87.3, "ClearanceHeightClosed": 11.78, "ClearanceHeightOpened": 42.74, "Orientation": "W", "Geometry": "POINT (4.33020114898682 51.8711048263799)" },
+    { "Id": 21600726, "ParentId": 17838816, "Number": 2, "Type": "HEF", "HeightClosed": 14.06, "HeightOpened": 45, "Width": 75, "ClearanceHeightClosed": 11.8, "ClearanceHeightOpened": 42.74, "Orientation": "O", "Geometry": "POINT (4.33217525482178 51.8714757875423)" },
+    { "Id": 46748, "ParentId": 61127240, "Number": 1, "Type": "HEF", "HeightClosed": 11.7, "HeightOpened": 49.7, "Width": 46, "ClearanceHeightClosed": 8.99, "ClearanceHeightOpened": 46.99, "Geometry": "POINT (4.22743499279022 51.9013446188839)" },
+    { "Id": 14331, "ParentId": 61127240, "Number": 2, "Type": "VST", "HeightClosed": 11.7, "Width": 80, "ClearanceHeightClosed": 8.99, "Geometry": "POINT (4.226203858852386 51.90119893651982)" },
+    { "Id": 35478, "ParentId": 7951, "Number": 1, "Type": "BC", "HeightClosed": 3.6, "Width": 24, "ClearanceHeightClosed": 1.15, "Geometry": "POINT (4.2292862493473 51.8910784600496)" },
+    { "Id": 42322, "ParentId": 57361, "Number": 1, "Type": "BC", "HeightClosed": 3.6, "Width": 24, "ClearanceHeightClosed": 0.89, "Geometry": "POINT (4.22833544394422 51.8943506185971)" },
+    { "Id": 27780219, "ParentId": 27780191, "Number": 1, "Type": "VST", "HeightClosed": 14, "Width": 24, "ClearanceHeightClosed": 14, "Geometry": "POINT (4.2289799451828 51.892118870887)" }
+  ],
+  "lock": [
+    { "Id": 4199, "GeoType": "lock", "Name": "Rozenburgsesluis", "City": "Botlek Rotterdam", "AdministrationId": 19454, "FairwaySectionId": 28518, "ReferenceLevelBeBu": "Normaal Amsterdams Peil", "ReferenceLevelBoBi": "Normaal Amsterdams Peil", "RelatedBuildingComplexName": "Rozenburgsesluis", "OperatingTimesId": 29224, "Rotation": 164, "NumberOfChambers": 1, "IsRemoteControlled": false }
+  ],
+  "chamber": [
+    { "Id": 56473, "ParentId": 4199, "Number": 1, "Length": 306.4, "SchutLengteVloed": 305, "SchutLengteEb": 306.4, "Width": 24, "GateWidth": 24, "SillDepthBeBu": -6.5, "SillDepthBoBi": -6.5, "SillDepthInner": -6.5, "ReferenceLevelInner": "BE/BU", "Note": "Schutlengte bij geopende brug: 329,00m", "PassageDurationM": 30 }
+  ],
+  "radiocallinpoint": [
+    { "ParentId": 17838816, "ParentGeoType": "bridge", "Name": "Meldpunt Botlekbrug", "VhfChannels": ["18"], "RadioTraffic": "TWO_WAY" },
+    { "ParentId": 61127240, "ParentGeoType": "bridge", "Name": "Meldpunt Calandbrug Rozenburg", "VhfChannels": ["22"], "RadioTraffic": "TWO_WAY" },
+    { "ParentId": 4199, "ParentGeoType": "lock", "Name": "Meldpunt Rozenburgsesluis", "VhfChannels": ["22"], "RadioTraffic": "TWO_WAY" },
+    { "ParentId": 7951, "ParentGeoType": "bridge", "Name": "Meldpunt brug over binnenhoofd Rozenburgsesluis", "VhfChannels": ["22"], "RadioTraffic": "TWO_WAY" },
+    { "ParentId": 57361, "ParentGeoType": "bridge", "Name": "Meldpunt brug over buitenhoofd Rozenburgsesluis", "VhfChannels": ["22"], "RadioTraffic": "TWO_WAY" }
+  ],
+  "operatingtimes_note": {
+    "20025085": "Botlekbrug: Mon-Fri 06:00-22:00 (BERP = commercial only 06:30-09:30 and 15:30-18:30, VERZ = on request 22:00-06:00), Sat/Sun 00:00-23:59; 'kwart voor en kwart over' (openings at :15 and :45)",
+    "29224": "Bediencluster vaarroute Calandkanaal (Calandbrug, Rozenburgsesluis and its head bridges): every day 00:00-23:59; request the Calandbrug 20 min before passage on VHF 22"
+  }
+}

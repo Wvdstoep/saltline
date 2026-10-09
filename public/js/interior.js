@@ -136,6 +136,11 @@ export class Interior {
         if (Array.isArray(c.material) && c.material.length >= 2) { this.capSwaps.push({ mesh: c, mats: c.material }); c.material = [this.hiddenMat, ...c.material.slice(1)]; }
         continue;
       }
+      if (c.userData.keepWhileWalking) continue;
+      if (c.userData.yacht || String(c.name || '').startsWith('yacht:')) {   // sailing yachts (rigmesh.js): the plan draws deck + houses; hull and rig stay
+        for (const k of c.children) if (k.userData.walkHide && k.visible) { k.visible = false; this.hidden.push(k); }
+        continue;
+      }
       if (!c.isMesh && hasSail(c)) continue; // sails on their booms
       c.visible = false; this.hidden.push(c);
     }
@@ -345,7 +350,7 @@ export class Interior {
     } else lookL.copy(eyeL).add(dirL);
     this.avatar.visible = third && !this.squeezed;
     const camRoom = this.map.roomAt(eyeL.x, eyeL.z, eyeL.y - 1.5) || room;
-    this.setOcean(!(camRoom && camRoom.dark));
+    this.setOcean(!(camRoom && (camRoom.dark || (!camRoom.open && camRoom.y < 0.1))));   // §4.5: cabin soles below the waterline — the sea would show through the floor
     this.setWorldLabels(!camRoom || camRoom.open || camRoom.kind === 'bridge'); // through the bridge windows they are fine
     const eye = eyeL.applyMatrix4(mesh.matrixWorld), look = lookL.applyMatrix4(mesh.matrixWorld);
     const fov = app.camera.aspect < 0.75 ? 80 : 70; // portrait phones: a wider view, so the crew member does not fill the screen
@@ -642,7 +647,7 @@ export class Interior {
       case 'bollard': { for (const dz of [-0.35, 0.35]) pb.cyl(0.16, 0.6, M.dark, p.x, p.y + 0.3, p.z + dz, 0.18, 10); pb.box(0.3, 0.12, 1.1, M.dark, p.x, p.y + 0.06, p.z); return; }
       case 'winch': { pb.cyl(0.45, p.w, M.dark, p.x, p.y + 0.7, p.z, 0.45, 12, 0, 0, Math.PI / 2); pb.box(p.w + 0.3, 0.4, 1.2, M.steel, p.x, p.y + 0.2, p.z); return; }
       case 'towhook': { pb.cyl(0.35, 1.4, M.dark, p.x, p.y + 0.7, p.z, 0.35, 10); pb.box(0.2, 0.2, 0.8, M.yellow, p.x, p.y + 1.35, p.z + 0.4); return; }
-      case 'mast': { pb.cyl(p.r, p.h, p.sail ? M.rail : M.yellow, p.x, p.y + p.h / 2, p.z, p.r * 0.75, 10); if (!p.sail) pb.box(1.6, 0.12, 0.12, M.yellow, p.x, p.y + p.h * 0.75, p.z); return; }
+      case 'mast': { if (p.real) return; pb.cyl(p.r, p.h, p.sail ? M.rail : M.yellow, p.x, p.y + p.h / 2, p.z, p.r * 0.75, 10); if (!p.sail) pb.box(1.6, 0.12, 0.12, M.yellow, p.x, p.y + p.h * 0.75, p.z); return; }
       case 'funnel': { pb.cyl(p.r, p.h, M.dark, p.x, p.y + p.h / 2, p.z, p.r * 0.95, 16); pb.cyl(p.r * 1.01, p.h * 0.18, M.red, p.x, p.y + p.h * 0.62, p.z, p.r * 0.96, 16); return; }
       case 'raised': return this.raised(ctx, p);
       case 'vehicle': {

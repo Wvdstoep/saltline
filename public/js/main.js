@@ -28,8 +28,27 @@ import { TouchHelm, isTouch } from './touch.js';
 import { Telegraph } from './telegraph.js';
 import { THROTTLE_MIN, rpmFraction } from '/shared/telegraph.js';
 import { Autopilot } from './autopilot.js'; // v6 chart-aware autopilot (docs/V6-QUICK-CONTRACTS.md §4.6)
+import { SailHud } from './sailhud.js';                        // sailing (docs/SAILING-CONTRACT.md §5)
+import { windRelSigned } from './sailfmt.js';
+import { rigOf, normalizeRig, applyRigCommand, rigViewOf, unpackRigView, trimInfo, beginManeuver, maneuverStep, authOf, windOverWater } from './sailshared.js';
 
 const { buildShip, buildWreck } = ShipMod;
+/** sailing: the RigView extras for the renderer — apparent wind (flutter), crash-jibe flag, each sail's side */
+const rigExtra = (rig) => ({ aws: rig.aws, flags: rig.flags, sides: Object.fromEntries(Object.entries(rig.sails).map(([k, v]) => [k, v.side])) });
+/** sailing: merge rig commands queued between two sends (later values win per field and per sail) */
+function mergeRigCmd(a, b) {
+  if (!a) return JSON.parse(JSON.stringify(b));
+  const out = { ...a, ...b };
+  if (a.sails || b.sails) { out.sails = { ...(a.sails || {}) }; for (const [id, o] of Object.entries(b.sails || {})) out.sails[id] = { ...(out.sails[id] || {}), ...o }; }
+  return out;
+}
+/** sailing (§5.6): area-weighted flogging / luffing cloth 0…1 for the sound */
+function sailFlogOf(s) {
+  const R = s?.rig && rigOf(s.cls); if (!R) return 0;
+  let a = 0, f = 0;
+  for (const d of R.sails) { const t = s.rig.sails[d.id]; if (!t || !(t.hoist > 0.05)) continue; a += d.A * t.hoist; f += d.A * t.hoist * (t.state === 2 ? 1 : t.state === 1 ? 0.35 : 0); }
+  return a > 0 ? Math.min(1, f / a) : 0;
+}
 const { buildHarbor, buildFishingMarker } = HarborMod;
 const D2R = Math.PI / 180;
 const GEOM_LOAD_M = 12000, GEOM_UNLOAD_M = 16000, GEOM_RETRY_MS = 120000;
@@ -121,6 +140,13 @@ class App {
     import('./fleet.js').then((m) => { this.fleetUi = new m.FleetUi(this); }).catch((e) => console.warn('[fleet] unavailable', e));
     import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
     this.touchHelm = null;
+    // sailing (docs/SAILING-CONTRACT.md §5): instruments + sail panel / phone sheet. Rig commands are applied locally at once
+    // (optimistic) and sent at ≤ 4 Hz with a trailing send for sliders (rigCommand)
+    this.sailHud = null; this.rigOut = { at: 0, cmd: null, timer: 0 }; this.sailMan = null;
+    try {
+      const el = document.getElementById('sailhud');
+      if (el) this.sailHud = new SailHud(el, { phone: isTouch(), roundButtons: false, onCommand: (cmd) => this.rigCommand(cmd), onManeuver: (k) => this.startManeuver(k), onToggle: (open) => this.touchHelm?.setButtonOn?.('sails', open) });
+    } catch (e) { console.warn('[sail] HUD unavailable', e); }
     window.addEventListener('resize', () => this.resize()); this.resize();
     this.bindInput();
     this.net.connect('');
@@ -215,10 +241,12 @@ class App {
     if (hard || (correction && !you.assist)) {
       // a plain correction is a few hundred metres: keep the helm commands and do not force a frame rebuild
       this.ship = { ...s, throttleCmd: hard ? s.throttle : this.input.throttleCmd, rudderCmd: hard ? 0 : this.input.rudderCmd };
+      if (rigOf(s.cls)) this.ship.rig = normalizeRig(s.cls, s.rig, you.docked ? false : you.sailsUp);   // sailing: the server's rig on a hard sync / correction only; local commands win otherwise (§5.7)
       if (hard) { this.input.throttleCmd = you.docked ? 0 : s.throttle; this.input.rudderCmd = 0; this.selfSamples = []; }
       if (!this.myMesh || prev?.ship.cls !== s.cls || prev?.aboard !== you.aboard) {
         if (this.myMesh) { if (this.interior.active) this.interior.exit(); this.drop(this.myMesh); }
         this.myMesh = buildShip(s.cls, you.name, 7); this.scene.add(this.myMesh);
+        this.sailHud?.setClass(s.cls); this.touchHelm?.setButtons?.(rigOf(s.cls) ? ['stop', 'auto', 'sails', 'tack'] : ['stop', 'auto']);
         this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false);
         // a new hull: chase camera sized to it (docs/V4-CONTRACTS.md §4)
         this.cam.dist = camDistFor(this.shipLength()); this.cam.pitch = CAM_PITCH;
@@ -314,6 +342,7 @@ class App {
       if (o.label !== label) { o.label = label; o.mesh.userData.label?.userData.setText(label); }
       Object.assign(o, { name: f.name, owner: f.owner, ownerId: f.ownerId, state: f.state, cond: f.cond, fishing: !!f.fishing, towing: !!f.towing, towCls: f.towCls || null });
       o.mesh.userData.setWear?.(1 - (f.cond ?? 100) / 100);
+      o.rv = Array.isArray(f.rv) ? f.rv : null;                               // sailing: fleet ships carry rv too
       o.samples.push({ t: now, lat: f.lat, lon: f.lon, hdg: f.hdg, spd: f.spd }); if (o.samples.length > 4) o.samples.shift();
     }
     for (const [id, o] of this.fleetShips) if (!seen.has(id) && (full || o.state === 'at_sea')) { this.drop(o.mesh); this.fleetShips.delete(id); }
@@ -331,6 +360,7 @@ class App {
     Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, towCls: p.towCls || null, fishing: !!p.fishing, offline: p.offline, warp: WARP_LEVELS.includes(Number(p.warp)) ? Number(p.warp) : 1 });
     o.samples.push({ t: now, lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }); if (o.samples.length > 4) o.samples.shift();
     o.mesh.userData.setWear(1 - p.cond / 100); o.mesh.userData.setFlood(p.flooding);
+    o.rv = Array.isArray(p.rv) ? p.rv : null;                                 // sailing: rig view (§3.7)
   }
   upsertCutter(c, now) {
     let o = this.cutters.get(c.id);
@@ -486,6 +516,7 @@ class App {
     st.speedKn = Math.abs(s.spd || 0);
     const wspd = this.localWind?.spd ?? this.wind?.spd ?? 0, wdir = this.localWind?.dir ?? this.wind?.dir ?? 0;
     st.windSpd = wspd; st.windRelDeg = angleDiff(s.hdg, wdir);
+    st.sailFlog = sailFlogOf(s);                                            // sailing (§5.6): flapping cloth
     st.waveH = Number(w.waveH) || 0; st.rain = Number(w.rain) || 0; st.storm = Number(w.storm) || 0; st.night = this.night || 0;
     st.underway = Math.abs(s.spd || 0) > 0.5 || Math.abs(s.throttle || 0) > 0.05; st.docked = !!you.docked; st.towing = !!you.towing; st.warp = this.warp || 1;
     if (now - this.lastNearHarbor > 1000) {
@@ -613,6 +644,7 @@ class App {
       if (k === 'tab') { e.preventDefault(); return this.hud.toggleShips(); }
       if (k === 'h') return document.getElementById('helpWrap')?.classList.toggle('hidden');
       if (k === 'r' && this.hud.chartOpen()) { this.hud.chartMode = this.hud.chartMode === 'region' ? 'world' : 'region'; this.hud.drawChart(); return; }
+      if (!this.ashore?.active && this.sailHud?.handleKey(e)) return;   // sailing keys (§0.2): Q Shift+Q 1–7 Shift+1–7 [ ] Ctrl+[ ] = - R Shift+R Z
       if (k === 'l') return this.market?.toggle();
       if (k === 'o') return this.hq?.toggle();
       if (this.ashore?.active) return; // ashore: the ship's controls are aboard
@@ -719,6 +751,7 @@ class App {
         },
         onAllStop: () => { this.manualHelm(); this.input.rudderCmd = 0; this.input.throttleCmd = 0; this.input.rudderHold = false; },
         onDock: () => this.toggleDock(), onChart: () => this.hud.toggleChart(), onInterior: () => this.toggleInterior(), onCamera: () => this.cycleCamera(), onAshore: () => this.toggleAshore(),
+        onSails: () => this.sailHud?.toggle(), onTack: () => this.sailHud?.maneuver(),   // sailing round buttons (§5.5)
       });
     } catch (e) { console.warn('[touch] helm unavailable', e); this.touchHelm = null; }
     const hold = (id, key) => {
@@ -823,11 +856,68 @@ class App {
     const you = this.you; if (!you) return;
     up = !!up;
     this.net.action('sails', { up });
-    this.myMesh?.userData.setSails?.(up, this.windRel());
+    if (this.ship?.rig && rigOf(this.ship.cls)) applyRigCommand(this.ship.cls, this.ship.rig, { all: up ? 'set' : 'furl' });   // the server maps the legacy action onto the rig too (§3.4)
+    else this.myMesh?.userData.setSails?.(up, this.windRel());
     this.hud.setSailsButton?.(!!SHIP_CLASSES[you.ship.cls]?.sail, up);
   }
-  /** Relative wind angle in degrees (0 = on the bow, 90 = from starboard). */
-  windRel() { const w = this.localWind || this.wind; const from = Number.isFinite(w?.dir) ? w.dir : normDeg((Math.atan2(-(w?.u || 0), -(w?.v || 0)) * 180) / Math.PI); return normDeg(from - (this.ship?.hdg || 0)); }
+  /** Relative wind angle in degrees, signed −180…180: + = from starboard, − = from port (§1.2 item 1: it was 0…360, so
+   *  setSails' `rel > 0` sent the boom to port for every wind — to windward with the wind from port). */
+  windRel() { const w = this.localWind || this.wind; const from = Number.isFinite(w?.dir) ? w.dir : normDeg((Math.atan2(-(w?.u || 0), -(w?.v || 0)) * 180) / Math.PI); return windRelSigned(from, this.ship?.hdg || 0); }
+  // ------------------------------------------------------------------ sailing (docs/SAILING-CONTRACT.md §3.4, §5)
+  /** A rig command (HUD, keys, autopilot): applied locally at once, sent to the server at ≤ 4 Hz with a trailing send. */
+  rigCommand(cmd) {
+    const s = this.ship; if (!s?.rig || !rigOf(s.cls) || !cmd) return;
+    const r = applyRigCommand(s.cls, s.rig, cmd);
+    if (!r.ok) { this.hud.event({ kind: 'warn', text: r.why }); return; }
+    const o = this.rigOut;
+    o.cmd = mergeRigCmd(o.cmd, cmd);
+    const flush = () => { if (o.cmd) { this.net.action('rig', { cmd: o.cmd }); o.cmd = null; o.at = performance.now(); } o.timer = 0; };
+    const wait = 250 - (performance.now() - o.at);
+    if (wait <= 0) flush(); else if (!o.timer) o.timer = setTimeout(flush, wait);
+    if (cmd.all !== undefined && this.you) { this.you.sailsUp = cmd.all === 'set'; this.hud.setSailsButton?.(true, this.you.sailsUp); }
+  }
+  /** Z / the Tack-Jibe button: the helm swings her to the mirrored true wind angle, the crew handles the sheets (§5.7). */
+  startManeuver(kind) {
+    const s = this.ship; if (!s?.rig || !rigOf(s.cls) || this.you?.docked) return;
+    if (this.autopilot && this.route.length) { this.hud.event({ kind: 'info', text: 'The autopilot tacks on its own — switch it off (P) to tack by hand.' }); return; }
+    const ww = windOverWater({ wind: this.localWind || this.wind, current: currentAt(s.lat, s.lon, this.simTime), tideStream: this.tide?.stream || null });
+    this.sailMan = {}; beginManeuver(s.cls, { hdg: s.hdg, twd: ww.twd, nowS: this.simTime }, this.sailMan, kind);
+    this.rigCommand({ maneuver: this.sailMan.man });
+    this.hud.event({ kind: 'info', text: this.sailMan.man === 'tack' ? 'Ready about — helm\'s a-lee!' : 'Stand by to jibe — jibe-o!' });
+  }
+  maneuverHelm(s) {
+    const r = maneuverStep({ hdg: s.hdg, tack: s.rig.tack, helm: s.rig.helm, auth: authOf(s.rig.heel) }, this.sailMan);
+    this.input.rudderCmd = r.rudderCmd;
+    if (r.done || this.input.left || this.input.right) { this.sailMan = null; if (r.done) this.input.rudderCmd = 0; }
+  }
+  /** Physics events (rig.ev) → the server: crash jibe (damage only with the helper off, server side), catamaran strain. */
+  drainRigEvents() {
+    const ev = this.ship?.rig?.ev; if (!ev || !ev.length) return;
+    for (const e of ev.splice(0)) {
+      if (e.kind === 'crash_jibe') { this.net.action('rig_event', { kind: 'crash_jibe', aws: e.aws }); this.sound?.event('jibe_bang', Math.min(1, (e.aws || 6) / 15)); this.hud.event({ kind: 'warn', text: 'Crash jibe! The boom slammed across.' }); }
+      else if (e.kind === 'strain') this.net.action('rig_event', { kind: 'strain' });
+    }
+  }
+  /** Sail HUD at 10 Hz: instruments, panel, the phone's Tack / Jibe label. */
+  updateSailHud(now) {
+    if (!this.sailHud || now - (this.sailHudAt || 0) < 100) return; this.sailHudAt = now;
+    const s = this.ship; if (!s?.rig || !rigOf(s.cls)) return;
+    const wp = this.autopilot && this.route[0];
+    const twd = windOverWater({ wind: this.localWind || this.wind, current: currentAt(s.lat, s.lon, this.simTime), tideStream: this.tide?.stream || null }).twd;
+    this.sailHud.update(trimInfo(s.cls, s, null), { stwKn: s.spd, sogKn: s.spd, cogDeg: normDeg(s.hdg + (s.rig.leeway || 0)), brgDeg: wp ? bearing(s.lat, s.lon, wp.lat, wp.lon) : undefined, leewayDeg: s.rig.leeway, twdDeg: twd });
+    this.touchHelm?.setButtonLabel?.('tack', Math.abs(s.rig.twa) < 90 ? 'Tack' : 'Jibe');
+  }
+  /** Others' and fleet ships' rigs (§3.7): rv from the snapshot at ≤ 15 Hz, else trimmed to the local wind (autoTrimView). */
+  updateOtherRigs(now) {
+    const w = this.localWind || this.wind, from = Number.isFinite(w?.dir) ? w.dir : normDeg((Math.atan2(-(w?.u || 0), -(w?.v || 0)) * 180) / Math.PI);
+    for (const o of [...this.others.values(), ...this.fleetShips.values()]) {
+      const ud = o.mesh?.userData; if (!ud?.setRig || now - (o.rigAt || 0) < 66) continue;
+      o.rigAt = now;
+      const v = o.rv ? unpackRigView(o.cls, o.rv) : null;
+      if (v) { ud.setRig(v, { aws: w?.spd || 8 }); o.vis.heelDeg = v.heel; }
+      else if (now - (o.sailsAt || 0) > 500) { o.sailsAt = now; ud.setSails(!o.docked && o.state !== 'docked' && o.state !== 'laid_up', windRelSigned(from, o.cur?.hdg || 0)); o.vis.heelDeg = undefined; }
+    }
+  }
   toggleAutopilot() { return this.pilot.engage(!this.autopilot); }
   /** Route API used by the chart: ordered waypoints the autopilot follows. */
   setRoute(points, opts = {}) {
@@ -941,6 +1031,8 @@ class App {
       cond: you.cond, flooding: you.flooding, loadFrac: you.cargo.reduce((a, c) => a + c.qty, 0) / C.capacity, wind: this.localWind || this.wind, current: cur,
       tideStream: this.tide?.stream || null, sea: this.wx?.sea ?? 0, waveH: this.wx?.waveH ?? 0, sailsUp: you.sailsUp !== false, towing: !!you.towing,
       fuelEmpty: you.fuelEmpty, grounded: false,
+      simTime: this.simTime, gusts: true, warp,                                // sailing: gust phase, warp (> 20× → the fast path)
+      crewAuto: this.autopilot && this.route.length ? 'full' : undefined,      // §3.3: the autopilot sails with the crew on Auto
     };
     // ≤ SUBSTEP_S of sim time per step, at most MAX_SUBSTEPS per frame; the autopilot steers and the keel is checked
     // every substep, so even 400× follows the route leg by leg and cannot hop over a spit between two frames
@@ -949,7 +1041,8 @@ class App {
     const cmd = { throttleCmd: this.input.throttleCmd, rudderCmd: this.input.rudderCmd };
     let aground = null;
     for (let i = 0; i < sub; i++) {
-      if (this.autopilot && this.route.length) { if (!this.autopilotStep(s, C)) this.input.rudderCmd = 0; }
+      if (this.autopilot && this.route.length) { if (!this.autopilotStep(s, C, h)) this.input.rudderCmd = 0; }
+      else if (this.sailMan && s.rig) this.maneuverHelm(s);                      // the Z button: tack / jibe (§5.7)
       if (this.warp !== warp) break; // dropped mid-frame (destination reached): the rest of this frame's warped time is not sailed
       cmd.throttleCmd = this.input.throttleCmd; cmd.rudderCmd = this.input.rudderCmd;
       const pLat = s.lat, pLon = s.lon;
@@ -958,6 +1051,7 @@ class App {
       if (aground) break;
     }
     if (aground) this.onGrounding(aground.bump);
+    this.drainRigEvents();
     // quays, breakwaters, land of the loaded harbour patches, and other hulls (ship–ship only up to 20×: above it the
     // hull covers hundreds of metres a frame and the watch keeps clear of traffic)
     const res = resolveShip(s, C, this.geoms, dt, warp <= WARP_SHIP_COLLIDE_MAX ? this.collisionOthers() : null);
@@ -968,8 +1062,8 @@ class App {
    * Autopilot: steer for the head of the route, advance it when the waypoint is reached. Returns false when the route
    * is finished (autopilot off; time warp back to real time so the ship does not run on past the destination warped).
    */
-  autopilotStep(s, C) {
-    if (this.pilot) return this.pilot.step(s, C); // v6: route planner v2 + harbour speed bands + berth hand-over (autopilot.js)
+  autopilotStep(s, C, dt) {
+    if (this.pilot) return this.pilot.step(s, C, dt); // v6: route planner v2 + harbour speed bands + berth hand-over (autopilot.js)
     const wp = this.route[0];
     const brg = bearing(s.lat, s.lon, wp.lat, wp.lon);
     this.input.rudderCmd = s.spd < -0.3 ? 0 : THREE.MathUtils.clamp(angleDiff(s.hdg, brg) / 25, -1, 1); // going astern the rudder works backwards: the autopilot holds it amidships
@@ -1070,6 +1164,7 @@ class App {
     ctx.windSpd = this.localWind?.spd ?? this.wind?.spd ?? 0; ctx.windDir = this.localWind?.dir ?? this.wind?.dir ?? 0;
     ctx.gust = Number(this.localWind?.gust) || undefined;
     ctx.sails = own ? this.you?.sailsUp !== false : true;
+    ctx.heelDeg = own ? (this.ship?.rig ? this.ship.rig.heel : undefined) : vis.heelDeg;   // sailing: the physics heel (motion.js MO1)
     const r = stepMotion(vis.motion, ctx, dt);
     vis.heave = r.heave; vis.pitch = r.pitch; vis.roll = r.roll; vis.slam = r.slam; vis.greenWater = r.greenWater;
     if (own && r.slam > 0.5 && this.time - (this.lastSlamSound || 0) > 1.5) { this.lastSlamSound = this.time; this.sound?.event('splash', r.slam); }
@@ -1077,6 +1172,7 @@ class App {
     if (flooding < 1) vis.sinkT = 0;
     mesh.position.y = r.heave + this.tideLevel - flooding * (ud.freeboard + 2) - sink; // the flooding list is already in roll
     mesh.rotation.set(r.pitch, -h, r.roll, 'YXZ');
+    ud.updateRig?.(dt, { camera: this.camera, time: this.time, own, touch: document.body.classList.contains('touch') });   // sailing: cloth, springs, LOD
     mesh.userData.setWake?.(Math.abs(spd) / 10);
     mesh.userData.setWaterY?.(mesh.position.y);
     if (ud.updateWake) {
@@ -1225,7 +1321,10 @@ class App {
     this.updateSound(dt, now, ashore);
     this.shipVisual(this.myMesh, this.ship.lat, this.ship.lon, this.ship.hdg, this.ship.spd, this.myVis, this.you.flooding, dt, !!this.you.docked);
     try { this.feedHeavyWeather(dt, ashore); } catch (e) { if (!this.heavyWarned) { this.heavyWarned = true; console.warn('[weather] heavy-weather fx failed', e); } }
-    if (this.myMesh.userData.setSails && now - this.lastSails > 500) { this.lastSails = now; this.myMesh.userData.setSails(this.you.sailsUp !== false, this.windRel()); }
+    if (this.myMesh.userData.setRig && this.ship.rig) this.myMesh.userData.setRig(rigViewOf(this.ship.cls, this.ship.rig), rigExtra(this.ship.rig));   // own ship: the live rig every frame (§3.7)
+    else if (this.myMesh.userData.setSails && now - this.lastSails > 500) { this.lastSails = now; this.myMesh.userData.setSails(this.you.sailsUp !== false, this.windRel()); }
+    this.updateSailHud(now);
+    this.updateOtherRigs(now);
     for (const o of this.others.values()) { this.interp(o, now); this.shipVisual(o.mesh, o.cur.lat, o.cur.lon, o.cur.hdg, o.cur.spd, o.vis, o.flooding || 0, dt, !!o.docked); }
     for (const c of this.cutters.values()) { this.interp(c, now); this.shipVisual(c.mesh, c.cur.lat, c.cur.lon, c.cur.hdg, c.cur.spd, c.vis, 0, dt, false); if (c.mesh.userData.beacon) c.mesh.userData.beacon.material.emissiveIntensity = c.state === 'patrol' ? 0.5 : 2 + 2 * Math.sin(this.time * 12); }
     for (const a of this.ai.values()) { this.interp(a, now); this.shipVisual(a.mesh, a.cur.lat, a.cur.lon, a.cur.hdg, a.state === 'underway' ? a.cur.spd : 0, a.vis, 0, dt, a.state !== 'underway'); }

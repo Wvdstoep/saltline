@@ -220,7 +220,10 @@ export function stepSail(s, env, dt, ctx = {}) {
     }
     phi += (pt - phi) * (1 - Math.exp(-dt / R.tauPhi));
     const phiA = Math.abs(phi);
-    const zce = a.HM / Math.max(a.Fn, 1e-6) - R.zclr, Fs = a.Fn * Math.cos(phiA * D2R);
+    // CE height clamped to [0, highest masthead]: when the side force crosses zero (head to wind in a tack, dead downwind
+    // in a jibe) HM (windage has its own lever) does not, and HM/Fn → ±∞ spiked the helm to thousands for one step
+    // (docs/SAILING-LANEB-PHASE2.md §8). Steady states always have a large Fn, so the polars are unaffected.
+    const zce = clamp(a.HM / Math.max(a.Fn, 1e-6) - R.zclr, 0, R.spars.masts.reduce((m, x) => Math.max(m, x.topmast || x.top), 0)), Fs = a.Fn * Math.cos(phiA * D2R);
     const h = hull(R, Vp, phiA, Fs, a.Mz, a.Fx, zce), h2 = hull(R, Vp + 0.05, phiA, Fs, a.Mz, a.Fx, zce);
     lam += (h.lam - lam) * Math.min(1, dt / 1.0);
     // surge, semi-implicit (§2.10 step 7); engine ahead (§2.9); the seaway as a resistance factor 1/sp²

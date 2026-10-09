@@ -1,0 +1,203 @@
+/* Shipyard screen (public/js/yardui.js, docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §4.7). Uses the style.css tokens.
+   Desktop ≥ 900 px: three panes (filters · designs · configurator). Phone: one column, bottom-sheet filters,
+   full-screen configurator with the turntable on top and a sticky order footer. Touch targets ≥ 44 px on phones. */
+.yard { display: flex; flex-direction: column; gap: var(--s3); min-height: 0; }
+.yhead { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; }
+.yhead h2 { font-size: 20px; }
+.yhead p { margin: 2px 0 0; }
+.ycash { font-size: 13px; color: var(--fg-2); }
+.ycash b { font-family: var(--mono); color: var(--accent-2); }
+
+.yseg { display: flex; gap: 4px; padding: 4px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); overflow-x: auto; scrollbar-width: none; }
+.yseg button { flex: 1 0 auto; background: transparent; border-color: transparent; min-height: 36px; font-weight: 600; color: var(--fg-2); }
+.yseg button.on { background: var(--card-hi); border-color: var(--line-2); color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+.yseg button i { font-style: normal; font: 600 11px var(--mono); padding: 1px 6px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-2); }
+.yseg .short { display: none; }
+
+/* ---------------------------------------------------------------- three panes */
+.ypanes { display: grid; grid-template-columns: 220px minmax(0, 1fr) minmax(360px, 430px); gap: var(--s3); min-height: 0; align-items: start; }
+.yfilters, .yconfWrap { position: sticky; top: 0; max-height: calc(100dvh - 210px); overflow: auto; }
+.yfilters { background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); padding: var(--s3); }
+.yfgrid { display: flex; flex-direction: column; gap: var(--s2); }
+.yfgrid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.yfgrid select, .yfgrid input[type=number], .yfgrid input[type=search], .yconf select, .yconf input[type=text] { font: inherit; font-size: 13px; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r1); padding: 6px 8px; min-height: 34px; }
+.yfgrid .ychk { flex-direction: row; align-items: center; gap: 8px; color: var(--fg-2); }
+.ychk input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+/* ---------------------------------------------------------------- cards */
+.ycards { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: var(--s3); }
+.ycard { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); overflow: hidden; cursor: pointer; transition: border-color var(--t), transform var(--t); }
+.ycard:hover { border-color: var(--line-2); }
+.ycard.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.ycard.wide { cursor: default; }
+.ythumbBox { position: relative; aspect-ratio: 16 / 9; background: radial-gradient(120% 90% at 50% 20%, #3b6f87 0%, #1b3a52 70%, #10263a 100%); }
+.ythumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ythumb:not([src]) { visibility: hidden; }
+.ytype { position: absolute; left: 8px; top: 8px; font: 600 11px var(--font); padding: 2px 8px; border-radius: 9px; background: rgba(6, 17, 28, 0.72); color: var(--fg-2); }
+.ycheck { position: absolute; right: 8px; top: 8px; font: 600 11px var(--font); padding: 2px 8px; border-radius: 9px; background: var(--green-soft); color: var(--green); }
+.ycardBody { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 12px; flex: 1; }
+.ycardBody h3 { font-size: 15px; }
+.ycardBody p { margin: 0; }
+.yprice { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.yprice b { font-family: var(--mono); font-size: 14px; color: var(--accent-2); }
+.yeco { margin-left: auto; font: 700 11px var(--mono); padding: 1px 7px; border-radius: 6px; background: var(--card-hi); color: var(--fg); }
+.yeco.eA { background: #1f7a4a; } .yeco.eB { background: #4e8a2a; } .yeco.eC { background: #8a7a2a; } .yeco.eD, .yeco.eE { background: #8a3a2a; }
+.ybadges { display: flex; flex-wrap: wrap; gap: 4px; }
+.ybadge { font: 600 10.5px var(--font); padding: 2px 7px; border-radius: 8px; border: 1px solid var(--line-2); color: var(--fg-2); white-space: nowrap; }
+.b-blue { background: rgba(70, 140, 255, 0.16); border-color: rgba(110, 160, 255, 0.45); color: #a9c8ff; }
+.b-cyan { background: var(--cyan-soft); border-color: rgba(90, 214, 255, 0.4); color: var(--cyan); }
+.b-green { background: var(--green-soft); border-color: rgba(79, 209, 139, 0.4); color: var(--green); }
+.b-red { background: var(--red-soft); border-color: rgba(255, 107, 107, 0.45); color: var(--red); }
+.b-amber { background: var(--accent-soft); border-color: rgba(242, 177, 52, 0.45); color: var(--accent-2); }
+.b-muted { background: rgba(255, 255, 255, 0.04); color: var(--muted); }
+.ycardFoot { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
+.ycardFoot button { flex: 1 1 auto; }
+.ycardFoot button.on { border-color: var(--accent); color: var(--accent-2); }
+.yempty { padding: var(--s5); text-align: center; color: var(--muted); background: var(--card); border: 1px dashed var(--line-2); border-radius: var(--r3); }
+.ywarn { margin: 6px 0 0; font-size: 12px; color: var(--accent-2); }
+.ynote { margin: 6px 0; padding: 6px 8px; border-radius: var(--r1); font-size: 12px; border: 1px solid; }
+
+/* ---------------------------------------------------------------- configurator */
+.yconf { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); overflow: hidden; }
+.yconfHead { padding: 10px 12px 6px; }
+.yconfHead h3 { font-size: 16px; }
+.yconfHead p { margin: 2px 0 0; }
+.yturnWrap { position: relative; }
+.yturn { height: 250px; background: radial-gradient(120% 100% at 50% 15%, #4b84a0 0%, #22506b 55%, #133149 100%); cursor: grab; touch-action: none; }
+.yturn:active { cursor: grabbing; }
+.yturn canvas { display: block; width: 100%; height: 100%; }
+.yturnBtns { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
+.yturnBtns button { min-height: 28px; padding: 0 9px; background: rgba(6, 17, 28, 0.66); border-color: rgba(150, 195, 230, 0.25); font-size: 12px; }
+.yacc { display: flex; flex-direction: column; }
+.ysec { border-top: 1px solid var(--line); }
+.ysec > summary { cursor: pointer; padding: 10px 12px; font-weight: 650; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+.ysec > summary::after { content: '▾'; color: var(--muted); }
+.ysec[open] > summary::after { content: '▴'; }
+.ysec > :not(summary) { margin: 0 12px 10px; }
+.yyards { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto; padding-right: 2px; }
+.yyard { flex: none; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 8px; align-items: center; text-align: left; white-space: normal; padding: 6px 8px; min-height: 44px; background: var(--surface-2); }
+.yyard.on { border-color: var(--accent); background: var(--card-hi); }
+.yyard.blocked { opacity: 0.6; border-color: rgba(255, 107, 107, 0.4); }
+.yflag { font-size: 18px; }
+.yyn { display: flex; flex-direction: column; min-width: 0; }
+.yyn b { font-size: 13px; }
+.yyn small, .yyp small { color: var(--muted); font-size: 11px; }
+.yyp { display: flex; flex-direction: column; align-items: flex-end; }
+.yyp b { font-family: var(--mono); font-size: 13px; color: var(--accent-2); }
+.ystar { color: var(--accent); }
+.yhere { font: 600 10px var(--font); padding: 0 5px; border-radius: 6px; background: var(--green-soft); color: var(--green); }
+.yopt { border: 0; padding: 0; margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.yopt legend { font-size: 12px; color: var(--muted); padding: 0; margin-bottom: 4px; width: 100%; }
+.yopt label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; min-height: 30px; }
+.yopt label.off { color: var(--faint); }
+.yopt label .why { color: var(--faint); font-size: 11px; }
+.yopt input { accent-color: var(--accent); width: 16px; height: 16px; }
+.yswatches { display: flex; gap: 6px; flex-wrap: wrap; width: 100%; }
+.yswatch { padding: 3px; min-height: 0; gap: 2px; border-radius: 8px; }
+.yswatch i { display: block; width: 14px; height: 22px; border-radius: 3px; }
+.yswatch.on { border-color: var(--accent); }
+.ycolors { display: flex; gap: 10px; flex-wrap: wrap; width: 100%; }
+.ycolors label { flex-direction: column; font-size: 11px; color: var(--muted); align-items: flex-start; }
+.ycolors input[type=color] { width: 44px; height: 30px; padding: 0; border: 1px solid var(--line-2); border-radius: 6px; background: none; }
+.yrow2 { display: grid; grid-template-columns: 90px 1fr; gap: 8px; width: 100%; }
+.yrow2 label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 3px; }
+.yline { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; margin: 6px 0; }
+.yline select { max-width: 70%; }
+.ypay { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.ypay th, .ypay td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+.ypay th { color: var(--muted); font-weight: 600; }
+.ypay .r { text-align: right; font-family: var(--mono); }
+.yspec { margin: 4px 0; }
+.yspec summary { cursor: pointer; font-size: 13px; font-weight: 600; padding: 4px 0; }
+.yspec dl { display: grid; grid-template-columns: 46% 54%; gap: 2px 8px; margin: 4px 0 8px; font-size: 12px; }
+.yspec dt { color: var(--muted); } .yspec dd { margin: 0; }
+.yfoot { position: sticky; bottom: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--surface-2); border-top: 1px solid var(--line-2); }
+.ysum { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.ysum b { font-family: var(--mono); color: var(--fg); }
+.ybtns { display: flex; gap: 8px; }
+.ybtns .primary { flex: 1; }
+
+/* ---------------------------------------------------------------- second-hand, orders */
+.ycond { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--fg-2); }
+.ymeter { position: relative; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #8a3a2a, #8a7a2a 50%, #1f7a4a); }
+.ymeter i { position: absolute; top: -2px; height: 10px; border-radius: 3px; background: rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4); min-width: 3px; }
+.yhist { margin: 4px 0 0; padding: 0 0 0 14px; font-size: 12px; border-left: 2px solid var(--line-2); list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.yhist li { position: relative; }
+.yhist li::before { content: ''; position: absolute; left: -19px; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); }
+.yhist li.k-incident::before { background: var(--red); } .yhist li.k-flag::before { background: var(--accent); } .yhist li.k-dock::before { background: var(--green); }
+.yhist b { font-family: var(--mono); margin-right: 4px; }
+.yorders { display: flex; flex-direction: column; gap: var(--s3); }
+.yorder { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--s3); background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); overflow: hidden; }
+.yorder.done { opacity: 0.7; }
+.yorderBody { padding: 10px 12px 12px 0; display: flex; flex-direction: column; gap: 6px; }
+.yorderHead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ystate { font: 600 11px var(--font); padding: 2px 8px; border-radius: 9px; background: var(--card-hi); }
+.ystate.s-ready { background: var(--green-soft); color: var(--green); } .ystate.s-defaulted, .ystate.s-cancelled { background: var(--red-soft); color: var(--red); }
+.yprog { position: relative; height: 10px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--line); margin-top: 6px; }
+.yprog > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.yprog > b { position: absolute; top: -4px; width: 2px; height: 16px; background: var(--fg-2); transform: translateX(-1px); }
+.yprog > b.paid { background: var(--green); }
+.yticks { position: relative; height: 16px; font-size: 10.5px; color: var(--muted); }
+.yticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.yticks span:last-child { transform: translateX(-100%); }
+.yticks span:first-child { transform: none; }
+.ycmpImg { display: block; width: 100%; max-width: 200px; aspect-ratio: 5 / 3; border-radius: 8px; background: #1b3a52; margin-bottom: 4px; object-fit: cover; }
+.ycmpImg:not([src]) { visibility: hidden; }
+.ytrade { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; padding: 8px 12px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r2); font-size: 13px; }
+.ytrade label { display: inline-flex; gap: 6px; align-items: center; }
+.ysell { display: flex; flex-direction: column; gap: var(--s3); }
+
+/* order book rows (HQ / office, H13b) */
+.yorderBook h3 { font-size: 14px; margin: 8px 0 6px; }
+.yobRow { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(80px, 1fr) minmax(0, 1fr); gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.yobName { display: flex; flex-direction: column; min-width: 0; } .yobName small { color: var(--muted); }
+.yprog.small { height: 8px; margin: 0; }
+.yobNext { text-align: right; }
+@media (max-width: 899px) { .yobRow { grid-template-columns: 1fr; } .yobNext { text-align: left; } }
+
+/* ---------------------------------------------------------------- compare */
+.ytray { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; background: var(--glass-strong); border: 1px solid var(--line-2); border-radius: var(--r3); backdrop-filter: blur(8px); z-index: 3; }
+.yslots { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.yslot { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 4px 2px 10px; border-radius: 12px; background: var(--card-hi); }
+.yslot .iconBtn { min-height: 24px; width: 24px; padding: 0; }
+.ycmp { position: fixed; inset: 0; z-index: 40; background: rgba(3, 9, 16, 0.6); display: flex; align-items: center; justify-content: center; padding: var(--s4); }
+.ycmpBox { width: min(1100px, 100%); max-height: 100%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r3); box-shadow: var(--shadow); }
+.ycmpScroll { overflow: auto; padding: 0 12px 12px; }
+.ycmp table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.ycmp th, .ycmp td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+.ycmp thead th { vertical-align: bottom; }
+.ycmp thead th img { display: block; width: 100%; max-width: 200px; aspect-ratio: 5 / 3; border-radius: 8px; background: #1b3a52; margin-bottom: 4px; }
+.ycmp tbody th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.ycmp td.best { color: var(--green); font-weight: 650; }
+.ysheetHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+
+/* ---------------------------------------------------------------- phone (< 900 px) */
+@media (max-width: 899px) {
+  .yseg .long { display: none; } .yseg .short { display: inline; }
+  .yseg button { min-height: var(--tap); padding: 0 10px; }
+  .yhead h2 { font-size: 17px; }
+  .ybar { display: flex; gap: 8px; }
+  .ybar button, .ybar select { flex: 1; min-height: var(--tap); font: inherit; color: var(--fg); background: var(--card-2); border: 1px solid var(--line-2); border-radius: var(--r2); padding: 0 10px; }
+  .ycards { grid-template-columns: 1fr; }
+  .ycard { flex-direction: row; }
+  .ycard .ythumbBox { flex: 0 0 42%; aspect-ratio: auto; min-height: 120px; }
+  .ycard.wide, .ycard.used { flex-direction: column; }
+  .ycard.wide .ythumbBox { aspect-ratio: 16 / 9; }
+  .ycardFoot button, .yyard, .yopt label { min-height: var(--tap); }
+  .ysheet { position: fixed; left: 0; right: 0; z-index: 45; background: var(--surface); display: flex; flex-direction: column; }
+  .ysheet .ysheetHead { background: var(--surface-2); }
+  .ysheet.bottom { box-shadow: 0 0 0 100vmax rgba(2, 8, 14, 0.62); bottom: 0; max-height: 82dvh; border-radius: var(--r4) var(--r4) 0 0; border-top: 1px solid var(--line-2); box-shadow: var(--shadow); padding-bottom: var(--sab); }
+  .ysheet.bottom .yfgrid { padding: 12px; overflow: auto; }
+  .ysheet.full { top: 0; bottom: 0; padding-top: var(--sat); }
+  .ysheet.full .yconf { border: 0; border-radius: 0; flex: 1; overflow: auto; }
+  .ysheet .ysheetHead button { min-height: var(--tap); }
+  .yturn { height: 240px; }
+  .yfoot { padding-bottom: calc(10px + var(--sab)); }
+  .yorder { grid-template-columns: 1fr; }
+  .yticks span:nth-child(2) { display: none; }
+  .yorder .ythumbBox { aspect-ratio: 16 / 9; }
+  .yorderBody { padding: 0 12px 12px; }
+  .ycmp { padding: 0; }
+  .ycmpBox { height: 100%; border-radius: 0; }
+  .ycmp table { font-size: 12px; }
+}

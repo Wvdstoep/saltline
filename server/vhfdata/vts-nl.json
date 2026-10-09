@@ -1,0 +1,42 @@
+{
+  "v": 1,
+  "source": "Port of Rotterdam, Procedure VHF communication VTS & HCC (v1.4, July 2023), annex 1 + 'VTS services and VHF communication procedure' web page. Channels verified as listed in docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6.3; polygons are hand-drawn game approximations (WGS84 [lat, lon]), not the legal sector boundaries.",
+  "note": "Lane B seed. If lane A ships server/waterworks/vts-nl.json, server/vhf.js loads that file instead (same schema). Entries with verified:false are not loaded as stations: a ship inside one is treated as in the nearest verified sector. The operator fills the remaining Rotterdam sector channels from Annex 1.",
+  "port": "rotterdam",
+  "fallbackCh": 10,
+  "fallbackNote": "Outside VTS sectors in the Rotterdam port area: listen on channel 10.",
+  "sectors": [
+    {
+      "id": "vts:maas-approach", "callName": "Maas Approach", "ch": 1, "verified": true, "role": "sector",
+      "poly": [[52.12, 3.45], [52.12, 3.98], [52.015, 4.03], [51.985, 4.035], [51.955, 3.99], [51.87, 3.72], [51.87, 3.45]]
+    },
+    {
+      "id": "vts:oude-maas", "callName": "Oude Maas", "ch": 62, "verified": true, "role": "sector",
+      "poly": [[51.885, 4.285], [51.89, 4.33], [51.87, 4.40], [51.845, 4.47], [51.83, 4.56], [51.822, 4.66], [51.805, 4.66], [51.815, 4.55], [51.832, 4.45], [51.855, 4.37], [51.868, 4.30]]
+    },
+    {
+      "id": "vts:maasbruggen", "callName": "Maasbruggen", "ch": 81, "verified": true, "role": "sector",
+      "poly": [[51.918, 4.445], [51.925, 4.49], [51.918, 4.535], [51.905, 4.565], [51.893, 4.56], [51.897, 4.525], [51.902, 4.48], [51.905, 4.445]]
+    },
+    {
+      "id": "vts:traffic-centre", "callName": "Traffic Centre Rotterdam", "ch": 11, "verified": true, "role": "centre",
+      "poly": [[52.02, 3.95], [52.02, 4.60], [51.80, 4.70], [51.80, 3.95]]
+    },
+    {
+      "id": "vts:hcc", "callName": "Harbour Coordination Centre", "ch": 14, "chAlt": [19], "verified": true, "role": "hcc",
+      "poly": [[52.02, 3.95], [52.02, 4.60], [51.80, 4.70], [51.80, 3.95]]
+    },
+    { "id": "vts:maasmond", "callName": "Maasmond", "ch": null, "verified": false, "role": "sector",
+      "poly": [[52.015, 4.03], [52.0, 4.13], [51.965, 4.13], [51.955, 4.03]] },
+    { "id": "vts:europoort", "callName": "Europoort", "ch": null, "verified": false, "role": "sector",
+      "poly": [[51.965, 4.03], [51.965, 4.17], [51.92, 4.17], [51.93, 4.03]] },
+    { "id": "vts:rozenburg", "callName": "Rozenburg", "ch": null, "verified": false, "role": "sector",
+      "poly": [[51.92, 4.17], [51.92, 4.30], [51.875, 4.30], [51.875, 4.17]] },
+    { "id": "vts:botlek", "callName": "Botlek", "ch": null, "verified": false, "role": "sector",
+      "poly": [[51.92, 4.30], [51.92, 4.40], [51.885, 4.40], [51.885, 4.285]] },
+    { "id": "vts:waalhaven", "callName": "Waalhaven", "ch": null, "verified": false, "role": "sector",
+      "poly": [[51.92, 4.40], [51.905, 4.445], [51.875, 4.445], [51.875, 4.40]] },
+    { "id": "vts:eemhaven", "callName": "Eemhaven", "ch": null, "verified": false, "role": "sector",
+      "poly": [[51.905, 4.415], [51.905, 4.445], [51.885, 4.445], [51.885, 4.415]] }
+  ]
+}

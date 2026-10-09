@@ -1,0 +1,90 @@
+[
+ {
+  "id": "ha1",
+  "name": "Alpha Port",
+  "country": "XA",
+  "lat": 50,
+  "lon": 0,
+  "size": "mega"
+ },
+ {
+  "id": "ha2",
+  "name": "Alpha North",
+  "country": "XA",
+  "lat": 52,
+  "lon": 0,
+  "size": "major"
+ },
+ {
+  "id": "hb1",
+  "name": "Bravo Port",
+  "country": "XB",
+  "lat": 50,
+  "lon": 10,
+  "size": "major"
+ },
+ {
+  "id": "hc1",
+  "name": "Charlie Port",
+  "country": "XC",
+  "lat": 40,
+  "lon": 0,
+  "size": "mega"
+ },
+ {
+  "id": "hd1",
+  "name": "Delta Port",
+  "country": "XD",
+  "lat": 40,
+  "lon": 10,
+  "size": "major"
+ },
+ {
+  "id": "he1",
+  "name": "Echo Port",
+  "country": "XE",
+  "lat": 45,
+  "lon": 20,
+  "size": "major"
+ },
+ {
+  "id": "hr",
+  "name": "Romeo Port",
+  "country": "XE",
+  "lat": 44,
+  "lon": 30,
+  "size": "regional"
+ },
+ {
+  "id": "hz",
+  "name": "Zulu Port",
+  "country": "XC",
+  "lat": 41,
+  "lon": 1,
+  "size": "regional"
+ },
+ {
+  "id": "hf1",
+  "name": "Foxtrot Port",
+  "country": "XF",
+  "lat": 30,
+  "lon": -20,
+  "size": "regional"
+ },
+ {
+  "id": "hg1",
+  "name": "Golf Port",
+  "country": "XG",
+  "lat": 21,
+  "lon": 2,
+  "size": "major"
+ },
+ {
+  "id": "hh1",
+  "name": "Hotel Port",
+  "country": "XH",
+  "lat": 15,
+  "lon": 2.5,
+  "size": "major"
+ }
+]

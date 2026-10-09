@@ -1,0 +1,24 @@
+{
+ "XD": {
+  "steel": {
+   "rate": 0.05,
+   "basis": "source",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "verify": true
+  },
+  "grain": {
+   "rate": 0.1,
+   "basis": "source",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "verify": true
+  }
+ }
+}

@@ -1,0 +1,21 @@
+{
+ "fx-src": {
+  "title": "Fixture source",
+  "publisher": "JWC",
+  "url": "https://example.org/fixture",
+  "published": "2026-10-01",
+  "accessed": "2026-10-01",
+  "kind": "listing",
+  "short": "JWC"
+ },
+ "fx-old": {
+  "title": "Old fixture source",
+  "publisher": "Fixture",
+  "url": "https://example.org/old",
+  "published": "2020-01-01",
+  "accessed": "2020-01-01",
+  "kind": "law",
+  "short": "Fixture",
+  "reviewBy": "2021-01-01"
+ }
+}

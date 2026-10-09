@@ -12,6 +12,8 @@ import * as THREE from 'three';
 import { SHIP_CLASSES } from '/shared/constants.js';
 import { PartBuilder, noiseTexture } from './models.js';
 import { surfaceHeightAt, oceanState } from './ocean2.js';
+import { buildYacht } from './rigmesh.js';                      // sailing yachts (docs/SAILING-CONTRACT.md §4)
+import { autoTrimView } from './sailshared.js';
 
 // ----------------------------------------------------------------------------------------------- wear shader
 // shipPos: per-vertex position in the SHIP group's frame, baked at build time (fixed to the plating, y = up, so the
@@ -732,38 +734,8 @@ const BUILDERS = {
     ctx.lights = { x: tiers[2][0] / 2, y: deckY + 9, z: tiers[2][2], mastY: y + 5.5, mastZ: mz + 0.5, fore: { y: deckY + 3.3, z: -L / 2 + L * 0.08 }, stern: { y: deckY + 1, z: L / 2 - 0.5 } };
     return y + 8;
   },
-  sloop(ctx) { yachtHull(ctx); sailboatDeck(ctx, 0.15); return rig(ctx, [{ z: -ctx.L * 0.12, h: ctx.L * 1.3, boom: ctx.L * 0.38, jib: true }]); },
-  ketch(ctx) { yachtHull(ctx); sailboatDeck(ctx, 0.18); return rig(ctx, [{ z: -ctx.L * 0.15, h: ctx.L * 1.2, boom: ctx.L * 0.34, jib: true }, { z: ctx.L * 0.3, h: ctx.L * 0.8, boom: ctx.L * 0.24, jib: false }]); },
-  schooner(ctx) {
-    yachtHull(ctx);
-    const { L, B, deckY, box, rod, pb } = ctx;
-    // deckhouses, wheel, bowsprit
-    box(B * 0.5, 1.0, L * 0.14, ctx.superMat, 0, deckY + 0.5, L * 0.14); box(B * 0.45, 0.9, L * 0.1, ctx.superMat, 0, deckY + 0.45, -L * 0.2);
-    pb.geo(new THREE.TorusGeometry(0.6, 0.05, 5, 12), P.teak, 0, deckY + 1.1, L * 0.36, 0, 0, 0); rod(0, deckY, L * 0.36, 0, deckY + 1.1, L * 0.36, 0.06, P.steel);
-    rod(0, deckY + 0.3, -L / 2 + 1, 0, deckY + 0.9, -L / 2 - L * 0.12, 0.12, P.teak);
-    ctx.bowsprit = { x: 0, y: deckY + 0.9, z: -L / 2 - L * 0.12 };
-    ctx.hullRail(yachtShape(L, B), deckY + 0.2, 0.5);
-    return rig(ctx, [{ z: -L * 0.22, h: L * 0.7, boom: L * 0.3, jib: true, gaff: true }, { z: L * 0.12, h: L * 0.82, boom: L * 0.36, jib: false, gaff: true }]);
-  },
-  catamaran(ctx) {
-    const { g, L, B, deckY, draft, freeboard, hullMat, deckMat, box, win, pb } = ctx;
-    // twin hulls + bridge deck + cabin + trampoline
-    for (const side of [-1, 1]) {
-      const h = extrudeHull(yachtShape(L, B * 0.2), freeboard + draft * 0.5, [deckMat, hullMat], -draft * 0.5, false); h.position.x = side * B * 0.4; g.add(h);
-      pb.box(0.2, draft * 0.5, L * 0.18, hullMat, side * B * 0.4, -draft * 0.7, L * 0.05);
-      pb.box(0.1, draft * 0.5, draft * 0.5, hullMat, side * B * 0.4, -draft * 0.4, L / 2 - 1);
-    }
-    box(B * 0.84, 0.5, L * 0.6, ctx.superMat, 0, freeboard - 0.1, L * 0.08);
-    box(B * 0.6, 1.9, L * 0.34, ctx.superMat, 0, freeboard + 1.1, L * 0.02);
-    win(B * 0.56, 0.7, 0, freeboard + 1.5, L * 0.02 - L * 0.17 - 0.02); win(L * 0.3, 0.6, -B * 0.3 - 0.02, freeboard + 1.5, L * 0.02, Math.PI / 2); win(L * 0.3, 0.6, B * 0.3 + 0.02, freeboard + 1.5, L * 0.02, Math.PI / 2);
-    box(B * 0.66, 0.2, L * 0.38, ctx.superMat, 0, freeboard + 2.1, L * 0.02);
-    box(B * 0.5, 0.9, L * 0.12, ctx.superMat, 0, freeboard + 0.6, L * 0.3); // cockpit seats
-    const tramp = new THREE.Mesh(new THREE.PlaneGeometry(B * 0.66, L * 0.26), P.tramp); tramp.rotation.x = -Math.PI / 2; tramp.position.set(0, freeboard - 0.05, -L * 0.33); g.add(tramp);
-    ctx.rail([[-B * 0.4, -L * 0.45], [-B * 0.4, L * 0.4]], freeboard + 0.1); ctx.rail([[B * 0.4, -L * 0.45], [B * 0.4, L * 0.4]], freeboard + 0.1);
-    ctx.crewSpots.push([B * 0.15, freeboard + 0.4, L * 0.3]);
-    ctx.deckY = freeboard + 0.3; ctx.bowFrac = 0.42;
-    return rig(ctx, [{ z: -L * 0.05, h: L * 1.25, boom: L * 0.36, jib: true, foot: freeboard + 2.2 }]);
-  },
+  // sailing yachts (docs/SAILING-CONTRACT.md §4): hull lines, deck layout, rig and cloth sails from rigmesh.js
+  sloop: yachtBuilder, ketch: yachtBuilder, catamaran: yachtBuilder, schooner: yachtBuilder,
   cutter(ctx) {
     const { L, B, deckY, box, win, mast, pb } = ctx;
     merchantHull(ctx, 0.45, 0.85);
@@ -854,72 +826,24 @@ const BUILDERS = {
   },
 };
 
-/** cabin trunk, cockpit, lifelines for monohull sailing yachts */
-function sailboatDeck(ctx, trunkFrac) {
-  const { L, B, deckY, box, win, pb } = ctx;
-  box(B * 0.6, 0.8, L * 0.34, ctx.superMat, 0, deckY + 0.3, -L * 0.05);
-  win(L * 0.26, 0.3, -B * 0.3 - 0.02, deckY + 0.45, -L * 0.05, Math.PI / 2); win(L * 0.26, 0.3, B * 0.3 + 0.02, deckY + 0.45, -L * 0.05, Math.PI / 2);
-  box(B * 0.56, 0.35, L * 0.1, ctx.superMat, 0, deckY + 0.85, -L * 0.08, -0.35, 0, 0); // sprayhood
-  box(B * 0.5, 0.5, L * 0.22, P.teak, 0, deckY + 0.15, L * 0.25); // cockpit seats
-  pb.geo(new THREE.TorusGeometry(B * 0.16, 0.035, 5, 16), P.steel, 0, deckY + 0.9, L * 0.34, 0, 0, 0); // wheel
-  pb.rod(0, deckY, L * 0.34, 0, deckY + 0.9, L * 0.34, 0.05, P.steel);
-  ctx.hullRail(yachtShape(L, B), deckY + 0.1, 0.45);
-  ctx.crewSpots.push([0, deckY + 0.05, L * 0.34 + 0.65]); // at the wheel
-  void trunkFrac;
-}
-
-/** masts, booms, standing rigging and sails. Each spec: {z, h (mast height above deck), boom, jib, gaff?, foot?} */
-function rig(ctx, specs) {
-  const { g, L, B, deckY, pb } = ctx;
-  let topY = deckY;
-  const sails = ctx.sails;
-  specs.forEach((s, i) => {
-    const foot = s.foot ?? deckY;
-    const mastTop = foot + s.h, boomY = foot + 1.6;
-    pb.cyl(0.11 + L * 0.004, s.h, P.steel, 0, foot + s.h / 2, s.z, 0.06 + L * 0.002, 8);
-    pb.box(0.12, 0.08, B * 0.5, P.steel, 0, foot + s.h * 0.6, s.z); // spreaders
-    // standing rigging: shrouds via the spreader tips, forestay to the bow (or bowsprit), backstay to the stern
-    const bowZ = ctx.bowsprit ? ctx.bowsprit.z : -L / 2 + 0.3, bowY = ctx.bowsprit ? ctx.bowsprit.y : deckY + 0.2;
-    for (const side of [-1, 1]) { pb.rod(side * B * 0.46, deckY + 0.1, s.z + 0.4, side * B * 0.25, foot + s.h * 0.6, s.z, 0.02, P.dark, 4); pb.rod(side * B * 0.25, foot + s.h * 0.6, s.z, 0, mastTop - 0.3, s.z, 0.02, P.dark, 4); }
-    if (i === 0) pb.rod(0, bowY, bowZ, 0, mastTop - 0.2, s.z, 0.025, P.dark, 4);
-    if (i === specs.length - 1) pb.rod(0, deckY + 0.3, L / 2 - 0.4, 0, mastTop - 0.4, s.z, 0.025, P.dark, 4);
-    if (i > 0) pb.rod(0, (specs[i - 1].foot ?? deckY) + specs[i - 1].h * 0.98, specs[i - 1].z, 0, mastTop - 0.5, s.z, 0.02, P.dark, 4); // triatic
-    // boom + mainsail pivot at the mast
-    const pivot = new THREE.Group(); pivot.position.set(0, 0, s.z); g.add(pivot);
-    const boomMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.07 + L * 0.002, 0.07 + L * 0.002, s.boom, 8), P.steel);
-    boomMesh.rotation.x = Math.PI / 2; boomMesh.position.set(0, boomY, s.boom / 2); pivot.add(boomMesh);
-    const cover = new THREE.Mesh(new THREE.BoxGeometry(0.35 + L * 0.006, 0.4 + L * 0.008, s.boom * 0.9), P.sailCover); cover.position.set(0, boomY + 0.25, s.boom * 0.48); pivot.add(cover);
-    // mainsail: triangle (or gaff quad) with a convex leech, in the pivot's YZ plane
-    const shape = new THREE.Shape();
-    const headY = s.gaff ? mastTop - s.h * 0.1 : mastTop - 0.3;
-    shape.moveTo(0, boomY); shape.lineTo(s.boom * 0.97, boomY);
-    if (s.gaff) { shape.quadraticCurveTo(s.boom * 0.9, (boomY + headY) / 2 + 1, s.boom * 0.55, headY + s.h * 0.08); shape.lineTo(0, headY); }
-    else shape.quadraticCurveTo(s.boom * 0.72, (boomY + headY) / 2, 0, headY);
-    shape.closePath();
-    const sailGeo = new THREE.ShapeGeometry(shape, 6); sailGeo.rotateY(-Math.PI / 2); // shape x → +z (aft), y stays up
-    const main = new THREE.Mesh(sailGeo, P.sail); pivot.add(main);
-    if (s.gaff) { const gaff = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, s.boom * 0.6, 6), P.steel); gaff.position.set(0, headY + s.h * 0.04, s.boom * 0.28); gaff.rotation.x = Math.PI / 2 - 0.25; pivot.add(gaff); }
-    sails.push({ kind: 'main', pivot, mesh: main, cover, boomY, headY });
-    if (s.jib) {
-      const jp = new THREE.Group(); jp.position.set(0, 0, bowZ); g.add(jp);
-      const js = new THREE.Shape(); const jh = mastTop - 0.9, jfoot = s.z - bowZ;
-      js.moveTo(0, bowY + 0.2); js.lineTo(jfoot * 0.86, bowY + 0.3); js.quadraticCurveTo(jfoot * 0.5, (bowY + jh) / 2 + 0.5, 0.05, jh); js.closePath();
-      const jg = new THREE.ShapeGeometry(js, 6); jg.rotateY(-Math.PI / 2);
-      const jib = new THREE.Mesh(jg, P.sail); jp.add(jib);
-      // furled jib: a roll along the forestay (cylinder axis Y → rotate it onto the bow→masthead direction)
-      const flen = Math.hypot(jfoot, jh - bowY);
-      const furl = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, flen, 6), P.sailCover);
-      furl.position.set(0, (bowY + jh) / 2, jfoot / 2);
-      furl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, jh - bowY, jfoot).normalize());
-      jp.add(furl);
-      sails.push({ kind: 'jib', pivot: jp, mesh: jib, cover: furl, boomY: bowY, headY: jh });
-    }
-    topY = Math.max(topY, mastTop);
-    if (i === 0) ctx.lights = { x: B * 0.42, y: deckY + 0.6, z: -L * 0.2, mastY: mastTop + 0.2, mastZ: s.z, fore: null, stern: { y: deckY + 0.6, z: L / 2 - 0.3 } };
+/**
+ * Sailing yachts (docs/SAILING-CONTRACT.md §4.1–§4.2): lofted hull, deck layout, spars, rigging and sails from rigmesh.js
+ * (three.js) on top of yachtlooks.js / rigcore.js (pure). The hull is drawn with this ship's own wear-shaded material
+ * (white base colour + the class stripe texture: antifouling, boot-top, topsides, cove line), so setWear / setFlood /
+ * setWaterY and the shipPos bake work as for every hull. Replaces sailboatDeck() and rig() (deleted).
+ */
+function yachtBuilder(ctx) {
+  const touch = typeof window !== 'undefined' && (('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0);
+  const y = buildYacht(ctx.cls, {
+    touch,
+    makeHullMat: (c, o) => { const m = ctx.hullMat; m.color.set(c); m.map = o.map; m.roughness = 0.38; m.metalness = 0.08; m.needsUpdate = true; return m; },
   });
-  return topY + 3;
+  ctx.g.add(y.group);
+  ctx.yacht = y;
+  Object.assign(ctx, { deckY: y.dims.deckY, freeboard: y.dims.freeboard, B: y.dims.B, bowFrac: 0.42, lights: y.lights });
+  ctx.crewSpots.push(y.crewSpot);
+  return y.labelY;
 }
-
 // ----------------------------------------------------------------------------------------------- buildShip
 /** Build a ship. Returns a THREE.Group with the userData API (see the contract §6). */
 export function buildShip(cls, name, seed = 1) {
@@ -1001,7 +925,22 @@ export function buildShip(cls, name, seed = 1) {
     setRotor(t) { if (ctx.rotor) { ctx.rotor.main.rotation.y = t * 28; ctx.rotor.tail.rotation.x = t * 50; } },
     dispose() { wake?.dispose(); disposeGroup(g); },
   });
-  if (ctx.sails.length) g.userData.setSails(true, 90);
+  if (ctx.yacht) {                                   // sailing yachts: the RigView API (§4.1); setSails kept for ais.js / thumbs.js
+    const y = ctx.yacht;
+    g.userData.yacht = y; g.userData.isSail = true;
+    /** view = RigView (rigViewOf / unpackRigView / autoTrimView), extra = { aws, flags, sides: {id: ±1}, snap } */
+    g.userData.setRig = (view, extra) => { if (!view || !Array.isArray(view.sails)) return; y.setRig(view, extra); lightState.underSail = view.sails.some((s) => s.hoist > 0.05); };
+    /** legacy: sails up / down sheeted to the relative wind — any range (signed −180…180 or 0…360; + / 0…180 = from starboard) */
+    g.userData.setSails = (up, windRelDeg) => {
+      const r = Number.isFinite(windRelDeg) ? windRelDeg : 90, signed = ((((r % 360) + 540) % 360) - 180) || 0;
+      const v = autoTrimView(cls, signed, 8);
+      if (up === false) for (const s of v.sails) { s.hoist = 0; s.state = 5; }
+      g.userData.setRig(v, { aws: 8 });
+    };
+    /** per frame (main.js shipVisual): springs, cloth, LOD — opts { camera, time, own, touch } */
+    g.userData.updateRig = (dt, o) => y.update(dt, o);
+    g.userData.setSails(true, 90);
+  } else if (ctx.sails.length) g.userData.setSails(true, 90);
   if (name) { const l = makeLabel(name); l.position.set(0, labelY + 4, 0); g.add(l); g.userData.label = l; }
   return g;
 }

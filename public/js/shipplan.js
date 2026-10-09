@@ -17,6 +17,8 @@
 //   deck:    { y, polys:[[[x,z]…]], holes:[rect] } main-deck surface (replaces the hull's own deck while walking)
 //   spawn, helm, levels
 // }
+import { deckOutlineHalf, yachtDims, structures as yachtStructures, deckOf as yachtDeckOf } from './yachtlooks.js';   // sailing yachts (docs/SAILING-CONTRACT.md §4.5)
+import { rigOf } from '../../shared/sail/rigs.js';
 export const R = 0.25;          // walker radius: keeps the body off walls, rails and furniture
 export const STEP = 0.32;       // the largest height change the walker takes in one sub-step (stairs are ramps)
 const EDGE = 0.45;              // walk margin inside the hull outline at deck level
@@ -37,6 +39,7 @@ function quadPts(p0, p1, p2, n, out) {
 }
 /** Starboard half of the deck outline as [x, z] from the stern (z = +L/2) to the bow tip (z = −L/2). */
 export function outlineHalf(cls, L, B) {
+  if (cls === 'sloop' || cls === 'ketch' || cls === 'schooner') return deckOutlineHalf(cls, 40);   // the lofted yacht hulls (yachtlooks.js)
   const hb = B / 2, hl = L / 2, pts = [];
   const m = MERCHANT_HULL[cls];
   if (m) {
@@ -77,7 +80,7 @@ function fullOutline(half, dx = 0, scale = 1) {
 /** Ship dimensions exactly as ship.js builds the hull (mesh.userData overrides when the model provides them). */
 export function shipDims(C, ud = {}) {
   const L = ud.length || C.length, B = ud.beam || C.beam, draft = ud.draft || C.draft;
-  const F = ud.freeboard || C.freeboard || Math.max(3, L * 0.045);
+  const Y = yachtDims(C.id), F = ud.freeboard || (Y ? Y.freeboard : 0) || C.freeboard || Math.max(3, L * 0.045);   // yachts: the §4.2 freeboard (1.25 / 1.45 / 1.9 bridge deck / 1.7)
   return { L, B, draft, F, deckY: Number.isFinite(ud.deckY) ? ud.deckY : F + 0.05 };
 }
 
@@ -787,17 +790,28 @@ function planMotor(P) {
 }
 
 // ------------------------------------------------------------------------------------------------ sailing yachts
-const SAIL = {
-  sloop: { masts: [-0.12], cockpit: [0.1, 0.45], wheel: 0.34, roof: [-0.24, 0.1] },
-  ketch: { masts: [-0.15, 0.3], cockpit: [0.1, 0.45], wheel: 0.34, roof: [-0.24, 0.1] },
-  schooner: { masts: [-0.22, 0.12], cockpit: [0.24, 0.46], wheel: 0.36, roof: [0.05, 0.22], doghouse: true },
-};
+/** Yacht deck layout from the model (yachtlooks.js) and the rig (shared/sail/rigs.js): masts, cockpit, wheel, coachroof /
+ *  doghouse, the schooner's forward house — so the walker, the rig and the hull agree (§4.5). Fractions of L as before. */
+function sailLayout(cls) {
+  const R = rigOf(cls), L = R.loa, st = yachtStructures(cls), D = yachtDeckOf(cls);
+  const find = (k) => st.find((s) => s.kind === k);
+  const ck = find('cockpit'), helm = find('helm');
+  const house = cls === 'schooner' ? find('doghouse') : find('coachroof'), dog = cls === 'ketch' ? find('doghouse') : null;
+  return {
+    masts: R.spars.masts.map((m) => ({ z: m.z, r: m.d0 / 2, h: (m.topmast || m.top) - D.deckY })),
+    cockpit: [ck.z0 / L, Math.max(helm ? helm.z1 : ck.z1, R.spars.wheel.at[2] + 1.4) / L], wheel: R.spars.wheel.at[2] / L,   // the helmsman stands aft of the wheel
+    roof: [house.z0 / L, (dog ? dog.z1 : house.z1) / L], roofH: Math.max(0.45, (dog ? dog.top : house.top) - D.deckY - 0.05),
+    doghouse: cls === 'schooner',
+    houses: cls === 'schooner' ? st.filter((s) => s.kind === 'house') : [],   // (the windlass stays a model detail: the foredeck is narrow there)
+  };
+}
+const SAIL = { sloop: sailLayout('sloop'), ketch: sailLayout('ketch'), schooner: sailLayout('schooner') };
 function planSail(P) {
   const { cls, L, B, deckY: yD } = P;
   P.edge = YACHT_EDGE; P.railInset = YACHT_RAIL; // lifelines at the toerail: side decks you can actually walk
   const S = SAIL[cls];
   P.style = 'yacht';
-  const yC = r2(Math.max(0.75, yD - 2.25)), hC = r2(yD - yC - 0.12);
+  const yC = r2(yD - 2.05), hC = r2(yD - yC - 0.12);   // §4.5: real yacht freeboard → cabin soles below the waterline (1.9 m headroom)
   const below = (id, kind, name, z0, z1, o = {}) => {
     const half = P.minHb(z0, z1) - HULL_IN;
     return P.room({ id, kind, name, x0: o.x0 ?? -half, x1: o.x1 ?? half, z0, z1, y: yC, h: hC, floor: kind === 'engine' ? 'grating' : 'wood', wall: kind === 'engine' ? 'dark' : 'wood', dark: kind === 'engine', ...o });
@@ -811,9 +825,11 @@ function planSail(P) {
   for (const r of ck) r.kind = 'bridge';
   const wz = S.wheel * L;
   P.prop('wheel', { x: 0, z: wz, y: yD, r: clamp(B * 0.16, 0.45, 0.9) }); P.solid(-0.22, 0.22, wz - 0.22, wz + 0.22, yD, 1.1, 'pedestal');
-  P.hot('helm', 'Take the helm', 0, yD, wz + 0.7, 1.4); P.helm = { x: 0, y: yD, z: wz + 0.7 };
+  const hz = Math.min(wz + 0.7, cz1 - 0.55);                   // the sloop's open transom: the helmsman stands just aft of the wheel
+  P.hot('helm', 'Take the helm', 0, yD, hz, 1.4); P.helm = { x: 0, y: yD, z: hz };
   P.spawn = { x: 0.6, y: yD, z: wz - 1.2, yaw: 0 };
-  for (const m of S.masts) { const z = m * L; P.prop('mast', { x: 0, z, y: yD, h: L * 1.1, r: 0.12 + L * 0.004, sail: true }); P.solid(-0.2, 0.2, z - 0.2, z + 0.2, yD, 12, 'mast'); }
+  for (const m of S.masts) { const z = m.z, r = m.r + 0.15; P.prop('mast', { x: 0, z, y: yD, h: m.h, r: m.r, sail: true, real: true }); P.solid(-r, r, z - r, z + r, yD, 12, 'mast'); }
+  for (const h of S.houses) { P.solid(-h.half, h.half, h.z0, h.z1, yD, Math.max(0.5, h.top - yD), h.id); if (h.kind === 'house') P.prop('coachroof', { x0: -h.half, x1: h.half, z0: h.z0, z1: h.z1, y: yD, h: h.top - yD }); }
   // deck around the coachroof: foredeck + side decks
   P.deckStrips('deck', zf, cz0, yD, { name: 'Deck', len: big ? 4 : 2.5, endS: 0 });
   const rz1 = S.roof[1] * L, rwMin = 0.5, sideNeed = EDGE + RAIL_IN + R + 0.3;
@@ -835,9 +851,9 @@ function planSail(P) {
     // coachroof: solid either side of the companionway hatch and forward of it
     // coachroof: the companionway hatch is cut into its aft end (the deck's stair hole already keeps walkers off it)
     const g = sw / 2 + R;
-    P.prop('coachroof', { x0: -rw, x1: rw, z0: rz0, z1: rz1, y: yD, h: 0.6, hatch: { x0: -sw / 2, x1: sw / 2, z0: sz0, z1: rz1 } });
-    if (rw > g + 0.05) { P.solid(-rw, -g, rz0, rz1, yD, 0.6, 'coachroof'); P.solid(g, rw, rz0, rz1, yD, 0.6, 'coachroof'); }
-    P.solid(-rw, rw, rz0, sz0 - R - 0.05, yD, 0.6, 'coachroof');
+    P.prop('coachroof', { x0: -rw, x1: rw, z0: rz0, z1: rz1, y: yD, h: S.roofH, hatch: { x0: -sw / 2, x1: sw / 2, z0: sz0, z1: rz1 } });
+    if (rw > g + 0.05) { P.solid(-rw, -g, rz0, rz1, yD, S.roofH, 'coachroof'); P.solid(g, rw, rz0, rz1, yD, S.roofH, 'coachroof'); }
+    P.solid(-rw, rw, rz0, sz0 - R - 0.05, yD, S.roofH, 'coachroof');
   }
   // ---- below decks
   let fwdOfStair;
@@ -900,12 +916,12 @@ function planCat(P) {
   const { L, B, deckY: yD } = P;
   P.style = 'yacht';
   const hx = B * 0.4, hb = B * 0.1;           // hull centre offset and hull half-beam (ship.js: yachtShape(L, B * 0.2))
-  const hull = outlineHalf('sloop', L, B * 0.2);
+  const hull = deckOutlineHalf('catamaran', 40);              // one hull of the lofted model (yachtlooks.js), centred at x = 0
   const hullHalf = (z0, z1) => minHalf(hull, Math.min(z0, z1), Math.max(z0, z1));
-  P.half = outlineHalf('sloop', L, B * 0.2);
+  P.half = hull;
   const px = B * 0.42, pz0 = L * 0.08 - L * 0.3, pz1 = L * 0.08 + L * 0.3;
   P.deck.polys = [[[-px, pz0], [px, pz0], [px, pz1], [-px, pz1]], fullOutline(hull, -hx), fullOutline(hull, hx)];
-  const yC = r2(Math.max(0.75, yD - 2.25)), hC = r2(yD - yC - 0.12);
+  const yC = r2(yD - 2.05), hC = r2(yD - yC - 0.12);   // §4.5: hull soles just above the canoe bottom (bridge deck 1.9 → −0.1)
   // saloon on the bridge deck, nav station at its front
   const sz0 = L * 0.02 - L * 0.17, sz1 = L * 0.02 + L * 0.17, sw = hx + 0.3;
   const nav = P.room({ id: 'bridge', kind: 'bridge', name: 'Nav station & helm', x0: -sw, x1: sw, z0: sz0, z1: sz0 + 2.0, y: yD, h: 2.0, floor: 'wood', wall: 'wood' });
@@ -922,7 +938,8 @@ function planCat(P) {
   const tr = P.room({ id: 'deck-fwd', kind: 'deck', name: 'Foredeck & trampoline', open: true, x0: -px + 0.3, x1: px - 0.3, z0: Math.max(-L / 2 + 2.2, pz0 - 3.2), z1: sz0, y: yD, floor: 'deck', drawFloor: false, inset: { n: RAIL_IN, s: R, e: RAIL_IN, w: RAIL_IN } });
   P.door(nav, tr, 'n', sw - 0.75, 0.8, 1.9, 'ext');
   P.prop('trampoline', { x0: -hx + hb, x1: hx - hb, z0: tr.z0, z1: pz0, y: yD });
-  P.prop('mast', { x: 0, z: sz0 - 0.6, y: yD + 2.1, h: L * 1.05, r: 0.13, sail: true });
+  { const m = rigOf('catamaran').spars.masts[0], r = m.d0 / 2 + 0.15;   // the rig's mast on the bridge deck, 0.6 m ahead of the saloon (§4.5)
+    P.prop('mast', { x: 0, z: m.z, y: yD, h: m.top - yD, r: m.d0 / 2, sail: true, real: true }); P.solid(-r, r, m.z - r, m.z + r, yD, 12, 'mast'); }
   P.rail([[-px, pz0], [-px, pz1]], yD); P.rail([[px, pz0], [px, pz1]], yD); P.rail([[-px, pz1], [px, pz1]], yD);
   // hulls: steps from the saloon's forward corners lead down aft into each hull — a corridor, then the engine room
   // (port) or the owner's cabin (starboard) at the after end

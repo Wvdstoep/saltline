@@ -1,0 +1,8 @@
+{
+"schema": 1,
+"version": "2026.10.1",
+"validAsOf": "2026-10-09",
+"reviewBy": "2026-11-08",
+"notes": "Verified 2026-10-09 by web search against the named sources (direct page fetches were unavailable). Unconfirmed seed rows are in pending.json and are not loaded.",
+"authorities": {"UN":{"name":"United Nations Security Council","territory":null},"EU":{"name":"European Union","territory":{"customs":["eu-cu"]}},"UK":{"name":"United Kingdom","territory":{"cc":["GB"]}},"US":{"name":"United States","territory":{"cc":["US","PR","GU"]}},"CA":{"name":"Canada","territory":{"cc":["CA"]}},"RU":{"name":"Russian Federation","territory":{"cc":["RU"]}}}
+}

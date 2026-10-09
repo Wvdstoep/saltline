@@ -1,0 +1,244 @@
+[
+ {
+  "id": "xa-on-xe",
+  "authority": "XA",
+  "title": "Authority A measures on XE",
+  "target": "XE",
+  "from": "2020-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "measures": [
+   {
+    "id": "xa-steel",
+    "kind": "import_ban",
+    "scope": "personal+territorial",
+    "goods": [
+     "steel"
+    ],
+    "origin": [
+     "XE"
+    ],
+    "art": "Art. 1",
+    "text": "Act A Art. 1: import of XE steel"
+   },
+   {
+    "id": "xa-mach",
+    "kind": "export_ban",
+    "scope": "personal",
+    "goods": [
+     "machinery"
+    ],
+    "to": [
+     "XE"
+    ],
+    "art": "Art. 2",
+    "text": "Act A Art. 2: export of machinery to XE"
+   },
+   {
+    "id": "xa-oilcap",
+    "kind": "service_ban",
+    "scope": "personal",
+    "goods": [
+     "fuel"
+    ],
+    "origin": [
+     "XE"
+    ],
+    "art": "Art. 3",
+    "carriage": {
+     "allowedUnder": "price_cap",
+     "note": "carriage only under the cap"
+    },
+    "text": "Act A Art. 3: carriage of XE fuel"
+   },
+   {
+    "id": "xa-port",
+    "kind": "port_ban",
+    "ports": {
+     "cc": [
+      "XA"
+     ]
+    },
+    "when": {
+     "any": [
+      {
+       "flag": [
+        "XE"
+       ]
+      },
+      {
+       "flagWas": {
+        "cc": [
+         "XE"
+        ],
+        "since": "2022-02-24"
+       }
+      }
+     ]
+    },
+    "art": "Art. 4",
+    "text": "Act A Art. 4: port access for XE ships"
+   },
+   {
+    "id": "xa-grain-xd",
+    "kind": "export_ban",
+    "scope": "personal",
+    "goods": [
+     "grain"
+    ],
+    "to": [
+     "XD"
+    ],
+    "art": "Art. 5",
+    "from": "2026-10-10",
+    "text": "Act A Art. 5: grain to XD"
+   }
+  ]
+ },
+ {
+  "id": "xb-terr",
+  "authority": "XB",
+  "title": "Authority B territorial measure",
+  "from": "2020-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "measures": [
+   {
+    "id": "xb-fish",
+    "kind": "import_ban",
+    "scope": "territorial",
+    "goods": [
+     "fish"
+    ],
+    "origin": [
+     "XA"
+    ],
+    "art": "Dec. 9",
+    "text": "Decision B9: fish from XA"
+   }
+  ]
+ },
+ {
+  "id": "xa-on-xf",
+  "authority": "XA",
+  "title": "Authority A measures on XF",
+  "target": "XF",
+  "from": "1992-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "measures": [
+   {
+    "id": "xa-xf-lock",
+    "kind": "entry_lockout",
+    "when": {
+     "calledIn": {
+      "cc": [
+       "XF"
+      ],
+      "days": 180,
+      "trade": true
+     }
+    },
+    "days": 180,
+    "art": "§ 7",
+    "text": "Rule 7: ships that traded in XF"
+   }
+  ]
+ },
+ {
+  "id": "xa-sec",
+  "authority": "XA",
+  "title": "Authority A secondary measure",
+  "target": "XE",
+  "from": "2020-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "measures": [
+   {
+    "id": "xa-sec-fuel",
+    "kind": "secondary",
+    "goods": [
+     "fuel"
+    ],
+    "origin": [
+     "XE"
+    ],
+    "art": "§ 8",
+    "text": "Rule 8: purchases of XE fuel"
+   }
+  ]
+ },
+ {
+  "id": "un-xe",
+  "authority": "UN",
+  "title": "UN arms embargo XE",
+  "target": "XE",
+  "from": "2015-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "measures": [
+   {
+    "id": "un-xe-arms",
+    "kind": "arms_embargo",
+    "goods": [
+     "weapons"
+    ],
+    "art": "res. 1",
+    "text": "UN arms embargo (XE)"
+   }
+  ]
+ },
+ {
+  "id": "xd-add",
+  "authority": "XD",
+  "title": "XD additional duty",
+  "from": "2020-01-01",
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "measures": [
+   {
+    "id": "xd-steel-add",
+    "kind": "tariff_add",
+    "goods": [
+     "steel"
+    ],
+    "origin": [
+     "XE"
+    ],
+    "rate": 0.25,
+    "art": "Sec. 1",
+    "text": "XD additional duty on XE steel"
+   }
+  ]
+ }
+]

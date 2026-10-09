@@ -13,6 +13,8 @@ import { landOnLeg } from './searoute.js';
 import { cargoMass } from './economy.js';
 import { harborById, FISHING_GROUNDS } from './harbors.js';
 import { throttleCap, stormOnRoute } from '../public/js/pilotcore.js';
+import { rigOf } from '../shared/sail/rigs.js';                              // sailing (docs/SAILING-CONTRACT.md §3.5)
+import { anyHoisted, applyRigCommand, settleRig } from '../shared/sail/state.js';
 
 const clsOf = (c) => SHIP_CLASSES[c] || SHIP_CLASSES.coaster;
 const short = (name) => String(name || '').split(' (')[0];
@@ -425,6 +427,13 @@ function pilotStep(g, v, h) {
   if (i > last) { vo.i = last; v.voyage = null; s.throttle = 0; v.voyageEnd = 'arrived'; return; }
   vo.i = i;
 }
+/** Sailing (§3.5): the harbour pilot's waters — every sail furled (once). */
+function furlInPatch(v) {
+  const rig = rigOf(v.ship.cls) ? v.ship.rig : null;
+  if (!rig || !anyHoisted(rig)) return;
+  applyRigCommand(v.ship.cls, rig, { all: 'furl' }); settleRig(rig); v.sailsUp = false;
+  if (v.voyage) v.voyage.sail = { ...(v.voyage.sail || {}), furled: 1 };
+}
 /** Sail `points` towards target `tgt` (phase sailing). */
 function startLeg(fleet, v, points, tgt, distM) {
   const g = fleet.game, old = v.cap || newCap(g), rt = fleet.rtOf(v);
@@ -436,6 +445,7 @@ function startLeg(fleet, v, points, tgt, distM) {
   rt.tgt = tgt; rt.plan = null; rt.pending = null;
   v.voyage = { route, i: 0, throttle: FLEET.SERVICE_THROTTLE, harbor: tgt.kind === 'harbor' ? tgt.harbor : null, setAt: Date.now() };
   v.ship.throttle = FLEET.SERVICE_THROTTLE;            // the telegraph goes ahead at once (wages run from this step)
+  if (rigOf(v.ship.cls)) v.voyage.sail = { furled: anyHoisted(v.ship.rig) ? 0 : 1 };   // sailing: the crew hoists the plan for the wind once clear of the harbour band (simulateOffline)
   v.voyageEnd = null;
   v.cap.etaS = etaOf(fleet, v);
   rt.etaAt = g.simTime;
@@ -490,7 +500,7 @@ function sail(fleet, v, dt) {
   const sub = fleet.rtOf(v).far ? FAR_SUBSTEP_S : FLEET.SUBSTEP_S;
   while (left > 1e-9 && v.voyage && !v.docked && v.flooding < 1) {
     const h = Math.min(sub, left); left -= h;
-    if (inPatch(g, s)) pilotStep(g, v, h); else g.simulateOffline(a, h);
+    if (inPatch(g, s)) { furlInPatch(v); pilotStep(g, v, h); } else g.simulateOffline(a, h);
   }
   const moved = haversine(before.lat, before.lon, s.lat, s.lon);
   if (moved > 0 && moved < 1e6) v.stats.distanceKm = (v.stats.distanceKm || 0) + moved / 1000;

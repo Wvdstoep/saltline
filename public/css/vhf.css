@@ -1,0 +1,170 @@
+/* VHF radio (public/js/vhf.js, docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6.6). Uses the style.css tokens.
+   Layers: status chip / handset button 11 (HUD) · desktop panel 22 · phone sheet 26 · ticker 12. */
+.vhf-mini { position: fixed; z-index: 11; right: calc(var(--gut, 16px) + var(--sar, 0px)); bottom: calc(var(--gut, 16px) + var(--radar-w, 232px) + 64px + var(--sab, 0px)); min-height: 36px; padding: 0 10px; gap: 6px;
+  background: var(--glass-strong); border-color: var(--line-2); border-radius: 999px; font: 600 12.5px/1 var(--mono); color: var(--fg-2); box-shadow: var(--shadow); }
+.vhf-mini .ic { width: 18px; height: 18px; color: var(--cyan); }
+.vhf-mini.active { border-color: var(--cyan); color: var(--fg); }
+.vhf-mini .mini-dw { color: var(--green); font-size: 10.5px; }
+.vhf-mini kbd { font-size: 10px; padding: 1px 4px; }
+.mini-badge { background: var(--accent); color: var(--accent-ink); border-radius: 999px; min-width: 18px; height: 18px; padding: 0 5px; display: inline-grid; place-items: center; font: 700 11px/1 var(--font); }
+.vhf-handset { width: 56px; height: 56px; min-height: 56px; padding: 0; border-radius: 50%; flex-direction: column; gap: 1px; bottom: calc(var(--bar, 60px) + var(--sab, 0px) + 150px); }
+.vhf-handset .ic { width: 24px; height: 24px; }
+.vhf-handset .mini-ch { font-size: 11px; color: var(--fg); }
+.vhf-handset .mini-badge { position: absolute; top: -4px; right: -4px; }
+.vhf-ticker { position: fixed; z-index: 12; right: calc(var(--gut, 16px) + 150px); bottom: calc(var(--gut, 16px) + var(--radar-w, 232px) + 64px + var(--sab, 0px)); max-width: min(520px, 60vw); padding: 8px 12px; border-radius: var(--r2);
+  background: var(--glass-strong); border: 1px solid var(--line-2); font-size: 13px; box-shadow: var(--shadow); }
+@media (max-width: 700px) { .vhf-ticker { left: 12px; right: 80px; bottom: calc(var(--bar, 60px) + var(--sab, 0px) + 150px); max-width: none; } }
+
+/* ------------------------------------------------------------------------------------------ panel shell */
+.vhf { color: var(--fg); font-size: 13px; }
+.vhf-desk { position: fixed; z-index: 22; right: calc(var(--gut, 16px) + var(--sar, 0px)); top: calc(var(--top-h, 64px) + 8px); width: min(760px, calc(100vw - 32px));
+  max-height: calc(100dvh - var(--top-h, 64px) - 24px); display: grid; grid-template-columns: 340px 1fr; gap: 12px; padding: 12px;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r3); box-shadow: var(--shadow); outline: none; }
+.vhf-l, .vhf-r { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+.vhf-r > * { flex: none; }
+.vhf-desk { align-items: start; }
+.vhf-h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 6px; font-weight: 650; }
+.vhf-sec { min-height: 0; display: flex; flex-direction: column; }
+.vhf-logsec { flex: 1; }
+
+/* ------------------------------------------------------------------------------------------ radio front */
+.vhf-front { background: linear-gradient(180deg, #232b33, #171d23); border: 1px solid #39444f; border-radius: 12px; padding: 8px 10px 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 6px 18px rgba(0,0,0,.4); }
+.vhf-top { display: flex; align-items: center; justify-content: space-between; }
+.vhf-brand { font: 700 10px/1 var(--mono); letter-spacing: .14em; color: #8b99a6; }
+.vhf-top .iconBtn { min-height: 28px; width: 28px; padding: 0; background: transparent; border-color: transparent; color: var(--muted); font-size: 18px; }
+.vhf-body { display: grid; grid-template-columns: 1fr 86px; gap: 10px; margin-top: 6px; align-items: center; }
+.vhf-lcd { background: radial-gradient(120% 140% at 30% 0%, #1b3022, #0b160e 70%); border: 2px solid #050a06; border-radius: 6px; padding: 6px 8px 7px; color: #8dffb4;
+  box-shadow: inset 0 0 18px rgba(0,0,0,.65); font-family: var(--mono); min-width: 0; text-shadow: 0 0 6px rgba(120,255,170,.45); }
+.vhf-lcd.off { filter: brightness(.25) saturate(0); }
+.lcd-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.lcd-tag { font: 700 9.5px/1 var(--mono); padding: 2px 4px; border-radius: 2px; color: rgba(141,255,180,.18); border: 1px solid rgba(141,255,180,.12); letter-spacing: .04em; }
+.lcd-tag.on { color: #8dffb4; border-color: rgba(141,255,180,.55); }
+.lcd-tag.tx.on { color: #ffd0d0; background: #b3262b; border-color: #ff6b6b; text-shadow: none; }
+.lcd-tag.busy.on { color: #061006; background: #8dffb4; text-shadow: none; }
+.lcd-main { display: flex; align-items: center; gap: 8px; margin-top: 4px; min-width: 0; }
+.lcd-ch { position: relative; font: 700 54px/1 var(--mono); letter-spacing: .02em; flex: none; font-style: italic; transform: skewX(-4deg); }
+.lcd-ghost { color: rgba(141,255,180,.07); text-shadow: none; }
+.lcd-num { position: absolute; right: 0; top: 0; }
+.lcd-ch.entry .lcd-num { animation: vhfBlink .7s steps(2) infinite; }
+@keyframes vhfBlink { 50% { opacity: .25; } }
+.lcd-side { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lcd-dup { font: 700 9.5px/1 var(--mono); opacity: .7; }
+.lcd-name { font: 600 12px/1.15 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lcd-tgt { font: 500 11px/1.2 var(--mono); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lcd-bars { letter-spacing: -1px; }
+.vhf-knobcol { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.vhf-knob { width: 70px; height: 70px; border-radius: 50%; cursor: grab; touch-action: none; user-select: none;
+  background: repeating-conic-gradient(from 0deg, #2b333b 0 6deg, #1f262d 6deg 12deg); box-shadow: 0 4px 10px rgba(0,0,0,.55), inset 0 0 0 2px #0f1418; display: grid; place-items: center; }
+.knob-cap { width: 52px; height: 52px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #4b5763, #232a31 70%); position: relative; transition: transform 120ms ease; box-shadow: inset 0 1px 1px rgba(255,255,255,.15); }
+.knob-ind { position: absolute; left: 50%; top: 4px; width: 4px; height: 14px; margin-left: -2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 6px rgba(242,177,52,.6); }
+.knob-btns { display: flex; gap: 4px; }
+.knob-btns button { min-height: 26px; padding: 0 9px; font: 700 12px/1 var(--mono); }
+.vhf-keys { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+.vhf-keys button, .vhf-headbtns button { min-height: 30px; padding: 0 9px; font: 700 11.5px/1 var(--mono); background: #2a333c; border-color: #46525e; }
+.vhf-tg.on { background: #1f4a33; border-color: var(--green); color: #c9ffe0; }
+.vhf-vol { display: inline-flex; align-items: center; gap: 4px; font: 700 10.5px/1 var(--mono); color: #8b99a6; margin-left: auto; }
+.vhf-vol input { width: 76px; accent-color: var(--accent); }
+
+/* ------------------------------------------------------------------------------------------ chips, stations, phrases */
+.vhf-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.vhf-chip { min-height: 30px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; background: var(--card); }
+.vhf-chip.hot { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-2); font-weight: 650; }
+.vhf-chip.preset { font-family: var(--mono); padding: 0 8px; color: var(--muted); }
+.vhf-chip.preset.on { color: var(--fg); border-color: var(--cyan); }
+.vhf-chip.silent { opacity: .6; }
+.vhf-stations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+.vhf-st { width: 100%; justify-content: flex-start; min-height: 34px; padding: 0 8px; gap: 8px; background: var(--card); border-color: var(--line); text-align: left; }
+.vhf-st.sel { border-color: var(--accent); background: var(--accent-soft); }
+.vhf-st.silent { opacity: .55; cursor: default; }
+.st-kind { font: 700 9.5px/1 var(--mono); text-transform: uppercase; color: var(--muted); width: 58px; flex: none; }
+.st-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.st-why { font-size: 11px; color: var(--orange); }
+.stc-bars { display: inline-flex; gap: 1.5px; align-items: flex-end; height: 12px; flex: none; }
+.stc-bars i { width: 3px; background: rgba(150,195,230,.22); border-radius: 1px; }
+.stc-bars i:nth-child(1) { height: 4px; } .stc-bars i:nth-child(2) { height: 6.5px; } .stc-bars i:nth-child(3) { height: 9px; } .stc-bars i:nth-child(4) { height: 12px; }
+.stc-bars.b1 i:nth-child(-n+1), .stc-bars.b2 i:nth-child(-n+2), .stc-bars.b3 i:nth-child(-n+3), .stc-bars.b4 i:nth-child(-n+4) { background: var(--green); }
+.stc-bars.b1 i:nth-child(1) { background: var(--orange); }
+.k-bridge .st-kind, .vhf-msg.k-bridge b { color: var(--accent-2); }
+.k-lock .st-kind, .vhf-msg.k-lock b { color: var(--accent-2); }
+.k-vts .st-kind, .vhf-msg.k-vts b { color: var(--violet); }
+.k-cg .st-kind, .vhf-msg.k-cg b { color: var(--red); }
+.k-ship .st-kind, .vhf-msg.k-ship b { color: var(--cyan); }
+.vhf-empty { font-size: 12.5px; padding: 6px 2px; list-style: none; }
+.vhf-call { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+.vhf-call input, .vhf-free { flex: 1; min-width: 0; min-height: 34px; padding: 0 10px; border-radius: var(--r1); border: 1px solid var(--line-2); background: var(--bg-2); color: var(--fg); font: 14px var(--font); text-transform: none; letter-spacing: 0; }
+.vhf-phrases { list-style: none; margin: 0; padding: 4px; display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r2); background: var(--bg-2); }
+.vhf-ph { width: 100%; justify-content: flex-start; min-height: 30px; padding: 0 10px; background: transparent; border-color: transparent; font-size: 13px; }
+.vhf-ph.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-2); font-weight: 650; }
+.vhf-preview { font-size: 13.5px; line-height: 1.45; padding: 8px 10px; border-radius: var(--r2); background: var(--card); border: 1px dashed var(--line-2); color: var(--fg-2); min-height: 48px; }
+.pv-ch { font: 700 10.5px/1 var(--mono); color: var(--muted); padding: 2px 5px; border: 1px solid var(--line-2); border-radius: 4px; margin-right: 4px; }
+.vhf-side { min-height: 24px; padding: 0 8px; font-size: 11.5px; margin-left: 6px; }
+.vhf-bottom { display: flex; gap: 10px; align-items: stretch; }
+.vhf-ptt { flex: 1; min-height: 56px; flex-direction: column; gap: 2px; border-radius: var(--r3); background: linear-gradient(180deg, #2c3a48, #1c2733); border: 1px solid #4e6275; touch-action: none; }
+.vhf-ptt .ptt-big { font: 800 18px/1 var(--mono); letter-spacing: .12em; }
+.vhf-ptt .ptt-sub { font-size: 11px; color: var(--muted); font-weight: 500; }
+.vhf-ptt.on { background: linear-gradient(180deg, #c8323a, #8f1e24); border-color: var(--red); box-shadow: 0 0 0 3px var(--red-soft), 0 0 22px rgba(255,107,107,.35); }
+.vhf-ptt.on .ptt-sub { color: #ffd6d6; }
+.vhf-help { font-size: 11px; color: var(--faint); line-height: 1.8; }
+.vhf-help kbd { font-size: 10px; }
+
+/* DISTRESS: red button under a striped cover; lift, then hold 3 s (the ring fills) */
+.vhf-dsc { position: relative; width: 104px; min-height: 56px; padding: 0; border-radius: var(--r2); overflow: hidden; background: #5c1015; border: 2px solid #ff6b6b; touch-action: none; flex: none; --hold: 0; }
+.vhf-dsc .dsc-face { visibility: hidden; display: flex; flex-direction: column; align-items: center; font: 800 12px/1.1 var(--mono); color: #fff; letter-spacing: .06em;
+  background: linear-gradient(90deg, #e0323b calc(var(--hold) * 100%), #8e1a20 0); position: absolute; inset: 0; justify-content: center; }
+.vhf-dsc .dsc-face small { font: 500 10px/1 var(--font); opacity: .8; margin-top: 3px; letter-spacing: 0; }
+.vhf-dsc .dsc-cover { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; transform-origin: top; transition: transform 220ms ease;
+  background: repeating-linear-gradient(-45deg, rgba(255,107,107,.55) 0 8px, rgba(40,6,8,.75) 8px 16px); }
+.vhf-dsc .dsc-cover span { font: 800 11px/1 var(--mono); background: rgba(10,2,3,.85); padding: 4px 6px; border-radius: 3px; color: #ffb0b0; letter-spacing: .1em; }
+.vhf-dsc.open .dsc-face { visibility: visible; }
+.vhf-dsc.open .dsc-cover { transform: perspective(200px) rotateX(-75deg); opacity: .3; pointer-events: none; }
+
+/* ------------------------------------------------------------------------------------------ log */
+.vhf-log { flex: 1; min-height: 120px; max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: var(--r2); background: var(--bg-2); border: 1px solid var(--line); }
+.vhf-msg { padding: 6px 8px; border-radius: var(--r1); background: var(--card); border-left: 3px solid var(--line-2); }
+.vhf-msg.self { background: rgba(242,177,52,.07); border-left-color: var(--accent); }
+.vhf-msg.k-bridge, .vhf-msg.k-lock { border-left-color: var(--accent-2); }
+.vhf-msg.k-vts { border-left-color: var(--violet); }
+.vhf-msg.k-cg, .vhf-msg.dsc { border-left-color: var(--red); }
+.vhf-msg.k-ship { border-left-color: var(--cyan); }
+.vhf-msg.dsc { background: var(--red-soft); }
+.msg-h { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.msg-ch { font: 700 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-2); border-radius: 3px; padding: 2px 4px; }
+.msg-to { color: var(--muted); font-size: 11.5px; }
+.msg-t { margin-left: auto; font: 500 10.5px/1 var(--mono); color: var(--faint); }
+.msg-x { font-size: 13px; line-height: 1.4; color: var(--fg-2); margin-top: 2px; }
+.vhf-msg.garbled .msg-x { color: var(--muted); font-style: italic; }
+
+/* ------------------------------------------------------------------------------------------ phone sheet */
+.vhf-phone { position: fixed; z-index: 26; left: 0; right: 0; bottom: 0; height: min(86dvh, 720px); display: flex; flex-direction: column; gap: 8px;
+  padding: 6px 12px calc(10px + var(--sab, 0px)); background: var(--surface); border-top: 1px solid var(--line-2); border-radius: 18px 18px 0 0; box-shadow: 0 -12px 32px rgba(0,0,0,.5); }
+.vhf-grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line-2); margin: 2px auto 0; flex: none; }
+.vhf-head { display: flex; gap: 8px; align-items: stretch; flex: none; }
+.vhf-head .vhf-lcd { flex: 1; padding: 5px 8px; }
+.vhf-lcd-s .lcd-ch { font-size: 40px; }
+.vhf-lcd-s .lcd-tag { font-size: 8.5px; }
+.vhf-headbtns { display: flex; flex-direction: column; gap: 4px; justify-content: space-between; }
+.vhf-headbtns button { min-height: 32px; min-width: 66px; }
+.vhf-headbtns .iconBtn { font-size: 18px; }
+.vhf-wheel { display: flex; gap: 4px; overflow-x: auto; scroll-snap-type: x mandatory; padding: 2px calc(50% - 26px); flex: none; scrollbar-width: none;
+  mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent); -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent); }
+.vhf-wheel::-webkit-scrollbar { display: none; }
+.vhf-wheel button { scroll-snap-align: center; flex: none; width: 48px; min-height: 40px; padding: 0; font: 700 16px/1 var(--mono); background: var(--card); color: var(--muted); }
+.vhf-wheel button.on { background: #1f4a33; border-color: var(--green); color: #c9ffe0; font-size: 18px; }
+.vhf-phone .vhf-chips { flex-wrap: nowrap; overflow-x: auto; flex: none; scrollbar-width: none; padding-bottom: 2px; }
+.vhf-phone .vhf-chip { flex: none; min-height: 36px; }
+.vhf-st-chips { display: flex; gap: 6px; overflow-x: auto; flex: none; max-height: none; flex-direction: row; scrollbar-width: none; }
+.vhf-stc { flex: none; min-height: 36px; padding: 0 10px; gap: 6px; border-radius: var(--r2); background: var(--card); font-size: 13px; }
+.vhf-stc.sel { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-2); }
+.vhf-stc.silent { opacity: .5; }
+.vhf-stc small { color: var(--orange); }
+.vhf-ph-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 84px; overflow-y: auto; flex: none; padding: 0; border: 0; background: none; flex-direction: row; }
+.vhf-phc { min-height: 36px; padding: 0 11px; border-radius: 999px; font-size: 13px; background: var(--card); }
+.vhf-phc.hot { border-color: rgba(242,177,52,.5); }
+.vhf-phc.sel { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 650; }
+.vhf-phone .vhf-preview { flex: none; font-size: 13px; min-height: 0; }
+.vhf-phone .vhf-log { flex: 1; min-height: 60px; max-height: none; }
+.vhf-phone .vhf-bottom { flex: none; }
+.vhf-phone .vhf-ptt { min-height: 68px; }
+.vhf-phone .vhf-ptt .ptt-big { font-size: 22px; }
+.vhf-phone .vhf-dsc { width: 88px; min-height: 68px; }
+.vhf-mini.active:not(.vhf-handset) { visibility: hidden; }

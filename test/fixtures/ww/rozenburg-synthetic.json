@@ -1,0 +1,23 @@
+{
+  "synthetic": true,
+  "note": "The contract's §4.8.1 seed for the Rozenburgsesluis (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §10.2.3, §10.3), kept so the doc's expected numbers stay testable. The FIS probe of 2026-10-09 differs: sill NAP -6.5 (not 9.0), and the two head bridges are BASCULE bridges 3.6 m closed with unlimited open clearance and 24 m width (the OpenSeaMap '3.6 / 24.0' board is closed clearance / width), plus a FIXED rail bridge 'Havenspoorlijn over Rozenburgsesluis' at NAP +14.0 over the lock. See test/fixtures/ww/fis-probe.json and fis-rotterdam.json.",
+  "lock": {
+    "id": "syn:rozenburg", "name": "Rozenburgsesluis", "callName": "Rozenburgsesluis", "src": "fis", "e": 0, "p": [51.89273, 4.22881],
+    "chambers": [{ "id": "A", "kind": "both", "len": 305, "wid": 24, "sillUp": 9.0, "sillDn": 9.0, "axis": [[51.89444, 4.22837], [51.89127, 4.22924]],
+      "gates": [{ "head": 0, "type": "mitre", "at": 0 }, { "head": 1, "type": "mitre", "at": 305 }], "culvert": null, "bollards": { "step": 15, "floating": true, "levels": 3 }, "waiting": [] }],
+    "sides": [{ "name": "Calandkanaal", "level": { "kind": "kp", "h": 0 } }, { "name": "Hartelkanaal", "level": { "kind": "kp", "h": 1.0 } }],
+    "doubleActing": true, "vhf": 22, "call": "vhf", "hours": null, "blocks": [], "fee": null, "bridges": ["syn:rbz-out", "syn:rbz-in"], "notices": [], "operator": "Port of Rotterdam"
+  },
+  "bridges": [
+    { "id": "syn:rbz-out", "name": "Brug over buitenhoofd Rozenburgsesluis", "kind": "road", "src": "fis", "e": 0, "p": [51.8943, 4.22836],
+      "line": [[51.89425, 4.2279], [51.89435, 4.22882]], "deckW": 12, "structure": "girder",
+      "spans": [{ "id": 0, "a": 20, "b": 44, "mov": "lift", "clr": 3.6, "clrO": 24.0, "w": 24, "hinge": null, "pivot": null, "rec": 1 }],
+      "datum": "NAP", "kp": null, "vhf": 22, "call": "vhf", "callName": "buitenhoofd Rozenburgsesluis", "hours": null, "blocks": [], "slots": null,
+      "lockId": null, "head": 0, "pairedWith": "syn:rbz-in", "fee": 0, "notes": [], "operator": "Port of Rotterdam" },
+    { "id": "syn:rbz-in", "name": "Brug over binnenhoofd Rozenburgsesluis", "kind": "road", "src": "fis", "e": 0, "p": [51.89109, 4.22929],
+      "line": [[51.89104, 4.22883], [51.89114, 4.22975]], "deckW": 12, "structure": "girder",
+      "spans": [{ "id": 0, "a": 20, "b": 44, "mov": "lift", "clr": 3.6, "clrO": 24.0, "w": 24, "hinge": null, "pivot": null, "rec": 1 }],
+      "datum": "NAP", "kp": null, "vhf": 22, "call": "vhf", "callName": "binnenhoofd Rozenburgsesluis", "hours": null, "blocks": [], "slots": null,
+      "lockId": null, "head": 1, "pairedWith": "syn:rbz-out", "fee": 0, "notes": [], "operator": "Port of Rotterdam" }
+  ]
+}

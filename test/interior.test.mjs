@@ -327,7 +327,9 @@ test('interior: engine rooms are dark spaces below the main deck with the engine
     const eng = p.rooms.find((r) => r.kind === 'engine');
     assert.ok(eng.dark, `${cls}: engine room has windows`);
     assert.ok(eng.y < p.deckY - 1.5, `${cls}: engine room floor ${eng.y} is not below the deck ${p.deckY}`);
-    assert.ok(eng.y >= 0.7, `${cls}: engine room floor ${eng.y} is under the waterline (the sea would show inside)`);
+    // sailing yachts (docs/SAILING-CONTRACT.md §4.5): real freeboard → soles below the waterline; interior.js hides the sea there
+    if (!['sloop', 'ketch', 'schooner', 'catamaran'].includes(cls)) assert.ok(eng.y >= 0.7, `${cls}: engine room floor ${eng.y} is under the waterline (the sea would show inside)`);
+    else assert.ok(eng.y < 0.1 && eng.y > -1.0, `${cls}: yacht engine room floor ${eng.y} (below the waterline, above the keel)`);
     const con = p.props.find((q) => q.t === 'console');
     assert.ok(con && con.x >= eng.x0 - 0.01 && con.x <= eng.x1 + 0.01 && con.z >= eng.z0 - 0.01 && con.z <= eng.z1 + 0.01, `${cls}: console outside the engine room`);
   }

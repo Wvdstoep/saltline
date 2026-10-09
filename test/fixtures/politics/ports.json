@@ -1,0 +1,90 @@
+{
+ "hz": {
+  "status": {
+   "value": "closed",
+   "reasons": [
+    "port operations suspended"
+   ],
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  }
+ },
+ "hr": {
+  "status": {
+   "value": "restricted",
+   "reasons": [
+    "corridor route required"
+   ],
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  },
+  "entry": {
+   "clearance": true,
+   "clearanceH": 2,
+   "validH": 72,
+   "corridor": "fx-corr",
+   "deniedWhen": {
+    "flag": [
+     "XH"
+    ]
+   },
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "game",
+   "verify": true
+  },
+  "programmes": [
+   "xcoop"
+  ],
+  "portIncident": {
+   "pCall": 0.015,
+   "basis": "source",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "verify": true
+  }
+ },
+ "hd1": {
+  "needs": {
+   "goods": [
+    "grain"
+   ],
+   "from": "2026-01-01",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  }
+ },
+ "he1": {
+  "evacuation": {
+   "from": "2026-01-01",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  }
+ }
+}

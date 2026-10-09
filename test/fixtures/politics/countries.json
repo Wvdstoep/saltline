@@ -1,0 +1,247 @@
+{
+ "XA": {
+  "name": "Country XA",
+  "sovereign": "XA",
+  "customs": "xu",
+  "follows": [
+   "XA",
+   "UN"
+  ],
+  "psc": "pm",
+  "register": "xus",
+  "cabotage": {
+   "rule": "national",
+   "builtIn": "XA",
+   "ownerHome": [
+    "XA"
+   ],
+   "cargo": true,
+   "passengers": true,
+   "territory": [
+    "XA"
+   ],
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "XB": {
+  "name": "Country XB",
+  "sovereign": "XB",
+  "customs": "xu",
+  "follows": [
+   "XB",
+   "UN"
+  ],
+  "psc": "pm",
+  "register": "national:XB",
+  "cabotage": {
+   "rule": "licence",
+   "licence": {
+    "days": 3,
+    "feeCr": 2500
+   },
+   "cargo": true,
+   "passengers": true,
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "XC": {
+  "name": "Country XC",
+  "sovereign": "XC",
+  "customs": "XC",
+  "follows": [
+   "UN"
+  ],
+  "psc": "pm",
+  "register": "national:XC",
+  "cabotage": {
+   "rule": "nodata"
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "XD": {
+  "name": "Country XD",
+  "sovereign": "XD",
+  "customs": "XD",
+  "follows": [
+   "UN"
+  ],
+  "psc": "pm",
+  "register": "national:XD",
+  "cabotage": {
+   "rule": "nodata"
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "XE": {
+  "name": "Country XE",
+  "sovereign": "XE",
+  "customs": "XE",
+  "follows": [
+   "XE",
+   "UN"
+  ],
+  "psc": null,
+  "register": "national:XE",
+  "cabotage": {
+   "rule": "nodata"
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true,
+  "conflict": {
+   "areaIds": [
+    "war4"
+   ],
+   "since": "2022-02-24",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "basis": "source",
+   "verify": true
+  }
+ },
+ "XF": {
+  "name": "Country XF",
+  "sovereign": "XF",
+  "customs": "XF",
+  "follows": [
+   "UN"
+  ],
+  "psc": null,
+  "register": "national:XF",
+  "cabotage": {
+   "rule": "nodata"
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "XG": {
+  "name": "Country XG",
+  "sovereign": "XG",
+  "customs": "XG",
+  "follows": [
+   "UN"
+  ],
+  "psc": "pm",
+  "register": "national:XG",
+  "cabotage": {
+   "rule": "nodata"
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ },
+ "XH": {
+  "name": "Country XH",
+  "sovereign": "XH",
+  "customs": "XH",
+  "follows": [
+   "UN"
+  ],
+  "psc": "pm",
+  "register": "national:XH",
+  "cabotage": {
+   "rule": "nodata"
+  },
+  "company": {
+   "formationDays": 5,
+   "local": "none",
+   "basis": "game"
+  },
+  "src": [
+   "fx-src"
+  ],
+  "asOf": "2026-01-01",
+  "reviewBy": "2027-01-01",
+  "basis": "source",
+  "verify": true
+ }
+}

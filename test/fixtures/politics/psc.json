@@ -1,0 +1,46 @@
+{
+ "regimes": {
+  "pm": {
+   "name": "Fixture MoU",
+   "members": [
+    "XA",
+    "XB",
+    "XC",
+    "XD"
+   ],
+   "lists": {
+    "year": 2025,
+    "white": [
+     "XA",
+     "XC"
+    ],
+    "grey": [
+     "XG"
+    ],
+    "black": [
+     "XH"
+    ],
+    "src": [
+     "fx-src"
+    ]
+   },
+   "windowsH": {
+    "LRS": 900,
+    "SRS": 330,
+    "HRS": 165
+   },
+   "pInspect": {
+    "LRS": 0.04,
+    "SRS": 0.12,
+    "HRS": 0.3
+   },
+   "basis": "source",
+   "src": [
+    "fx-src"
+   ],
+   "asOf": "2026-01-01",
+   "reviewBy": "2027-01-01",
+   "verify": true
+  }
+ }
+}

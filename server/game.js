@@ -31,6 +31,11 @@ import { allSubPatches } from './bigports.js';                  // V7 step 0: bi
 import { overlayStorms, stormMaxWind } from './stormfield.js';     // game storms over real AND synthetic weather
 import { RealStorms } from './realstorms.js';                  // real severe-weather areas from Open-Meteo
 import { beaufort, douglas, seaForBeaufort } from '../shared/seastate.js';        // HUD sea state (Douglas) and Beaufort
+import { rigOf, KN } from '../shared/sail/rigs.js';                                    // sailing (docs/SAILING-CONTRACT.md)
+import { ensureRig, anyHoisted, applyRigCommand, settleRig, packRigView, unpackRigView } from '../shared/sail/state.js';
+import { maxSpeedKn } from '../shared/sail/polar.js';
+import { sailHelm, crossTrackM, harbourRigCmd, departurePlan, HARBOUR_FURL_M } from '../shared/sail/tactics.js';
+import { crashJibeDamage, windOverWater } from '../shared/sail/sailphys.js';
 
 const DEFAULT_STATE_FILE = path.join(DATA_DIR, 'state.json');
 const START_HARBOR = 'rotterdam';
@@ -79,6 +84,8 @@ export class Game {
     this.lastYou = 0;
     this.eventSeq = 1;
     this.routePlanner = opts.routePlanner || null;   // v6 fleet: captains plan their passages with the shared planner
+    this.rigLimits = new WeakMap();                  // sailing: per-person rig command rate limit + rig_event times (never saved)
+    this.rigViews = new WeakMap();                   // sailing: the rv each online skipper last sent (never saved)
     this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
     this.loadState();
     this.initHarbors();
@@ -337,10 +344,12 @@ export class Game {
       warp: this.warpOf(p),
       tugs: tugsPublic(this, p),
       vid: p.vessel?.id ?? null, vname: p.vessel?.name ?? null,   // v6: which of her ships the skipper sails
+      rv: this.rvOf(p),                                          // sailing: rig view (§3.7); undefined for engine classes
       quay: quayPublic(p),                                         // DOCK ANYWHERE: { name, cls } while moored at a quay
     };
   }
   privateState(p) {
+    { const rig = this.rigFor(p); if (rig) p.sailsUp = anyHoisted(rig); }   // sailing: a yacht just bought / switched to gets her rig (moored: sails down) before `you` carries it
     return {
       id: p.id, name: p.name, ship: { ...p.ship }, cond: p.cond, flooding: p.flooding, fuel: p.fuel, cargo: p.cargo.map((c) => (c.caught ? { ...c, qty: Math.round(c.qty * 10) / 10 } : c)),
       money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs, convoyId: p.convoyId, docked: p.docked,
@@ -481,7 +490,8 @@ export class Game {
     // Unused budget carries over for a few seconds so network jitter does not trigger rejections, but cannot
     // be banked indefinitely (no speed hacks by message spamming). Time warp multiplies the budget by the factor (for
     // GRACE_MS after a drop the old factor still applies to states the client sent before it heard of the drop).
-    const perSec = (C.maxKn * 1.35 * GEO.KN_TO_MS * SIM.MOTION_SCALE + 1.5 * SIM.MOTION_SCALE) * this.warpBudgetFactor(p, now);
+    const vmaxKn = C.sail ? Math.max(C.maxKn, maxSpeedKn(s.cls)) : C.maxKn;   // sailing: the rig's absolute cap (§3.8)
+    const perSec = (vmaxKn * 1.35 * GEO.KN_TO_MS * SIM.MOTION_SCALE + 1.5 * SIM.MOTION_SCALE) * this.warpBudgetFactor(p, now);
     p.moveBudget = Math.min(perSec * 5, (p.moveBudget == null ? perSec * 5 : p.moveBudget) + perSec * dt);
     const moved = haversine(s.lat, s.lon, lat, lon);
     if (moved > p.moveBudget + 5) {
@@ -500,9 +510,13 @@ export class Game {
       return;
     }
     p.rejects = 0; p.moveBudget -= moved;
+    if (m.rv !== undefined && rigOf(s.cls)) {        // sailing: the skipper's rig view for the others (§3.7), ≤ 2 Hz
+      const prev = this.rigViews.get(p);
+      if ((!prev || now - prev.at >= 450) && unpackRigView(s.cls, m.rv)) this.rigViews.set(p, { rv: m.rv.slice(), at: now, cls: s.cls });
+    }
     const hdg = Number(m.hdg), spd = Number(m.spd), thr = Number(m.throttle), rud = Number(m.rudder);
     s.lat = clampLat(lat); s.lon = lon; s.hdg = Number.isFinite(hdg) ? normDeg(hdg) : s.hdg;
-    s.spd = clamp(Number.isFinite(spd) ? spd : 0, -C.maxKn * 0.6, C.maxKn * 1.1); // astern top speed is ~half the ahead speed (telegraph)
+    s.spd = clamp(Number.isFinite(spd) ? spd : 0, -C.maxKn * 0.6, vmaxKn * 1.1); // astern top speed is ~half the ahead speed (telegraph)
     s.throttle = clamp(Number.isFinite(thr) ? thr : 0, THROTTLE_MIN, 1); s.rudder = clamp(Number.isFinite(rud) ? rud : 0, -1, 1);
     p.stats.distanceKm += moved / 1000;
     // Land/shallow plausibility: tolerate brief shallows (client stops itself), teleport back if it persists.
@@ -547,7 +561,9 @@ export class Game {
         case 'express': return this.expressPassage(p, +m.lat, +m.lon);
         case 'buy_used': return this.fleet.buyUsed(p, m);   // v6: tradeIn !== false → today's buyUsedShip
         case 'set_voyage': return this.setVoyage(p, m);
-        case 'sails': p.sailsUp = !!m.up; this.sendYou(p); return;
+        case 'sails': return this.rigCommand(p, { all: m.up ? 'set' : 'furl' }, true);   // legacy button → the rig (§3.4)
+        case 'rig': return this.rigCommand(p, m.cmd);
+        case 'rig_event': return this.rigEvent(p, m);
         case 'repair': return this.repair(p);
         case 'buy_kit': return this.buyKit(p);
         case 'accept_job': return this.acceptJob(p, m.jobId);
@@ -688,6 +704,68 @@ export class Game {
     const best = cands.map((c) => ({ c, s: score(c) })).sort((a, b2) => b2.s - a.s)[0].c;
     return { lat: best.pt.lat, lon: best.pt.lon, hdg: Number.isFinite(p.ship.hdg) ? p.ship.hdg : b.hdg };
   }
+  // ------------------------------------------------------------------ sailing (docs/SAILING-CONTRACT.md §3.4–§3.7)
+  /** The rig of a sail-class ship (created/repaired lazily: §3.6); null for engine classes. */
+  rigFor(p) { const s = p.ship; return s && rigOf(s.cls) ? ensureRig(s, p.docked ? false : p.sailsUp) : null; }
+  /** { action: 'rig', cmd } and the legacy 'sails' button. ≤ 20 per second per person (extra dropped silently); no
+   *  sendYou per command (the client is optimistic), a refused one gets `event warn`. */
+  rigCommand(p, cmd, legacy = false) {
+    const rig = this.rigFor(p);
+    if (!rig) { if (legacy) { p.sailsUp = !!(cmd && cmd.all === 'set'); this.sendYou(p); } return; }
+    let st = this.rigLimits.get(p); if (!st) { st = { times: [], jibeAt: 0, strainAt: 0 }; this.rigLimits.set(p, st); }
+    const now = Date.now();
+    while (st.times.length && now - st.times[0] >= 1000) st.times.shift();
+    if (st.times.length >= 20) return;
+    st.times.push(now);
+    const r = applyRigCommand(p.ship.cls, rig, cmd);
+    if (!r.ok) return this.event(p, 'warn', r.why);
+    settleRig(rig);                                  // the server copy = what the crew is doing; her client runs the timing
+    p.sailsUp = anyHoisted(rig);                     // the legacy master switch follows the rig (§3.6)
+    if (legacy) this.sendYou(p);
+  }
+  /** { action: 'rig_event', kind: 'crash_jibe', aws } → §2.8 damage only with the helper off, ≤ once per 10 s;
+   *  kind 'strain' (catamaran hull load ≥ 1 for 2 s, §2.6) → cond −1, ≤ once per 10 s, any helper level. */
+  rigEvent(p, m) {
+    const rig = this.rigFor(p); if (!rig || p.docked) return;
+    let st = this.rigLimits.get(p); if (!st) { st = { times: [], jibeAt: 0, strainAt: 0 }; this.rigLimits.set(p, st); }
+    const now = Date.now();
+    if (m.kind === 'crash_jibe') {
+      if (rig.auto !== 'off' || now - st.jibeAt < 10000) return;
+      st.jibeAt = now;
+      const dmg = crashJibeDamage(p.ship.cls, clamp(Number(m.aws) || 0, 0, 40));
+      if (dmg > 0) { p.cond = Math.max(0, p.cond - dmg); this.event(p, 'warn', `Crash jibe! The boom slammed across — ${dmg.toFixed(1)} % condition lost.`); this.sendYou(p); }
+    } else if (m.kind === 'strain') {
+      if (!rigOf(p.ship.cls).cat || now - st.strainAt < 10000) return;
+      st.strainAt = now; p.cond = Math.max(0, p.cond - 1);
+      this.event(p, 'warn', 'The rig groans — the windward hull flew too long. Ease the sheets or reef.'); this.sendYou(p);
+    }
+  }
+  /** rv for publicState (§3.7): online skippers' own (≤ 10 s old), else built from the ship's rig. */
+  rvOf(p) {
+    const s = p.ship; if (!s || !rigOf(s.cls)) return undefined;
+    const got = this.rigViews.get(p);
+    if (p.online && got && got.cls === s.cls && Date.now() - got.at < 10000) return got.rv;
+    return packRigView(s.cls, this.rigFor(p)) || undefined;
+  }
+  /** Offline voyages and captains (§3.5): furl in the harbour band, hoist again clear of it, tack/gybe with sailCourse.
+   *  → rudderCmd, or null when she is not sailing (engine class, every sail down). Memory: voyage.sail (saved, tiny). */
+  sailHelmOffline(p, v, i, wp, brg, dist, nearM, env, dt) {
+    const s = p.ship; if (!rigOf(s.cls)) return null;
+    const rig = ensureRig(s, p.sailsUp);
+    const mem = v.sail && typeof v.sail === 'object' ? v.sail : (v.sail = {});
+    mem.t = (Number(mem.t) || 0) + dt;               // the voyage's own clock (captains substep inside one tick)
+    const furl = harbourRigCmd(rig, nearM);
+    if (furl) { applyRigCommand(s.cls, rig, furl); settleRig(rig); mem.furled = 1; }
+    else if (mem.furled && !anyHoisted(rig) && nearM > HARBOUR_FURL_M) {
+      const ww = windOverWater(env);
+      applyRigCommand(s.cls, rig, departurePlan(s.cls, ww.tws / KN, angleDiff(brg, ww.twd))); settleRig(rig); mem.furled = 0;
+    }
+    p.sailsUp = anyHoisted(rig); env.sailsUp = p.sailsUp;
+    if (!p.sailsUp) return null;
+    const a = i > 0 ? v.route[i - 1] : (Array.isArray(mem.o) ? mem.o : (mem.o = [s.lat, s.lon]));
+    const h = sailHelm(s.cls, s, { brg, distM: dist, xtM: crossTrackM(s.lat, s.lon, a[0], a[1], wp[0], wp[1]), env, nowS: mem.t, mem });
+    return h ? h.rudderCmd : null;
+  }
   // Tugs: within 1500 m of the anchor, under 6 kn, no hail. They walk the ship to the best berth over 45 s.
   tugAssist(p) {
     if (p.docked || p.assist || p.flooding >= 1) return;
@@ -717,6 +795,7 @@ export class Game {
     const now = Date.now();
     p.money -= cost; p.fishing = false; p.voyage = null;
     p.ship.throttle = 0; p.ship.rudder = 0;
+    { const rig = this.rigFor(p); if (rig && anyHoisted(rig)) { applyRigCommand(p.ship.cls, rig, { all: 'furl' }); settleRig(rig); p.sailsUp = false; this.event(p, 'info', 'The crew furls the sails for the tow.'); } }
     p.assist = { harbor: harbor.id, berthId: berth ? berth.id : null, berthName: berth ? berth.name : null, from: { lat: p.ship.lat, lon: p.ship.lon, hdg: p.ship.hdg }, to, start: now, until: now + FEES.TUG_SECONDS * 1000, cost };
     if (tugPlan) {
       const t = beginTugAssist(this, p, harbor, tugPlan); p.assist.opId = t.id; p.assist.until = t.until;
@@ -1557,7 +1636,7 @@ export class Game {
     if (p.docked || p.assist) return null; // moored or under tugs: fuel, flooding, storm and other skippers do not matter
     const s = p.ship, C = SHIP_CLASSES[s.cls] || SHIP_CLASSES.coaster;
     // Out of fuel = no propulsion; a sailing yacht with her sails set is still driven by the wind.
-    if (!(p.fuel > 0) && !(C.sail && p.sailsUp !== false)) return 'out of fuel.';
+    if (!(p.fuel > 0) && !(C.sail && p.sailsUp !== false && (!rigOf(s.cls) || anyHoisted(this.rigFor(p))))) return 'out of fuel.';
     if (p.flooding > WARP.MAX_FLOODING) return `taking water (${Math.round(p.flooding * 100)} %) — patch the hull or let the pumps catch up first.`;
     if (this.harbourZone(p)) {
       const near = this.nearestOtherSkipper(p, WARP.HARBOR_PLAYER_M);
@@ -1906,9 +1985,11 @@ export class Game {
     const env = {
       cond: p.cond, flooding: p.flooding, loadFrac: cargoMass(p.cargo) / C.capacity, wind: w.wind, current: currentAt(s.lat, s.lon, this.simTime), tideStream: tide.stream,
       fuelEmpty: p.fuel <= 0, sea: w.sea, waveH: w.waves.height, waveDir: w.waves.dir, towing: !!p.towing, sailsUp: p.sailsUp !== false,
+      fast: true, simTime: this.simTime, gusts: false, crewAuto: 'full',   // sailing: offline/captains use the polar fast path, crew on auto (§2.10)
     };
     const before = { lat: s.lat, lon: s.lon };
-    stepShip(s, { throttleCmd: throttle, rudderCmd: clamp(angleDiff(s.hdg, brg) / 25, -1, 1) }, env, dt);
+    const rudderCmd = this.sailHelmOffline(p, v, i, wp, brg, dist, nearM, env, dt) ?? clamp(angleDiff(s.hdg, brg) / 25, -1, 1);
+    stepShip(s, { throttleCmd: throttle, rudderCmd }, env, dt);
     // Inside a built harbour patch the mask decides; elsewhere the coarse depth plus the tide.
     const pen = this.landPenetration(s.lat, s.lon);
     // (the same tolerance as onState: a hull centre grazing a mask edge by < LAND_PENETRATION_M is not aground)

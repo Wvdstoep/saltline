@@ -1,0 +1,77 @@
+/* Bridges & locks HUD (public/js/wwhud.js, docs/BRIDGES-LOCKS-VHF-CONTRACT.md §5.5). Uses the style.css tokens.
+   Layers: AIR chip + strip 11 (HUD) · card 23 (desktop, right of the radio panel's column) · phone sheet 26. */
+.ww-air { position: fixed; z-index: 11; left: calc(var(--gut, 16px) + var(--sal, 0px)); top: calc(var(--top-h, 64px) + 10px); display: flex; align-items: center; gap: 10px;
+  min-height: 40px; padding: 4px 6px 4px 12px; border-radius: var(--r3, 14px); background: var(--glass-strong); border: 1px solid var(--line-2); box-shadow: var(--shadow);
+  color: var(--fg); font: 600 13px/1.2 var(--font); max-width: calc(100vw - 32px); white-space: nowrap; }
+.ww-air:hover { background: var(--glass-strong); border-color: var(--cyan); }
+.ww-air-v { font: 700 13px/1 var(--mono); letter-spacing: .01em; }
+.ww-air.alarm { border-color: var(--red); box-shadow: 0 0 0 1px var(--red-soft), var(--shadow); }
+.ww-strip { display: inline-flex; gap: 5px; }
+.ww-strip:empty { display: none; }
+.ww-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px; background: var(--card); border: 1px solid var(--line-2); font-size: 12px; cursor: pointer; }
+.ww-chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--green); flex: none; box-shadow: 0 0 6px currentColor; }
+.ww-chip b { font-weight: 600; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+.ww-chip em { font: 700 11.5px/1 var(--mono); font-style: normal; }
+.ww-chip small { color: var(--muted); font-size: 11px; }
+.ww-chip.ok { color: var(--fg); } .ww-chip.ok i { background: var(--green); color: var(--green); } .ww-chip.ok em { color: var(--green); }
+.ww-chip.tight { border-color: rgba(242,177,52,.6); } .ww-chip.tight i { background: var(--accent); color: var(--accent); } .ww-chip.tight em { color: var(--accent-2); }
+.ww-chip.red { border-color: rgba(255,107,107,.6); background: var(--red-soft); } .ww-chip.red i { background: var(--red); color: var(--red); } .ww-chip.red em { color: #ffb3b3; }
+
+.ww-card { position: fixed; z-index: 23; left: calc(var(--gut, 16px) + var(--sal, 0px)); top: calc(var(--top-h, 64px) + 60px); width: 380px; max-height: calc(100dvh - var(--top-h, 64px) - 84px); overflow-y: auto;
+  padding: 12px 14px 14px; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r3, 14px); box-shadow: var(--shadow); color: var(--fg); font-size: 13px; outline: none; }
+.ww-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ww-h h3 { font-size: 16px; line-height: 1.25; }
+.ww-h small { color: var(--muted); display: block; margin-top: 2px; white-space: normal; }
+.ww-x { min-height: 32px; width: 32px; padding: 0; flex: none; }
+.ww-muted { color: var(--muted); }
+.ww-big { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 6px; margin-bottom: 10px; }
+.ww-big > div { background: var(--card); border: 1px solid var(--line); border-radius: var(--r2); padding: 6px 8px; }
+.ww-big small, .ww-gauge small { display: block; font: 650 10px/1.2 var(--font); letter-spacing: .06em; color: var(--muted); }
+.ww-big b, .ww-gauge b { font: 700 22px/1.15 var(--mono); }
+.ww-big u, .ww-gauge u { text-decoration: none; font-size: 12px; color: var(--muted); margin-left: 2px; }
+.ww-gauge { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: var(--r2); border: 1px solid var(--line-2); background: var(--card); margin-bottom: 8px; }
+.ww-gauge .ww-g-r { text-align: right; }
+.ww-gauge.ok { border-color: rgba(79,209,139,.55); } .ww-gauge.ok .ww-g-r b { color: var(--green); }
+.ww-gauge.tight { border-color: rgba(242,177,52,.6); } .ww-gauge.tight .ww-g-r b { color: var(--accent-2); }
+.ww-gauge.red { border-color: rgba(255,107,107,.6); background: var(--red-soft); } .ww-gauge.red .ww-g-r b { color: #ffb3b3; }
+.ww-side, .ww-plan { display: block; width: 100%; height: auto; margin: 4px 0 10px; border-radius: var(--r2); background: linear-gradient(180deg, #0d2236, #0a1a2a); border: 1px solid var(--line); }
+.ww-svg-t { font: 700 10px/1 var(--mono); fill: #e8f1f8; }
+.ww-svg-s { font: 500 9px/1 var(--font); fill: #8ea9bf; }
+.ww-sec { margin: 8px 0; }
+.ww-sec h4, .ww-ch h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
+.ww-bar { position: relative; height: 10px; border-radius: 6px; background: var(--card); border: 1px solid var(--line-2); overflow: hidden; margin-bottom: 6px; }
+.ww-bar i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, #2f7fa8, var(--cyan)); }
+.ww-bar s { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--accent); }
+.ww-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 3px 0; }
+.ww-row > span { color: var(--muted); }
+.ww-row > b { font-weight: 600; text-align: right; }
+.ww-row.bad b { color: var(--red); }
+.ww-btns { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.ww-btns button { min-height: 32px; padding: 0 10px; font-size: 12.5px; }
+.ww-tog { display: flex; align-items: center; gap: 8px; margin-top: 8px; cursor: pointer; }
+.ww-tog input { width: 18px; height: 18px; accent-color: var(--accent); }
+.ww-tog small { color: var(--muted); }
+.ww-spans { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ww-spans li { background: var(--card); border: 1px solid var(--line); border-radius: var(--r2); padding: 6px 8px; line-height: 1.35; }
+.ww-spans small { color: var(--muted); }
+.ww-st { font: 650 11px/1 var(--font); padding: 2px 6px; border-radius: 999px; background: var(--red-soft); color: #ffb3b3; white-space: nowrap; }
+.ww-st.warn, .ww-st.opening, .ww-st.closing { background: var(--accent-soft); color: var(--accent-2); }
+.ww-st.open { background: var(--green-soft); color: var(--green); }
+.ww-verdict { padding: 6px 10px; border-radius: var(--r2); margin-bottom: 8px; font-weight: 650; }
+.ww-verdict.ok { background: var(--green-soft); color: var(--green); }
+.ww-verdict.tight { background: var(--accent-soft); color: var(--accent-2); }
+.ww-verdict.red { background: var(--red-soft); color: #ffb3b3; }
+.ww-grid { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+.ww-ch { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 6px; }
+.ww-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.ww-foot:empty { display: none; }
+
+/* phone: AIR chip compact under the top bar, card as a bottom sheet */
+.ww-air.phone { top: calc(var(--sat, 0px) + var(--top-h, 64px) + 6px); left: 8px; right: auto; min-height: 36px; gap: 6px; padding: 3px 5px 3px 10px; font-size: 12px; max-width: calc(100vw - 16px); overflow: hidden; }
+.ww-air.phone .ww-chip { padding: 3px 7px; font-size: 11px; }
+.ww-air.phone .ww-chip b, .ww-air.phone .ww-chip small { display: none; }
+.ww-card.phone { z-index: 26; left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 72dvh; border-radius: var(--r4, 20px) var(--r4, 20px) 0 0; padding: 10px 14px calc(14px + var(--sab, 0px)); }
+.ww-card.phone::before { content: ''; display: block; width: 44px; height: 5px; border-radius: 3px; background: var(--line-2); margin: 0 auto 8px; }
+.ww-card.phone .ww-x { min-height: var(--tap, 44px); width: var(--tap, 44px); }
+.ww-card.phone button { min-height: 40px; }
+@media (max-width: 700px) { .ww-card:not(.phone) { left: 8px; right: 8px; width: auto; } }

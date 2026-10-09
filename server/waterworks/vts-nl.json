@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "note": "VTS sectors and channels (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6.3). Channels transcribed from Port of Rotterdam, 'Procedure VHF communication VTS & HCC' (v1.4, July 2023): arrival sectors Maas Approach 1, Oude Maas 62, Maasbruggen 81; Traffic Control Rotterdam 11; Harbour Coordination Centre 14 (operational) and 19 (shipping messages); channel 10 outside VTS sectors. Polygons are coarse (approx: true). Entries with verified:false are not loaded; the remaining sector channels (Maasmond, Rozenburg, Botlek, Europoort, Waalhaven, Eemhaven) must be filled from Annex 1 of the current procedure by the operator.",
+  "source": "https://www.portofrotterdam.com/sites/default/files/2023-07/procedure-VHF-communication-VTS-HCC-2023-English.pdf",
+  "date": "2026-10-09",
+  "defaultInland": 10,
+  "stations": [
+    { "id": "vts:rtm-tc", "callName": "Traffic Control Rotterdam", "ch": 11, "kind": "vts", "pos": [51.9050, 4.4850], "h": 60, "verified": true },
+    { "id": "vts:rtm-hcc", "callName": "Harbour Coordination Centre", "ch": 14, "chMsg": 19, "kind": "vts", "pos": [51.9050, 4.4850], "h": 60, "verified": true }
+  ],
+  "sectors": [
+    { "id": "vts:maas-approach", "callName": "Maas Approach", "ch": 1, "verified": true, "approx": true,
+      "poly": [[51.8500, 3.4500], [52.1500, 3.4500], [52.1500, 4.0500], [51.9900, 4.0500], [51.9600, 4.0000], [51.8500, 3.9000]] },
+    { "id": "vts:oude-maas", "callName": "Oude Maas", "ch": 62, "verified": true, "approx": true,
+      "poly": [[51.8700, 4.3000], [51.8800, 4.3600], [51.8400, 4.4600], [51.8000, 4.5300], [51.7700, 4.5100], [51.8200, 4.3800], [51.8500, 4.3000]] },
+    { "id": "vts:maasbruggen", "callName": "Maasbruggen", "ch": 81, "verified": true, "approx": true,
+      "poly": [[51.9100, 4.4600], [51.9250, 4.4600], [51.9250, 4.5300], [51.9000, 4.5700], [51.8950, 4.5300], [51.9050, 4.4900]] }
+  ]
+}

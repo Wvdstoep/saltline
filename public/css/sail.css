@@ -1,0 +1,127 @@
+/* Saltline sailing HUD (public/js/sailhud.js, docs/SAILING-CONTRACT.md §5). Uses the style.css design tokens.
+   Desktop: instruments under the compass (top right), sail panel as a 340 px glass card bottom right (Q).
+   Phone (.sh-phone): 76 px wind dial + heel gauge stacked top right, the sail panel as a bottom sheet ≤ 55 % high. */
+.sh-root { position: fixed; inset: 0; pointer-events: none; z-index: 12; font-variant-numeric: tabular-nums; }
+.sh-root > * { pointer-events: auto; }
+#hud > #sailhud { pointer-events: none; }   /* style.css `#hud > *` (id specificity) would make this full-screen root swallow every tap on the helm, HUD and canvas */
+.sh-root .glass { background: var(--glass-strong, rgba(7, 18, 30, 0.84)); border: 1px solid var(--line, rgba(150, 195, 230, 0.14)); border-radius: var(--r3, 14px); box-shadow: var(--shadow, 0 12px 32px rgba(0, 0, 0, 0.38)); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+
+/* ---------------------------------------------------------------- instruments */
+.sh-inst { position: absolute; top: calc(var(--top-h, 64px) + var(--sat, 0px) + 8px); right: calc(var(--gut, 16px) + var(--sar, 0px)); display: grid; grid-template-columns: 128px 128px; gap: 8px; padding: 8px; width: max-content; }
+.sh-wind, .sh-heel { display: block; }
+.sh-perf { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 8px; }
+.sh-cell { display: flex; flex-direction: column; min-width: 0; }
+.sh-cell label { font-size: 10px; color: var(--muted, #8ea9bf); text-transform: uppercase; letter-spacing: 0.04em; }
+.sh-cell b { font: 650 15px/1.15 var(--mono, monospace); color: var(--fg, #e8f1f8); white-space: nowrap; }
+.sh-cell b u { text-decoration: none; font-size: 10px; color: var(--muted, #8ea9bf); margin-left: 2px; }
+.sh-cell.green b { color: var(--green, #4fd18b); } .sh-cell.amber b { color: var(--accent, #f2b134); } .sh-cell.red b { color: var(--red, #ff6b6b); }
+
+/* ---------------------------------------------------------------- panel (desktop card) */
+.sh-panel { position: absolute; right: calc(var(--gut, 16px) + var(--sar, 0px)); bottom: calc(var(--gut, 16px) + var(--sab, 0px)); width: 340px; max-height: min(640px, calc(100dvh - 350px)); overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; color: var(--fg, #e8f1f8); font-size: 13px; }
+.sh-head { display: flex; gap: 6px; align-items: center; }
+.sh-head button { min-height: 32px; padding: 0 10px; }
+.sh-seg { display: inline-flex; border: 1px solid var(--line-2, rgba(150, 195, 230, 0.28)); border-radius: var(--r2, 10px); overflow: hidden; }
+.sh-seg button { border: 0; border-radius: 0; background: transparent; min-height: 30px; padding: 0 9px; font-size: 12px; }
+.sh-seg button.on { background: var(--accent, #f2b134); color: var(--accent-ink, #201500); font-weight: 700; }
+.sh-close { margin-left: auto; min-width: 32px; font-size: 18px; }
+.sh-advice { font-size: 12.5px; padding: 6px 8px; border-radius: var(--r1, 6px); background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--muted, #8ea9bf); }
+.sh-advice.good { border-color: var(--green, #4fd18b); color: var(--green, #4fd18b); }
+.sh-advice.warn { border-color: var(--accent, #f2b134); color: var(--accent-2, #ffd27a); }
+.sh-advice.danger { border-color: var(--red, #ff6b6b); color: var(--red, #ff6b6b); background: var(--red-soft, rgba(255, 107, 107, 0.16)); }
+.sh-chips { display: none; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.sh-chip { min-height: 44px; padding: 0 12px; border-radius: 22px; font-size: 13px; border-width: 2px; flex: none; }
+.sh-chip.sel { background: var(--card-hi, #183553); outline: 2px solid var(--fg, #e8f1f8); outline-offset: 1px; }
+.sh-list { display: flex; flex-direction: column; gap: 6px; }
+.sh-row { padding: 7px 8px; border: 1px solid var(--line, rgba(150, 195, 230, 0.14)); border-radius: var(--r2, 10px); background: rgba(255, 255, 255, 0.025); display: flex; flex-direction: column; gap: 5px; }
+.sh-row.sel { border-color: var(--line-2, rgba(150, 195, 230, 0.4)); background: rgba(90, 214, 255, 0.05); }
+.sh-row.down .sh-slider { opacity: 0.4; }
+.sh-rowtop { display: flex; align-items: center; gap: 6px; }
+.sh-rowtop kbd { font-size: 10px; padding: 1px 4px; }
+.sh-name { font-weight: 650; text-transform: capitalize; }
+.sh-state { color: var(--muted, #8ea9bf); font-size: 11.5px; }
+.sh-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--faint, #5f7b92); box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.3); }
+.sh-dot.green, .sh-chip.green { --c: var(--green, #4fd18b); } .sh-dot.amber, .sh-chip.amber { --c: var(--accent, #f2b134); } .sh-dot.red, .sh-chip.red { --c: var(--red, #ff6b6b); } .sh-dot.blue, .sh-chip.blue { --c: var(--cyan, #5ad6ff); } .sh-dot.grey, .sh-chip.grey { --c: var(--faint, #5f7b92); }
+.sh-dot { background: var(--c); } .sh-chip { border-color: var(--c); }
+.sh-tts { margin-left: auto; display: inline-flex; gap: 3px; }
+.sh-tt { width: 14px; height: 6px; border-radius: 3px; background: var(--faint, #5f7b92); position: relative; }
+.sh-tt.ok { background: var(--green, #4fd18b); } .sh-tt.lift { background: var(--accent, #f2b134); transform: rotate(-35deg); } .sh-tt.stall { background: var(--red, #ff6b6b); transform: rotate(35deg); } .sh-tt.off { opacity: 0.35; }
+.sh-hoist { display: flex; align-items: center; gap: 8px; }
+.sh-hoist small, .sh-slab small { color: var(--muted, #8ea9bf); font-size: 10.5px; }
+.sh-roll { flex: 1; accent-color: var(--cyan, #5ad6ff); }
+.sh-hbtn { position: relative; overflow: hidden; min-height: 30px; padding: 0 12px; }
+.sh-hbtn .sh-hbar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--cyan, #5ad6ff); transition: width 0.3s linear; }
+.sh-hbtn.busy { border-color: var(--cyan, #5ad6ff); }
+.sh-reef { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.sh-reef button { min-height: 28px; min-width: 30px; padding: 0; }
+.sh-reef b { min-width: 26px; text-align: center; font-family: var(--mono, monospace); }
+.sh-slider { display: flex; flex-direction: column; gap: 1px; }
+.sh-slab { display: flex; justify-content: space-between; }
+.sh-sname { text-transform: uppercase; letter-spacing: 0.05em; }
+.sh-track { position: relative; height: 26px; }
+.sh-tracksm { height: 20px; }
+.sh-band { position: absolute; top: 50%; height: 8px; transform: translateY(-50%); background: rgba(79, 209, 139, 0.28); border-radius: 4px; pointer-events: none; }
+.sh-tick { position: absolute; top: 2px; bottom: 2px; width: 3px; margin-left: -1.5px; background: var(--green, #4fd18b); border-radius: 2px; box-shadow: 0 0 6px rgba(79, 209, 139, 0.8); pointer-events: none; z-index: 2; }
+.sh-range { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; }
+.sh-root input[type="range"].sh-range::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.16); }
+.sh-root input[type="range"].sh-range::-moz-range-track { height: 6px; background: rgba(255, 255, 255, 0.16); }
+.sh-root input[type="range"].sh-range::-moz-range-progress { background: transparent; }
+.sh-root input[type="range"].sh-range::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -7px; border-radius: 50%; background: var(--fg, #e8f1f8); border: 3px solid var(--cyan, #5ad6ff); position: relative; z-index: 3; }
+.sh-root input[type="range"].sh-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--fg, #e8f1f8); border: 3px solid var(--cyan, #5ad6ff); }
+.sh-root input[type="range"].sh-range.auto::-webkit-slider-thumb { border-color: var(--accent, #f2b134); background: var(--accent-2, #ffd27a); }
+.sh-band { z-index: 1; height: 10px; }
+.sh-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sh-mini { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 2px 6px; }
+.sh-mini small { color: var(--muted, #8ea9bf); font-size: 11px; }
+.sh-mini b { text-align: right; font-family: var(--mono, monospace); font-size: 12.5px; }
+.sh-mini b.green { color: var(--green, #4fd18b); } .sh-mini b.amber { color: var(--accent, #f2b134); } .sh-mini b.red { color: var(--red, #ff6b6b); }
+.sh-bar { grid-column: 1 / -1; height: 5px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; display: block; }
+.sh-bar > i { display: block; height: 100%; } .sh-bar > i.green { background: var(--green, #4fd18b); } .sh-bar > i.amber { background: var(--accent, #f2b134); } .sh-bar > i.red { background: var(--red, #ff6b6b); }
+.sh-toast { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; padding: 8px 10px; background: var(--surface, rgba(8, 19, 31, 0.97)); border: 1px solid var(--line-2, rgba(150, 195, 230, 0.28)); border-radius: var(--r2, 10px); box-shadow: var(--shadow); }
+.sh-roundbar { display: none; }
+.sh-panelbtn { grid-column: 1 / -1; min-height: 30px; font-size: 12px; letter-spacing: 0.02em; }
+.sh-panelbtn.on { border-color: var(--accent, #f2b134); color: var(--accent, #f2b134); }
+.sh-phone .sh-panelbtn { display: none; }
+
+/* ---------------------------------------------------------------- phone */
+.sh-phone .sh-inst { grid-template-columns: 76px; gap: 6px; padding: 6px; top: calc(var(--top-h, 64px) + var(--sat, 0px) + 4px); right: calc(8px + var(--sar, 0px)); }
+.sh-phone .sh-perf { grid-template-columns: 1fr; gap: 2px; }
+.sh-phone .sh-cell:nth-child(n + 4):not(:nth-child(4)) { display: none; }          /* STW, SOG, target, % only */
+.sh-phone .sh-cell b { font-size: 12.5px; }
+.sh-phone .sh-cell label { font-size: 9px; }
+.sh-phone .sh-panel { left: 0; right: 0; bottom: 0; width: auto; max-height: 55dvh; border-radius: var(--r4, 20px) var(--r4, 20px) 0 0; padding: 10px 12px calc(10px + var(--sab, 0px)); font-size: 14px; }
+.sh-phone .sh-head button, .sh-phone .sh-seg button { min-height: 44px; }
+.sh-phone .sh-seg button { padding: 0 12px; font-size: 13px; }
+.sh-phone .sh-chips { display: flex; }
+.sh-phone .sh-row { display: none; border: 0; background: transparent; padding: 0; }
+.sh-phone .sh-row.sel { display: flex; }
+.sh-phone .sh-rowtop kbd { display: none; }
+.sh-phone .sh-track { height: 44px; }
+.sh-phone .sh-tracksm { height: 40px; }
+.sh-root.sh-phone input[type="range"].sh-range::-webkit-slider-thumb { width: 30px; height: 30px; margin-top: -12px; }
+.sh-phone .sh-hbtn, .sh-phone .sh-reef button { min-height: 44px; min-width: 44px; }
+.sh-phone.sh-open .sh-roundbar { display: none; }
+.sh-panelbtn { grid-column: 1 / -1; min-height: 30px; font-size: 12px; letter-spacing: 0.02em; }
+.sh-panelbtn.on { border-color: var(--accent, #f2b134); color: var(--accent, #f2b134); }
+.sh-phone .sh-panelbtn { display: none; }             /* the sheet carries its own Tack / close */
+.sh-phone .sh-roundbar { display: flex; flex-direction: column; gap: 10px; position: absolute; right: calc(10px + var(--sar, 0px)); bottom: calc(var(--bar, 60px) + 150px + var(--sab, 0px)); }
+.sh-round { width: 56px; height: 56px; min-height: 56px; border-radius: 50%; padding: 0; font-size: 12.5px; font-weight: 650; background: var(--glass-strong, rgba(7, 18, 30, 0.84)); border: 2px solid var(--line-2, rgba(150, 195, 230, 0.28)); }
+.sh-round.on { border-color: var(--accent, #f2b134); color: var(--accent, #f2b134); }
+.sh-round.sh-man { border-color: var(--cyan, #5ad6ff); }
+
+/* Phone helm (touch.js): the Sails and Tack round buttons sit one row above the STOP / rudder / AP row, at its right
+   end — in that row (space-between) they landed on top of the rudder slider and covered it. */
+.touchHelm .thBtns .thBtn.sails, .touchHelm .thBtns .thBtn.tack { position: absolute; bottom: 62px; }
+.touchHelm .thBtns .thBtn.tack { right: 0; border-color: var(--cyan, #5ad6ff); }
+.touchHelm .thBtns .thBtn.sails { right: 60px; }
+.touchHelm .thBtns .thBtn.sails.on { border-color: var(--accent, #f2b134); color: var(--accent, #f2b134); }
+
+/* Keep the sail UI out of the telegraph / throttle column (phase-2 browser review):
+   desktop — the instrument card sits left of the 176 px telegraph column instead of on top of it;
+   phone   — the instrument stack and the bottom sheet stop short of the 56 px throttle at the right edge, so the
+             throttle stays visible and usable with the sheet open; the sheet's header wraps in the narrower width. */
+.sh-inst { right: calc(var(--gut, 16px) + var(--sar, 0px) + 176px + 8px); }
+.sh-phone .sh-inst { right: calc(72px + var(--sar, 0px)); }
+.sh-phone .sh-panel { right: calc(72px + var(--sar, 0px)); border-radius: var(--r4, 20px) var(--r4, 20px) var(--r4, 20px) 0; }
+.sh-phone .sh-head { flex-wrap: wrap; row-gap: 6px; }
+.sh-phone .sh-head .sh-close { margin-left: auto; }
+.sh-root:not(.sh-phone) .sh-panel { right: calc(var(--gut, 16px) + var(--sar, 0px) + var(--radar-w, 232px) + 8px); bottom: calc(var(--gut, 16px) + var(--sab, 0px) + 76px); max-height: min(640px, calc(100dvh - 430px)); }

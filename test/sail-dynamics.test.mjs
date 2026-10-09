@@ -284,3 +284,27 @@ test('trimInfo (HUD) and autoTrimView: target speed, green ticks, advice keys; v
     assert.ok(Math.sign(v.heel) === (awa > 0 ? -1 : 1) || v.heel === 0);
   }
 });
+
+// docs/SAILING-LANEB-PHASE2.md §8: the side force crosses zero head to wind (tack) and dead downwind (jibe); HM does not
+// (windage has its own lever), so an unclamped zce = HM/Fn sent the smoothed helm to thousands (ketch tack ≈ 14,000,
+// schooner tack ≈ 8,000, schooner jibe ≈ 1,300) and the boat was pushed hard for seconds after the manoeuvre.
+test('helm stays bounded through tacks and jibes (zce clamp): every class, 12 kn, |helm| < 1.5 at every step', () => {
+  for (const cls of CLASSES) for (const [twa, kind] of [[45, 'tack'], [150, 'jibe']]) {
+    const pol = polarSpeed(cls, 12, twa);
+    const o = start(cls, 12, twa, { spdKn: 0.8 * pol.kn, lv: pol.level });
+    const { s, env, rig } = o;
+    for (let t = 0; t < 60; t += 0.1) stepSailShip(s, { rudderCmd: holdTwa(s, env, twa) }, env, 0.1);
+    const mem = {}, q = () => ({ hdg: s.hdg, twd: windOverWater(env).twd, tack: rig.tack, helm: rig.helm, auth: authOf(rig.heel), nowS: 0 });
+    beginManeuver(cls, q(), mem, kind); applyRigCommand(cls, rig, { maneuver: kind });
+    let maxH = 0;
+    for (let t = 0; t < 60; t += 0.1) {
+      const rud = mem.man ? maneuverStep(q(), mem).rudderCmd : holdTwa(s, env, -twa);
+      stepSailShip(s, { rudderCmd: rud }, env, 0.1);
+      assert.ok(Number.isFinite(rig.helm), `${cls} ${kind}: helm finite`);
+      maxH = Math.max(maxH, Math.abs(rig.helm));
+    }
+    assert.equal(rig.tack, -1, `${cls} ${kind}: completed onto port`);
+    assert.ok(maxH < 1.5, `${cls} ${kind}: max |helm| ${maxH.toFixed(2)} (spike: zce = HM/Fn unclamped)`);
+    assert.equal(rig.nan, 0);
+  }
+});

@@ -1,0 +1,20 @@
+{
+  "note": "SYNTHETIC inland graph in lane D's stand-in planner format (server/inlandlink.js prepGraph). Node positions near the real places; objects are test objects, not FIS data.",
+  "synthetic": true,
+  "nodes": {
+    "rdam": { "lat": 51.9000, "lon": 4.4800, "name": "Rotterdam Waalhaven" },
+    "dord": { "lat": 51.8100, "lon": 4.6700, "name": "Dordrecht" },
+    "alb": { "lat": 51.8570, "lon": 4.6630, "name": "Alblasserdam" },
+    "gor": { "lat": 51.8300, "lon": 4.9700, "name": "Gorinchem" },
+    "nijm": { "lat": 51.8527, "lon": 5.8390, "name": "Nijmegen" },
+    "small": { "lat": 51.7000, "lon": 4.9500, "name": "Small canal village" }
+  },
+  "edges": [
+    { "a": "rdam", "b": "alb", "cemt": "Vb", "km": 22, "name": "Noord (short)", "objects": [ { "kind": "bridge", "id": "t:fixed7", "name": "Testbrug A", "mov": "fixed", "clr": 7.0 } ] },
+    { "a": "rdam", "b": "dord", "cemt": "VIb", "km": 24, "name": "Oude Maas", "objects": [ { "kind": "bridge", "id": "t:lift5", "name": "Testbrug B", "mov": "lift", "clr": 5.0, "clrO": 45.0, "waitMin": 12, "vhf": 18 } ] },
+    { "a": "dord", "b": "alb", "cemt": "Vb", "km": 8, "name": "Noord (south)" },
+    { "a": "alb", "b": "gor", "cemt": "VIb", "km": 26, "name": "Merwede" },
+    { "a": "gor", "b": "nijm", "cemt": "VIb", "km": 70, "name": "Waal", "objects": [ { "kind": "lock", "id": "t:lock1", "name": "Testsluis", "len": 200, "wid": 24, "sill": 4.5, "waitMin": 25, "vhf": 20 } ] },
+    { "a": "dord", "b": "small", "cemt": "II", "km": 20, "name": "Small canal", "objects": [ { "kind": "lock", "id": "t:lock2", "name": "Kleine sluis", "len": 63, "wid": 7.7, "sill": 3.0, "waitMin": 15 } ] }
+  ]
+}

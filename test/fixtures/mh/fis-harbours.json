@@ -1,0 +1,9 @@
+{
+  "note": "SYNTHETIC lane D fixture in lane A's unpacked FIS harbour shape (server/fis.js unpackFis: {id, name, p, long, short, fuel}). Not real FIS data; replace with a recorded subset (subsetFis) once nl-fis.json.gz ships.",
+  "synthetic": true,
+  "harbours": [
+    { "id": "fis:9001", "name": "Passantenhaven Rozenburg (synthetic)", "p": [51.9155, 4.1698], "long": 0, "short": 14, "fuel": false, "maxL": 15, "maxT": 2.2 },
+    { "id": "fis:9002", "name": "Jachthaven Brielle-Noord (synthetic)", "p": [51.9120, 4.1900], "long": 60, "short": 25, "fuel": true },
+    { "id": "fis:9003", "name": "Elsewhere (synthetic)", "p": [52.3700, 4.9000], "long": 10, "short": 5, "fuel": false }
+  ]
+}
