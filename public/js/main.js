@@ -107,6 +107,9 @@ class App {
     // Berth guidance (V5-PLAN item 2, berthguide.js): berth outline + board + leading line + fairway lanes, and the HUD guidance card
     this.berthGuide = null;
     import('./berthguide.js').then((m) => { this.berthGuide = new m.BerthGuide(this); }).catch((e) => console.warn('[berthguide] unavailable', e));
+    // Dock anywhere (quayui.js): the quays near the ship, the "Moor here" card, the slot outline, the moored-at-a-quay panel
+    this.quayUi = null;
+    import('./quayui.js').then((m) => { this.quayUi = new m.QuayUI(this); }).catch((e) => console.warn('[quayui] unavailable', e));
     // World market (V6 item 7, market.js): every harbour's prices, the trade finder and the chart's price layer
     import('./market.js').then((m) => { this.market = new m.WorldMarket(this); }).catch((e) => console.warn('[market] unavailable', e));
     // Harbour tugs (V5-PLAN item 4, tugs.js): every skipper's assist tugs from the snapshots, with towlines and prop wash
@@ -171,6 +174,7 @@ class App {
       case 'fleet_board': this.fleetUi?.onBoard(m); break;
       case 'event': this.hud.event(m); if (m.kind === 'law' || m.kind === 'pirate') this.flash(); break;
       case 'harbor': this.hud.showHarbor(m.harbor); break;
+      case 'quays': this.quayUi?.onQuays(m); break;                       // DOCK ANYWHERE
       case 'chat': this.hud.chat(m); break;
       case 'join': this.hud.event({ kind: 'info', text: `${m.player.name} came online.` }); break;
       case 'leave': { const o = this.others.get(m.id); if (o) { this.hud.event({ kind: 'info', text: `${o.name} went offline.` }); this.drop(o.mesh); this.others.delete(m.id); } break; }
@@ -224,6 +228,7 @@ class App {
     }
     this.syncWarp(serverWarp, you);
     if (prev && prev.docked && !you.docked) { this.hud.hideHarbor(); }
+    this.quayUi?.render?.(true);                                         // DOCK ANYWHERE: the moored panel appears / goes this frame
     if (!prev?.docked && you.docked) { this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.autopilot = false; this.touchHelm?.setThrottle?.(0); }
     if (!prev?.assist && you.assist) { this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.autopilot = false; this.touchHelm?.setThrottle?.(0); }
     if (prev?.name !== you.name) this.myMesh?.userData.label?.userData.setText(you.name);
@@ -619,6 +624,7 @@ class App {
       if (k === 'c') { this.cycleCamera(); return; }
       if (k === 'x') { this.clearRoute(); return; }
       if (k === 'n') return this.requestTugs();
+      if (k === 'q') return this.quayUi?.toggle();                        // DOCK ANYWHERE: quays near the ship
       if (k === '.' || k === '>') { e.preventDefault(); return this.stepWarp(1); }
       if (k === ',' || k === '<') { e.preventDefault(); return this.stepWarp(-1); }
       if (this.you?.docked || this.you?.assist) return;
@@ -789,6 +795,7 @@ class App {
     if (a?.active) { a.exit(); this.afterAshoreChange(); return true; }
     const you = this.you;
     if (!you?.docked) { this.hud.event({ kind: 'warn', text: 'Moor at a berth first, then go ashore.' }); return false; }
+    if (you.berth?.quay) { this.hud.event({ kind: 'warn', text: 'There is no harbour walk from this quay. Its services: Q.' }); return false; } // DOCK ANYWHERE
     if (this.warp > 1) this.setWarp(1, 'Going ashore — time warp off.'); // V6 item 6: walking the quay must not burn contract hours 5×
     if (!a) {
       // the module is still loading (or failed): try once more when it arrives
@@ -1231,6 +1238,7 @@ class App {
     try { this.aisLayer.update(dt, now); } catch (e) { if (!this.aisWarned) { this.aisWarned = true; console.warn('[ais] layer update failed', e); } }
     try { this.jobLayer.update(dt); } catch (e) { if (!this.jobLayerWarned) { this.jobLayerWarned = true; console.warn('[jobs] layer update failed', e); } }
     try { this.berthGuide?.update(dt, now); } catch (e) { if (!this.berthGuideWarned) { this.berthGuideWarned = true; console.warn('[berthguide] update failed', e); } }
+    try { this.quayUi?.update(dt, now); } catch (e) { if (!this.quayUiWarned) { this.quayUiWarned = true; console.warn('[quayui] update failed', e); } }
     try { this.tugLayer?.update(dt, now); } catch (e) { if (!this.tugLayerWarned) { this.tugLayerWarned = true; console.warn('[tugs] update failed', e); } }
     for (const m of this.harborMeshes.values()) m.userData.updateBuoys?.(this.time);
     // the camera belongs to whoever is walking (ashore / below decks), else to the chase / bridge / raft views

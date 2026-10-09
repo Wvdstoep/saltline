@@ -29,6 +29,8 @@ import { tileFToLatLon } from './shared/wtformat.js';
 import { haversine } from './shared/geo.js';
 import { pruneRasterCache } from './server/world.js';
 import { createMemGuard, LEVEL } from './server/memguard.js';
+import { createQuayFinder } from './server/quays.js';                                   // DOCK ANYWHERE (docs/DOCK-ANYWHERE-CONTRACT.md)
+import { attachFinder } from './server/quaygame.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -70,6 +72,13 @@ const liveAis = new LiveAis({ log, harbors: HARBORS });
 liveAis.start();
 game.aiFilter = (a) => !liveAis.covers(a.lat, a.lon);
 game.liveAis = liveAis;                     // V7 step 0: the express passage keeps clear of live AIS vessels
+// DOCK ANYWHERE: berths on every real quay, read from the D14 tiles already in memory near ships (never fetches by
+// itself; a query with missing tiles asks for them at P1 and re-answers). Tiny caches, dropped on memguard shed.
+if (WT_ON) {
+  const wtGet = (z, x, y) => wt.get(z, x, y);
+  attachFinder(game, createQuayFinder({ getTile: wtGet, harbors: HARBORS, guard: memGuard }), wtGet);
+  game.quayEnsure = (lat, lon) => wt.ensureAround(lat, lon, 1700, worldtiles.PRIO.P1, { timeoutMs: 2500 });
+}
 // WORLD TILES §3.6.4: a tile that arrives / changes revision under a ship moves her to open water (≤ 300 m, depth ≥
 // draught + 1 m), never damages her (grounding is ignored for 30 s), and tells clients near it to refetch (ETag changed).
 let wtPrefetch = null;
@@ -136,7 +145,7 @@ app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
-app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576), mem: memReport() }); });
+app.get('/api/health', (req, res) => { const a = liveAis.stats(); res.json({ ok: true, players: [...game.byId.values()].filter((p) => p.online).length, simTime: Math.round(game.simTime), uptime: process.uptime(), ais: { vessels: a.vessels, offline: a.offline, sources: Object.fromEntries(Object.entries(a.sources).map(([k, v]) => [k, { enabled: !!v.enabled, connected: !!v.connected, msgs: v.msgs ?? 0 }])) }, route: routePlanner.stats(), quays: game.quayFinder ? game.quayFinder.stats() : null, wt: (() => { const s = wt.stats(); return s.disabled ? { disabled: true } : { fetched: s.fetched, failed: s.failed, queue: s.queue, diskMB: s.diskMB, capMB: s.capMB, memTiles: s.memTiles, pin: s.pin, built: s.built, swaps: s.swaps, offline: s.offline, healthy: s.healthy, today: s.today, converter: s.converter?.mode, geom: (({ tiles, stale, rebuild }) => ({ tiles, stale, rebuild }))(harborgeom.stats()) }; })(), market: { samples: priceHistory.samples, routes: routeTable.stats() }, rssMB: Math.round(process.memoryUsage().rss / 1048576), mem: memReport() }); });
 app.get('/api/world', (req, res) => res.json({ ...game.worldInfo(), lanes: LANE_NODES, patch: PATCH }));
 // v0.3: high-resolution harbour geometry (docs/V3-CONTRACTS.md §1). First build of a harbour may take a few seconds.
 const validId = (id) => /^[a-z0-9_]{1,40}$/.test(id);

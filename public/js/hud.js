@@ -13,6 +13,7 @@ import { isTouch, TouchHelm } from './touch.js';
 import { ICON, ic, GOOD_ICON, JOB_ICON, CAT_ICON, iconDataUrl } from './icons.js';
 import { jobWhere, fmtLeft, JOB_COLOR } from './jobs.js';
 import { estimateJob, hardReason, fmtShipH, JOBTIME } from '/shared/jobtime.js'; // V6 item 5: contract hours on the ship's clock
+import { TIER_TABS, SERVICE_TIERS, quayDenies } from '/shared/quayrules.js'; // DOCK ANYWHERE
 
 const { GOODS, SHIP_CLASSES, GEO, SIM, INTERACT } = K;
 const $ = (id) => document.getElementById(id);
@@ -211,6 +212,7 @@ export class Hud {
     $('shipsWrap').addEventListener('click', (e) => { const el = e.target.closest?.('[data-act]'); if (el && !el.disabled) this.sheetAction(el.dataset.act, el, e); });
     const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
     on('btnDock', () => a.toggleDock());
+    on('btnQuays', () => a.quayUi?.toggle());                    // DOCK ANYWHERE
     on('btnCastOff', () => a.castOff());
     on('btnUndock', () => a.castOff());
     on('btnAshore', () => this.toggleAshore());
@@ -424,9 +426,9 @@ export class Hud {
     if (ashore !== this.ashoreOn) this.showAshore(ashore);
     this.adoptViewButtons();
     b.classList.toggle('docked', docked);
-    $('btnAshore')?.classList.toggle('hidden', !docked && !ashore);
+    $('btnAshore')?.classList.toggle('hidden', (!docked && !ashore) || (!ashore && !!you?.berth?.quay)); // DOCK ANYWHERE: no walk from a quay
     setLbl('btnAshore', ashore ? (this.touch ? 'Aboard' : 'Back aboard') : (this.touch ? 'Ashore' : 'Go ashore'));
-    const ah = $('btnAshoreH'); if (ah) { ah.classList.toggle('hidden', !docked); setLbl(ah, ashore ? 'Back aboard' : 'Go ashore'); }
+    const ah = $('btnAshoreH'); if (ah) { ah.classList.toggle('hidden', !docked || !!you?.berth?.quay); setLbl(ah, ashore ? 'Back aboard' : 'Go ashore'); }
     $('btnCastOff')?.classList.toggle('hidden', !docked);
     $('btnTow')?.classList.toggle('hidden', docked);
     $('btnAuto')?.classList.toggle('hidden', docked);
@@ -908,6 +910,7 @@ export class Hud {
   /** Open the harbour sheet at a section (also from the ashore world: harbourmaster → 'jobs', shipyard → 'shipyard', …). */
   openHarborTab(tab) {
     const t = this.normTab(tab), a = this.app, you = a.you;
+    if (you?.berth?.quay && !(TIER_TABS[you.berth.tier] || []).includes(t)) { this.event({ kind: 'warn', text: quayDenies(you.berth, t === 'services' ? 'repair' : t === 'boards' ? 'jobs' : t, this.harborData?.name) || 'Not from this quay.' }); return false; } // DOCK ANYWHERE
     this.harborTab = t;
     if (!you?.docked) { this.event({ kind: 'warn', text: 'Moor at a berth first — the harbour offices deal with ships alongside.' }); return false; }
     if (this.harborData && this.harborData.id === you.docked) {
@@ -961,11 +964,18 @@ export class Hud {
     const C = SHIP_CLASSES[you.ship.cls] || SHIP_CLASSES.coaster;
     setText($('hName'), h.name);
     const berth = you.berth || h.berth;
-    setText($('hSub'), `${h.country} · ${h.size} port${berth ? ` · ${berth.name || berth.id}` : ''} · ${C.name}`);
+    setText($('hSub'), h.quay
+      ? `Moored at ${h.quay.name} · ${h.quay.hdKm} km from ${h.name} · ${SERVICE_TIERS[h.quay.tier]?.label || ''} · ${C.name}`
+      : `${h.country} · ${h.size} port${berth ? ` · ${berth.name || berth.id}` : ''} · ${C.name}`);
     const hm = $('hMoney'); if (hm) { if (!hm.querySelector('.mv')) hm.innerHTML = `${ic('coins')}<span class="mv"></span>`; setText(hm.querySelector('.mv'), fmt(you.money) + ' cr'); }
     setText($('navJobs'), h.jobs?.length ? String(h.jobs.length) : '');
     setText($('navPlayers'), h.dockedPlayers?.length ? String(h.dockedPlayers.length) : '');
     $('btnAshoreH')?.classList.toggle('hidden', !you.docked);
+    // DOCK ANYWHERE: a quay reaches only some of the harbour's services (shared/quayrules.js TIER_TABS)
+    const qTabs = h.quay ? TIER_TABS[h.quay.tier] || ['overview'] : null;
+    document.querySelectorAll('#harborNav button[data-tab]').forEach((b) => b.classList.toggle('hidden', !!qTabs && !qTabs.includes(b.dataset.tab)));
+    if (qTabs && !qTabs.includes(this.harborTab)) this.harborTab = 'overview';
+    $('btnAshoreH')?.classList.toggle('hidden', !!h.quay || !you.docked);
     this._stale = new Set(TABS);
     this.showTab(this.harborTab); // renders the visible section; the others render when opened
     if (!$('compareWrap').classList.contains('hidden')) this.renderCompare();
@@ -1296,6 +1306,7 @@ export class Hud {
     const overdue = /overdue/.test(dueTxt);
     const pct = (v) => Math.round(clamp01(v) * 100);
     return `<div class="secHead"><div><h2>${ic('wrench')}Services</h2><p>Fuel dock, repair yard and chandlery. Credits: <b>${fmt(you.money)} cr</b>.</p></div></div>
+      ${h.quay && h.quay.tier !== 'port' ? `<div class="empty">${esc(SERVICE_TIERS[h.quay.tier]?.note || '')}</div>` : ''}
       <div class="cards">
         <article class="card svcCard"><h3>${ic('fuel')}Fuel dock <span class="chip amber" style="margin-left:auto">${fmt(h.fuelPrice)} cr/t</span></h3>
           <div class="tank"><i style="width:${pct(you.fuel / C.fuelCap)}%"></i><i class="add" id="fuelAdd" style="left:${pct(you.fuel / C.fuelCap)}%;width:0"></i><span>${you.fuel.toFixed(C.fuelCap < 10 ? 2 : 1)} / ${C.fuelCap} t</span></div>

@@ -1,0 +1,40 @@
+/* Dock anywhere — the "Moor here" card and the moored-at-a-quay panel (public/js/quayui.js, quayfmt.js;
+   docs/DOCK-ANYWHERE-CONTRACT.md §5). Loaded by quayui.js itself (a <link data-quay-css>), after style.css. */
+.quayCard { position: fixed; z-index: 30; left: max(var(--gut), var(--sal)); bottom: calc(var(--gut) + var(--sab) + 120px); width: min(420px, calc(100vw - 2 * var(--gut))); max-height: calc(100vh - var(--top-h) - 160px); overflow: auto; border-left: 3px solid var(--green); border-radius: var(--r3); padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); color: var(--fg); font-family: var(--font); }
+.quayCard.hidden { display: none; }
+.quayCard.moored { border-left-color: var(--cyan); }
+.quayCard .qHead { display: flex; align-items: flex-start; gap: var(--s2); }
+.quayCard .qTitle { flex: 1; min-width: 0; }
+.quayCard .qName { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quayCard .qSub { font-size: 12px; color: var(--muted); }
+.quayCard .qNav, .quayCard .qClose { flex: none; min-width: 32px; height: 32px; border-radius: var(--r1); border: 1px solid var(--line-2); background: var(--card); color: var(--fg); font-size: 18px; line-height: 1; cursor: pointer; }
+.quayCard .qNav:disabled { opacity: 0.35; cursor: default; }
+.quayCard .qChips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.quayCard .qChip { font-size: 11px; font-weight: 650; padding: 1px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em; }
+.quayCard .qChip.ok { background: var(--green-soft); color: var(--green); }
+.quayCard .qChip.warn { background: var(--accent-soft); color: var(--accent-2); }
+.quayCard .qChip.bad { background: var(--red-soft); color: var(--red); }
+.quayCard .qCount { margin-left: auto; font-size: 12px; color: var(--faint); }
+.quayCard .qPrice { display: flex; flex-direction: column; gap: 2px; padding: var(--s2) var(--s3); border-radius: var(--r2); background: var(--accent-soft); }
+.quayCard .qPay { font-size: 20px; font-weight: 750; color: var(--accent-2); font-variant-numeric: tabular-nums; }
+.quayCard .qPayNote { font-size: 12px; color: var(--fg-2); }
+.quayCard .qRows { display: flex; flex-direction: column; gap: 3px; }
+.quayCard .qRow { display: grid; grid-template-columns: 1fr auto auto; gap: var(--s2); font-size: 13px; align-items: baseline; }
+.quayCard .qRow .qK { color: var(--muted); }
+.quayCard .qRow .qV { font-weight: 650; font-variant-numeric: tabular-nums; }
+.quayCard .qRow .qN { font-size: 12px; color: var(--faint); }
+.quayCard .qRow.ok .qV { color: var(--green); }
+.quayCard .qRow.bad .qV { color: var(--red); }
+.quayCard .qWhy { font-size: 13px; padding: 6px 10px; border-radius: var(--r1); background: var(--red-soft); color: #ffc2c2; }
+.quayCard .qSvcH { font-size: 12px; font-weight: 650; color: var(--fg-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.quayCard .qSvc { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr; gap: 2px; font-size: 12.5px; }
+.quayCard .qSvc li b { font-weight: 650; }
+.quayCard .qSvc li.ok b { color: var(--green); }
+.quayCard .qSvc li.no { color: var(--faint); }
+.quayCard .qSvc li.no b { text-decoration: line-through; }
+.quayCard .qBtns, .quayCard .qTabs { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.quayCard .qBtns button, .quayCard .qTabs button { min-height: 36px; padding: 0 var(--s3); border-radius: var(--r2); border: 1px solid var(--line-2); background: var(--card-2); color: var(--fg); font-weight: 650; cursor: pointer; }
+.quayCard .qBtns button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.quayCard button:disabled { opacity: 0.45; cursor: default; }
+.quayCard .qHint { font-size: 12px; color: var(--muted); }
+body.touch .quayCard { bottom: calc(var(--bar) + var(--sab) + var(--s3)); left: var(--s2); width: calc(100vw - 2 * var(--s2)); }

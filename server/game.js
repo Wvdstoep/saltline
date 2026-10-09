@@ -25,6 +25,8 @@ import { estimateJob, fmtShipH } from '../shared/jobtime.js';            // V6 i
 import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; // V7 step 0: express arrives on safe open water
 import { lowWaterAt } from '../shared/tide.js';
 import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
+import { quayQuery, quayDock, quayDockNearest, quayTugs, quayAssistDone, quayUndock, quayGate, quayMigrate, quayPublic, quayHarbourInfo } from './quaygame.js'; // DOCK ANYWHERE
+import { ACTION_SERVICE } from '../shared/quayrules.js';
 import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
 import { overlayStorms, stormMaxWind } from './stormfield.js';     // game storms over real AND synthetic weather
 import { RealStorms } from './realstorms.js';                  // real severe-weather areas from Open-Meteo
@@ -135,6 +137,7 @@ export class Game {
     if (!Array.isArray(p.jobs)) p.jobs = [];
     for (const j of p.jobs) if (j && !Number.isFinite(j.dueShip)) this.migrateAcceptedJob(p, j);
     // A tug assist interrupted by a restart completes now: the berth is the only position guaranteed to be water.
+    if (p.assist?.quay) quayMigrate(this, p);            // DOCK ANYWHERE: tiles are not loaded yet → the berth saved at tug start
     if (p.assist) {
       const h = harborById(p.assist.harbor), geom = h && this.geom && this.geom.getHarborGeom(h.id);
       const b = geom && (geom.berths || []).find((x) => x.id === p.assist.berthId);
@@ -334,6 +337,7 @@ export class Game {
       warp: this.warpOf(p),
       tugs: tugsPublic(this, p),
       vid: p.vessel?.id ?? null, vname: p.vessel?.name ?? null,   // v6: which of her ships the skipper sails
+      quay: quayPublic(p),                                         // DOCK ANYWHERE: { name, cls } while moored at a quay
     };
   }
   privateState(p) {
@@ -413,6 +417,7 @@ export class Game {
         berths: geom ? geom.berths || [] : [], anchor: { lat: anchor.lat, lon: anchor.lon }, geomSource: geom ? geom.source : null, berth: p.berth || null,
         tugCost: tugCostFor(p.ship.cls), fees: this.feesFor(p, h), serviceDue: p.serviceDue,
         dockedPlayers: [...this.byId.values()].filter((o) => o.online && o.docked === h.id && o.id !== p.id).map((o) => ({ id: o.id, name: o.name })),
+        quay: quayHarbourInfo(p),                    // DOCK ANYWHERE: { name, tier, hdKm, perDay, since, paid } at a quay, else null
         ...this.fleet.harborFields(p, h) },          // v6: office, fleetHere, fleetFull, fleetN
     });
   }
@@ -519,8 +524,15 @@ export class Game {
 
   onAction(p, m) {
     const a = m.action;
+    // DOCK ANYWHERE: moored at a quay, harbour services are refused or trucked by tier (shared/quayrules.js)
+    if (p.berth?.quay && !m.quayGated && ACTION_SERVICE[a]) {
+      try { return quayGate(this, p, a, m, () => this.onAction(p, { ...m, quayGated: true })); } catch (e) { this.log(`[game] quay gate ${a} failed: ${e.stack || e}`); return; }
+    }
     try {
       switch (a) {
+        case 'quay_query': return quayQuery(this, p);
+        case 'quay_dock': return quayDock(this, p, m);
+        case 'quay_tugs': return quayTugs(this, p, m);
         case 'dock': return this.dock(p);
         case 'undock': return this.undock(p);
         case 'tug_assist': return this.tugAssist(p);
@@ -613,20 +625,20 @@ export class Game {
     if (p.docked) return this.sendHarbor(p);
     if (p.assist) return this.event(p, 'info', 'The tugs have you. Hold on.');
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
-    if (!harbor || units > DOCK_SEARCH_RANGE_U) return this.event(p, 'warn', 'No harbour within docking range.');
+    if (!harbor || units > DOCK_SEARCH_RANGE_U) { if (quayDockNearest(this, p)) return; return this.event(p, 'warn', 'No harbour within docking range. Quays near you: Q.'); }
     const geom = this.harborGeom(harbor.id);
     let berth = null;
     if (geom && (geom.berths || []).length) {
       // (a) built harbour: come alongside a berth within 60 m at under 2 kn.
       let nb = null; try { nb = this.geom.nearestBerth(harbor.id, p.ship.lat, p.ship.lon); } catch { nb = null; }
-      if (!nb || !nb.berth || nb.distM > INTERACT.BERTH_RANGE_U || Math.abs(p.ship.spd) > 2) return this.event(p, 'warn', `Come alongside a berth (within ${INTERACT.BERTH_RANGE_U} m, under 2 kn) or request tugs.`);
+      if (!nb || !nb.berth || nb.distM > INTERACT.BERTH_RANGE_U || Math.abs(p.ship.spd) > 2) { if (quayDockNearest(this, p)) return; return this.event(p, 'warn', `Come alongside a berth (within ${INTERACT.BERTH_RANGE_U} m, under 2 kn) or request tugs — or moor at any quay that fits (Q).`); }
       const why = this.berthFits(p, nb.berth);
       const alt = why ? fittingBerthWithin(geom.berths, p.ship.lat, p.ship.lon, INTERACT.BERTH_RANGE_U, (b) => this.berthFits(p, b)) : null; // the quay next to a pontoon
       if (why && !alt) return this.event(p, 'warn', why);
       berth = alt || nb.berth;
     } else {
       // (b) no geometry built yet: the legacy anchor rule.
-      if (units > INTERACT.DOCK_RADIUS_U) return this.event(p, 'warn', 'No harbour within docking range.');
+      if (units > INTERACT.DOCK_RADIUS_U) { if (quayDockNearest(this, p)) return; return this.event(p, 'warn', 'No harbour within docking range. Quays near you: Q.'); }
       if (Math.abs(p.ship.spd) > 3) return this.event(p, 'warn', 'Too fast to dock — slow below 3 kn.');
     }
     if (p.hail) return this.event(p, 'law', 'The harbour master refuses: the coast guard has ordered you to heave to first.');
@@ -649,6 +661,7 @@ export class Game {
   }
   undock(p) {
     if (!p.docked) return;
+    if (quayUndock(this, p)) return;                    // DOCK ANYWHERE: the stay's balance, 20 m out on the water side
     const h = harborById(p.docked);
     // Berth fee per started 24 h alongside.
     const days = Math.max(1, Math.ceil((this.simTime - (p.dockedAt || this.simTime)) / 86400));
@@ -733,6 +746,7 @@ export class Game {
     s.throttle = 0; s.rudder = 0;
     p.lastValid = { lat: s.lat, lon: s.lon };
     if (f < 1) return;
+    if (a.quay) { quayAssistDone(this, p, a); return; }   // DOCK ANYWHERE: re-fit the quay, moor, day 1 + dues
     const harbor = harborById(a.harbor);
     const geom = harbor && this.harborGeom(harbor.id);
     const b = geom && a.berthId ? (geom.berths || []).find((x) => x.id === a.berthId) : null;
