@@ -868,3 +868,5 @@ export function bridgeFromVector(vb, tz, tx, ty) {
   return { id: vb.id || null, name: vb.name || 'Bridge', kind, src: String(vb.id || '').startsWith('osm:') ? 'osm' : 'ofm', e: num(vb.e, 2), line, deckW: num(vb.w, 8),
     structure: 'girder', datum: vb.datum || 'MSL', spans: [{ id: 0, a, b, mov, clr: num(vb.clr, 2.5), clrO: vb.clrO ?? null, w: num(vb.wO, b - a), hinge: null, pivot: null, rec: 1 }], fromTile: true };
 }
+/** Mesh helpers reused by the inland-harbour builder (public/js/mhgeom.js). */
+export { Geo, obox, pbox, beam, cyl };

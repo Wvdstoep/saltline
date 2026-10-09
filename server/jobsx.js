@@ -10,7 +10,7 @@ import { haversine } from '../shared/geo.js';
 import { JOB_GEN, isRunnerJob, payOf, migrateActor } from '../shared/jobs/types.js';
 import { FAMILIES, PAY, payFor, payLesson, payEcotour, regattaPrize, CAPTAIN_TYPES } from '../shared/jobs/catalogue.js';
 import { canDo } from '../shared/jobs/eligibility.js';
-import { makeStack, freeUnits } from '../shared/cargo.js';
+import { makeStack, freeUnits, CARGO, UNITS } from '../shared/cargo.js';
 import { rowOf, basePriceOf } from '../shared/jobs/shipview.js';
 import { generateBoard, ensureFit, generateFamilyJob, generateSalvage, weightsFor, BOARD_SIZE } from './jobsgen.js';
 
@@ -32,6 +32,11 @@ export function seeded(str) {
 }
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
 const clsOf = (a) => a?.ship?.cls;
+const unitLbl = (u) => (u === 't' ? 't' : UNITS[u]?.plural || u);
+const shortName = (s) => String(s || '').split(' (')[0];
+const cap1 = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+const DRILL_BTN = { transfer: 'Transfer', ladder: 'Pilot aboard', heaveto: 'Hove-to', mob: 'MOB drill done', mooring: 'Buoy picked up', anchor: 'Anchored',
+  lock_pass: 'Lock passed', bridge_req: 'Bridge requested', box_moor: 'Moored in the box' };
 const spdOf = (a) => Math.abs(a?.ship?.spd || 0);
 /** Sail counters (request S1 to SAILING: v.sail.stats = { tacks, gybes, reefs, maxHeel10s }); zeros until it lands. */
 export function sailStats(a) { return a?.sail?.stats || a?.ship?.sail?.stats || a?.ship?.rig?.stats || a?.rig?.stats || {}; }
@@ -111,13 +116,27 @@ export class JobsX {
     if (Array.isArray(c.lots) && s.lot != null) return c.lots.find((l) => l.lot === s.lot)?.teu ?? c.qty;
     return c.qty;
   }
+  /** Is the cargo of step `s` (its lot, or any lot when the step has none) aboard? */
+  aboard(a, job, s) {
+    const lot = s?.lot ?? null;
+    return (a.cargo || []).some((x) => x.jobId === job.id && (lot == null || (x.lot ?? null) === lot));
+  }
+  /** Room to load the lot of step `s`: { ok, free, unit }. */
+  room(a, job, s) {
+    const c = job.cargo; if (!c) return { ok: true, free: Infinity, unit: 't' };
+    const units = this.lotUnits(job, s), t = makeStack(c.good, units, c.unit, job.id).qty;
+    if (freeUnits(a, c.unit) + 1e-9 < units) return { ok: false, free: freeUnits(a, c.unit), unit: c.unit };
+    if (c.unit !== 'm3' && freeUnits(a, 't') + 1e-9 < t) return { ok: false, free: freeUnits(a, 't'), unit: 't' };
+    return { ok: true, free: freeUnits(a, c.unit), unit: c.unit };
+  }
   loadCargo(a, job, s) {
     const c = job.cargo; if (!c) return true;
     const units = this.lotUnits(job, s), lot = s.lot ?? null;
     if ((a.cargo || []).some((x) => x.jobId === job.id && (x.lot ?? null) === lot)) return true;
     const stack = makeStack(c.good, units, c.unit, job.id, { lot, plugs: c.reefer ? Math.round((c.reefer * units) / c.qty) : 0 });
-    if (freeUnits(a, c.unit) + 1e-9 < units || (c.unit !== 'm3' && freeUnits(a, 't') + 1e-9 < stack.qty)) {
-      if (!job.prog.warned[`load${job.prog.i}`]) { job.prog.warned[`load${job.prog.i}`] = true; this.event(a, 'warn', `${job.title}: not enough space to load (${fmt(freeUnits(a, c.unit))} ${c.unit} free).`); }
+    const r = this.room(a, job, s);
+    if (!r.ok) {
+      if (!job.prog.warned[`load${job.prog.i}`]) { job.prog.warned[`load${job.prog.i}`] = true; this.event(a, 'warn', `${job.title}: not enough space to load ${this.cargoText(job, s)} (${fmt(Math.max(0, r.free))} ${unitLbl(r.unit)} free).`); }
       return false;
     }
     if (!Array.isArray(a.cargo)) a.cargo = [];
@@ -143,6 +162,8 @@ export class JobsX {
   advance(a, j, ev) {
     const p = j.prog, now = this.now(), cls = clsOf(a), spd = spdOf(a);
     const res = { counted: false, finished: false };
+    if (ev.kind !== 'accept') this.heal(a, j);
+    const i0 = p.i;
     if (ev.kind === 'tick' && !a.docked && p.i > 0) p.sea = true;
     // lesson rules: students ask to go back above the level's wind limit; heel > 30° for 10 s is a safety failure
     if (ev.kind === 'tick' && j.type === 'lesson' && !a.docked) {
@@ -248,8 +269,152 @@ export class JobsX {
       if (s.until && now > s.until) p.late++;
       p.i++;
     }
-    if (p.i >= j.steps.length) { this.settle(a, j); res.finished = true; }
+    const lifted = this.payLiftings(a, j);
+    if (p.i >= j.steps.length) { this.settle(a, j); res.finished = true; return res; }
+    if (ev.kind !== 'accept' && (p.i > i0 || lifted)) this.progressEvent(a, j, i0, lifted);
     return res;
+  }
+
+  // ---------------------------------------------------------------------------------------------- player-facing status
+  hname(id) { return shortName(this.env.harborName?.(id) || this.H(id)?.name || id); }
+  /** '11,592 t of chemicals' for the lot of step `s` (or the whole contract). */
+  cargoText(job, s) {
+    const c = job.cargo; if (!c) return job.pax ? `${fmt(job.pax)} passengers` : 'the cargo';
+    const units = s ? this.lotUnits(job, s) : c.qty;
+    return `${fmt(units)} ${unitLbl(c.unit)} of ${(CARGO[c.good]?.name || c.good).toLowerCase()}`;
+  }
+  /** Index of the load step that fills the lot of step `i` (the last load before it with the same lot), or -1. */
+  loadIndexFor(j, i) {
+    const lot = j.steps[i]?.lot ?? null;
+    for (let k = i - 1; k >= 0; k--) { const s = j.steps[k]; if (s.k === 'load' && (lot == null || (s.lot ?? null) === lot)) return k; }
+    return -1;
+  }
+  /** 'Lifting 2 of 4' for a COA step with a lot, else null. */
+  liftingOf(j, s) {
+    if (j.type !== 'coa' || s?.lot == null) return null;
+    return { n: s.lot + 1, of: j.liftings || j.steps.filter((x) => x.k === 'discharge').length };
+  }
+  /**
+   * What the current step of runner job `j` wants, for the HUD card and the harbour sheet: { i, n, k, label, at, atName,
+   * spot, maxKn, text (one line: what to do, where), act ('dock' | 'job_step' | null), btn (button label), can (a press
+   * would advance it now), lift ({ n, of } on a COA) }. null for legacy jobs.
+   */
+  stepInfo(a, j) {
+    if (!isRunnerJob(j) || !j.prog) return null;
+    const p = j.prog, s = j.steps[p.i]; if (!s) return null;
+    const at = typeof s.at === 'string' ? s.at : null, spot = s.at && typeof s.at === 'object' ? { lat: s.at.lat, lon: s.at.lon, rM: s.at.rM ?? 500 } : null;
+    const hn = at ? this.hname(at) : null, hereH = !!at && a.docked === at, spd = spdOf(a);
+    const lift = this.liftingOf(j, s), pre = lift ? `Lifting ${lift.n} of ${lift.of}: ` : '';
+    const what = this.cargoText(j, s), mk = s.maxKn != null ? ` under ${s.maxKn} kn` : '';
+    const onSpot = () => this.within(a, s.at) && spd <= (s.maxKn ?? Infinity);
+    let text = '', act = null, btn = null, can = false;
+    switch (s.k) {
+      case 'load': {
+        if (!hereH) { text = `${pre}sail to ${hn} and moor to load ${what}`; break; }
+        const r = this.room(a, j, s);
+        if (r.ok) { text = `${pre}load ${what} at ${hn}`; act = 'dock'; btn = 'Load'; can = true; }
+        else text = `${pre}not enough space to load ${what} at ${hn} (${fmt(Math.max(0, r.free))} ${unitLbl(r.unit)} free) — make room first`;
+        break;
+      }
+      case 'discharge': {
+        if (!this.aboard(a, j, s)) { const k = this.loadIndexFor(j, p.i); text = `${pre}cargo not aboard — load ${what} at ${k >= 0 ? this.hname(j.steps[k].at) : 'the load port'} first`; break; }
+        const ok = at ? hereH : onSpot();
+        if (ok) { text = `${pre}discharge ${what} at ${hn || 'the site'}`; act = 'dock'; btn = 'Discharge'; can = true; }
+        else if (at) text = `${lift ? `this lifting (${lift.n} of ${lift.of})` : 'the cargo'} discharges at ${hn} — sail there and moor`;
+        else text = `${pre}${s.label}${mk}`;
+        break;
+      }
+      case 'board':
+        if (hereH) { text = `${s.label} at ${hn}`; act = 'dock'; btn = 'Embark'; can = true; }
+        else text = `sail to ${hn} and moor — ${s.label.toLowerCase()}`;
+        break;
+      case 'land':
+        if (hereH && s.afterSea && !p.sea) text = `${s.label}: take them out to sea first`;
+        else if (hereH) { text = `${s.label} at ${hn}`; act = 'dock'; btn = 'Land'; can = true; }
+        else text = `sail to ${hn} and moor — ${s.label.toLowerCase()}`;
+        break;
+      case 'sail': {
+        const prev = j.steps[p.i - 1], ballast = prev?.k === 'discharge' && lift == null && this.liftingOf(j, j.steps[p.i + 1]);
+        if (s.nm && !s.at) { text = `${s.label}: ${fmt(p.nm)} of ${fmt(s.nm)} nm sailed`; break; }
+        if (at) {
+          const nl = this.liftingOf(j, j.steps[p.i + 1]);
+          if (hereH) { text = `arrived at ${hn}`; act = 'dock'; btn = 'Arrive'; can = true; }
+          else if (ballast && nl && j.steps[p.i + 1].k === 'load') text = `sail back to ${hn} to load lifting ${nl.n} of ${nl.of}`;
+          else if (j.steps[p.i + 1]?.k === 'discharge' && j.steps[p.i + 1].at === at) text = `${nl ? `Lifting ${nl.n} of ${nl.of}: ` : ''}sail to ${hn} and moor to discharge ${this.cargoText(j, j.steps[p.i + 1])}`;
+          else text = `${s.label && s.label !== 'sail' && !/^(Sail to|Back to|To) /.test(s.label) ? `${s.label} — ` : ''}sail to ${hn} and moor there`;
+          break;
+        }
+        text = `${s.label}${s.minKn != null ? ` (${s.minKn}–${s.maxKn} kn)` : ''}${spot ? ` — within ${fmt(spot.rM)} m` : ''}`;
+        break;
+      }
+      case 'work': text = `${s.label} — ${(Math.floor(p.h * 10) / 10).toLocaleString('en-US')} of ${s.h} h${spot ? ` (within ${fmt(spot.rM)} m${mk})` : ''}`; break;
+      case 'meet': case 'tow': text = `${s.label} — within ${fmt(spot?.rM ?? 500)} m${mk}`; break;
+      case 'drill': {
+        if (s.stat) { const v = sailStats(a)[s.stat] || 0, b = p.base[p.i] ?? p.base0?.[s.stat] ?? v; text = `${s.label} — ${Math.max(0, Math.min(s.count || 1, v - b))} of ${s.count || 1}`; break; }
+        act = 'job_step'; btn = DRILL_BTN[s.action] || 'Confirm'; can = onSpot();
+        text = `${s.label} — ${p.n} of ${s.count || 1}: ${spot ? `within ${fmt(spot.rM)} m${mk}` : mk ? mk.trim() : 'when ready'}, then confirm`;
+        break;
+      }
+      case 'race': text = this.now() < s.startAt ? `${s.label}: wait in the start area` : `${s.label}: round mark ${Math.min(p.mark + 1, (s.marks || []).length)} of ${(s.marks || []).length}`; break;
+      default: text = s.label || s.k;
+    }
+    if (s.optional) text += ' (optional)';
+    return { i: p.i, n: j.steps.length, k: s.k, label: s.label, at, atName: hn, spot, maxKn: s.maxKn ?? null, text: cap1(text), act, btn, can, lift };
+  }
+  /** Why a runner job cannot advance here right now (Deliver pressed, captains), in the player's words. */
+  why(a, j) { const si = this.stepInfo(a, j); return si ? `${si.text}${/[.!?]$/.test(si.text) ? '' : '.'}` : 'not deliverable here.'; }
+  /** The Deliver / step button: try the current step now. → { ok, why? }. */
+  tryStep(a, j) {
+    if (!isRunnerJob(j) || !j.prog) return { ok: false, why: 'not a step contract.' };
+    const i0 = j.prog.i, s = j.steps[i0];
+    const r = this.advance(a, j, s?.k === 'drill' && !s.stat ? { kind: 'action' } : { kind: 'dock', harbor: a.docked });
+    const ok = r.finished || r.counted || j.prog.i !== i0;
+    return ok ? { ok: true } : { ok: false, why: this.why(a, j) };
+  }
+  /** One log line when steps finished outside the accept: what was done, what is next. */
+  progressEvent(a, j, i0, lifted) {
+    const p = j.prog, last = j.steps[p.i - 1], si = this.stepInfo(a, j);
+    const next = si ? ` Next: ${si.text}.` : '';
+    if (lifted) { this.event(a, 'info', `${j.title}: ${lifted}${next}`); return; }
+    if (!last || p.i <= i0) return;
+    const hn = typeof last.at === 'string' ? this.hname(last.at) : null;
+    const done = last.k === 'load' ? `loaded ${this.cargoText(j, last)}${hn ? ` at ${hn}` : ''}`
+      : last.k === 'discharge' ? `discharged ${this.cargoText(j, last)}${hn ? ` at ${hn}` : ''}`
+      : last.k === 'sail' && hn ? `arrived at ${hn}` : `${last.label} — done`;
+    this.event(a, 'info', `${j.title}: ${cap1(done)}.${next}`);
+  }
+  /** A COA pays each lifting when it is discharged (the last one, any bonus and penalties settle at the end). → text or null. */
+  payLiftings(a, j) {
+    if (j.type !== 'coa') return null;
+    const p = j.prog, n = j.liftings || j.steps.filter((x) => x.k === 'discharge').length; if (n < 2) return null;
+    const base = Math.max(0, (j.pay?.cr || 0) - (j.pay?.bonus?.cr || 0));
+    p.paidN = p.paidN || 0; p.paid = p.paid || 0;
+    const parts = [];
+    while (p.paidN < Math.min(p.fracs.length, n - 1)) {
+      const f = p.fracs[p.paidN], late = Number.isFinite(j.dueShip) && Number.isFinite(a.shipTime) && a.shipTime > j.dueShip;
+      const cr = Math.round((base / n) * f * (late ? 0.5 : 1));
+      p.paidN++; p.paid += cr;
+      const text = `Lifting ${p.paidN} of ${n} discharged — +${fmt(cr)} cr${f < 1 ? ` (short ${Math.round(f * 100)} %)` : ''}${late ? ' (late, half pay)' : ''}.`;
+      if (this.env.pay) this.env.pay(a, cr, j, text, { partial: true }); else if (Number.isFinite(a.money)) a.money += cr;
+      parts.push(text);
+    }
+    return parts.length ? parts.join(' ') : null;
+  }
+  /**
+   * Save healing for accepted runner jobs: a laden step (sailing to / discharging a lot) whose cargo is not aboard goes
+   * back to that lot's load step, so a contract whose cargo was never loaded (or lost) can still be completed.
+   */
+  heal(a, j) {
+    const p = j.prog; if (!j.cargo || !p || p.i >= j.steps.length) return;
+    const s = j.steps[p.i]; if (!s || s.k === 'load' || s.k === 'board') return;
+    const k = this.loadIndexFor(j, p.i); if (k < 0) return;
+    const lot = j.steps[k].lot ?? null, sameLot = (x) => lot == null || (x.lot ?? null) === lot;
+    for (let q = k + 1; q < p.i; q++) { const x = j.steps[q]; if ((x.k === 'discharge' && sameLot(x)) || x.unload || x.k === 'load') return; }   // already discharged: ballast leg
+    let laden = false;
+    for (let q = p.i; q < j.steps.length; q++) { const x = j.steps[q]; if (x.k === 'load') break; if ((x.k === 'discharge' && sameLot(x)) || x.unload) { laden = true; break; } }
+    if (!laden || this.aboard(a, j, j.steps[k])) return;
+    p.i = k;
+    this.event(a, 'warn', `${j.title}: the cargo is not aboard — ${this.stepInfo(a, j)?.text.replace(/^./, (c) => c.toLowerCase()) || 'load it first'}.`);
   }
 
   /** Credits for a finished runner job (exported for tests and the job board's estimates). */
@@ -296,7 +461,9 @@ export class JobsX {
     return { cr: Math.round(cr), notes, late };
   }
   settle(a, j) {
-    const { cr, notes } = this.settleAmount(a, j);
+    const { cr: total, notes } = this.settleAmount(a, j);
+    const before = j.prog?.paid || 0, cr = Math.max(0, total - before);
+    if (before > 0) notes.push(`${fmt(before)} cr paid per lifting`);
     a.jobs = (a.jobs || []).filter((x) => x !== j);
     a.cargo = (a.cargo || []).filter((c) => c.jobId !== j.id);
     const text = `Completed: ${j.title} — +${fmt(cr)} cr${notes.length ? ` (${notes.join(', ')})` : ''}.`;

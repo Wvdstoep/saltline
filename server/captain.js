@@ -287,7 +287,7 @@ function arrivedHere(fleet, v, tgt) {
     const again = contractTarget(fleet, v);
     if (again && again.here && again.runner && again.jobId === tgt.jobId && !again.stay) {
       const j = v.jobs.find((x) => x.id === tgt.jobId);
-      return fail(fleet, v, `${j ? j.title : 'Contract'}: this step cannot be completed here (space or cargo).`);
+      return fail(fleet, v, `${j ? j.title : 'Contract'}: ${j && g.jobsx?.why ? g.jobsx.why(a, j) : 'this step cannot be completed here (space or cargo).'}`);
     }
     return;
   }

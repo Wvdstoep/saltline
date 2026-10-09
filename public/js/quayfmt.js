@@ -2,6 +2,7 @@
 // Node tests import it (test/quayui.test.mjs). The relative import resolves to /shared/… in the browser and to
 // <repo>/shared/… under Node. public/js/quayui.js renders these models and draws the berth outline.
 import { QUAY, SERVICE_TIERS, approachWhy, clsOf, quayFeePerDay, stayFee, balanceDue, daysAlongside } from '../../shared/quayrules.js';
+import { mhServiceRows } from '../../shared/mhgeo.js';   // inland harbour berths: the harbour's own services
 
 const D2R = Math.PI / 180, M_LAT = 111320;
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -97,8 +98,17 @@ export function mooredModel(berth, simTime, homeHarbourId = null) {
   if (!berth || !berth.quay) return null;
   const secs = Math.max(0, (Number(simTime) || 0) - (Number(berth.since) || 0));
   const days = daysAlongside(secs), total = stayFee(berth.perDay, secs), due = balanceDue(berth.perDay, secs, berth.paid);
+  if (berth.mh) {   // a box / visitor berth in an inland harbour or marina (server/mhmoor.js): fee per night, its own services
+    const MHL = { marina: 'Marina', passant: 'Visitor harbour', city: 'City quay', inland_port: 'Inland port', fishing: 'Fishing harbour' };
+    return {
+      title: berth.name, perDay: berth.perDay, days, total, due, unit: 'night',
+      line: `${fmtCr(berth.perDay)} / night · night ${days} · ${due > 0 ? `${fmtCr(due)} due when you cast off` : 'paid up'}${berth.feeBasis ? ` · ${berth.feeBasis}` : ''}`,
+      tier: berth.tier, tierLabel: `${MHL[berth.mhTier] || 'Harbour'}${SERVICE_TIERS[berth.tier] ? ` · ${SERVICE_TIERS[berth.tier].label}` : ''}`, services: mhServiceRows(berth),
+      harbourId: berth.harbor, home: !!homeHarbourId && homeHarbourId === berth.harbor, mh: berth.mh,
+    };
+  }
   return {
-    title: berth.name, perDay: berth.perDay, days, total, due,
+    title: berth.name, perDay: berth.perDay, days, total, due, unit: 'day',
     line: `${fmtCr(berth.perDay)} / day · day ${days} · ${due > 0 ? `${fmtCr(due)} due when you cast off` : 'paid up'}`,
     tier: berth.tier, tierLabel: SERVICE_TIERS[berth.tier]?.label || '', services: serviceRows(berth.tier),
     harbourId: berth.harbor, home: !!homeHarbourId && homeHarbourId === berth.harbor,
@@ -131,9 +141,10 @@ export function mooredHTML(m, tabs = []) {
   if (!m) return '';
   const svc = (s) => `<li class="${s.ok ? 'ok' : 'no'}"><b>${esc(s.label)}</b> <span>${esc(s.note)}</span></li>`;
   return `<div class="qHead"><div class="qTitle"><div class="qName">${esc(m.title)}</div><div class="qSub">${esc(m.tierLabel)}${m.home ? ' · home port' : ''}</div></div><button class="qClose" data-q="close" aria-label="Close">×</button></div>`
-    + `<div class="qPrice"><span class="qPay">${esc(fmtCr(m.perDay))} / day</span><span class="qPayNote">${esc(m.line)}</span></div>`
+    + `<div class="qPrice"><span class="qPay">${esc(fmtCr(m.perDay))} / ${esc(m.unit || 'day')}</span><span class="qPayNote">${esc(m.line)}</span></div>`
     + `<ul class="qSvc">${m.services.map(svc).join('')}</ul>`
     + `<div class="qTabs">${tabs.map((t) => `<button data-q="tab:${esc(t)}">${esc(TAB_LABEL[t] || t)}</button>`).join('')}</div>`
+    + (m.mh ? `<div class="qBtns"><button data-q="mhcard">Harbour card</button></div>` : '')
     + `<div class="qBtns"><button data-q="castoff">Cast off${m.due > 0 ? ` · pay ${esc(fmtCr(m.due))}` : ''}</button></div>`;
 }
 export { quayFeePerDay };

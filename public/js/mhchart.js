@@ -3,8 +3,12 @@
 // bollard; ferry: small ferry), shown at chart zoom ≥ 11 from GET /api/mh?bbox. Hooked into public/js/chart.js like the
 // fleet layer (docs/WATERWAYS-HARBOURS-PHASE2.md §4): `this.app.mhLayer?.drawChartLayer(this, this.ctx)` and `chartHits`.
 // The pure parts (bboxKey, visibleRows, symbolSpec, cardLines, cardHTML) are tested in node (test/inland-chart.test.mjs).
-// The 3D markers are lane C's public/js/mharbour.js (from shared/mharbour.js markerSpec).
+// The 3D harbours are public/js/mharbour.js (shared/mhgeo.js layouts); from zoom 14 the chart draws their pontoons and quays.
 import { MH, TIERS } from '../../shared/mharbour.js';
+import { segmentsOf } from '../../shared/mhgeo.js';
+
+/** Chart zoom from which the harbour plans (pontoons, quays) are drawn. */
+export const OUTLINE_ZOOM = 14;
 
 export const SYM_COLORS = { marina: '#c2187a', passant: '#1f5fbf', city: '#5a6b7a', anchor: '#7a3fbf', fish: '#1f8a5a', ferry: '#8a6d1f' };
 /** Drawing recipe of a symbol (the canvas code below follows it; tests check it): { shape, color, glyph, r }. */
@@ -81,6 +85,7 @@ export class MHChartLayer {
   drawChartLayer(chart, g) {
     this.refresh(chart);
     const vis = visibleRows(this.rows, chart.zoom);
+    this.drawOutlines(chart, g, vis);
     g.save(); g.font = '600 10px system-ui, sans-serif'; g.textBaseline = 'middle';
     for (const r of vis) {
       const p = chart.project(r.lat, r.lon); if (p.x < -20 || p.y < -20 || p.x > chart.W + 20 || p.y > chart.H + 20) continue;
@@ -93,6 +98,35 @@ export class MHChartLayer {
       if (chart.zoom >= 13) { g.textAlign = 'left'; g.fillStyle = '#e8f1f8'; g.fillText(`${r.name}${r.vhf ? ` · ch ${r.vhf}` : ''}`, p.x + s.r + 4, p.y); }
     }
     g.restore();
+  }
+  /**
+   * Harbour plans at chart zoom ≥ OUTLINE_ZOOM: pontoons, finger piers, quays and gangways (public/js/mharbour.js layouts;
+   * the geometry of harbours in view is asked for when it is not loaded yet), box outlines from zoom 16.
+   */
+  drawOutlines(chart, g, vis) {
+    const mh = this.app.mharbour; if (!mh || chart.zoom < OUTLINE_ZOOM) return 0;
+    const onScreen = vis.filter((r) => { const p = chart.project(r.lat, r.lon); return p.x > -200 && p.y > -200 && p.x < chart.W + 200 && p.y < chart.H + 200; });
+    if (onScreen.length && onScreen.length <= 16) mh.fetchIds?.(onScreen.map((r) => r.id));
+    const p0 = chart.unproject(0, 0), p1 = chart.unproject(100, 0), mPerPx = Math.max(1e-6, Math.abs(p1.lon - p0.lon) * 111320 * Math.cos(((p0.lat || 0) * Math.PI) / 180) / 100);
+    let n = 0;
+    g.save(); g.lineCap = 'butt';
+    for (const { lay } of mh.layouts?.() || []) {
+      if (chart.zoom >= 16) {
+        g.strokeStyle = 'rgba(232,241,248,0.35)'; g.lineWidth = 1;
+        for (const b of lay.boxes) { g.beginPath(); b.c.forEach((c, i) => { const p = chart.project(c[0], c[1]); if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); }); g.closePath(); g.stroke(); }
+      }
+      for (const s of segmentsOf(lay)) {
+        if (s.k === 'finger' && s.w / mPerPx < 0.4) continue;
+        const a = chart.project(s.a[0], s.a[1]), b = chart.project(s.b[0], s.b[1]);
+        if (Math.max(a.x, b.x) < -20 || Math.max(a.y, b.y) < -20 || Math.min(a.x, b.x) > chart.W + 20 || Math.min(a.y, b.y) > chart.H + 20) continue;
+        g.strokeStyle = s.k === 'quay' ? '#b8bcb2' : s.k === 'gang' ? '#a89c84' : '#e4ddcf';
+        g.lineWidth = Math.max(s.k === 'finger' ? 0.8 : 1.6, s.w / mPerPx);
+        g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); n++;
+      }
+      if (lay.fuel && chart.zoom >= 15) { const p = chart.project(lay.fuel.lat, lay.fuel.lon); g.fillStyle = '#ffd166'; g.font = '700 9px system-ui, sans-serif'; g.textAlign = 'center'; g.fillText('F', p.x, p.y - 6); }
+    }
+    g.restore();
+    return n;
   }
   chartHits(consider) { for (const r of this.rows) consider(r.lat, r.lon, { kind: 'mh', text: `${r.name} · ${TIERS[r.tier]?.label || r.tier}${r.vhf ? ` · ch ${r.vhf}` : ''}`, data: r }); }
   /** Open the card (GET /api/mh/:id) → card JSON. */

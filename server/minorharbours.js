@@ -11,7 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { MH, harboursFromOverlay, harbourCard, chartRow, markerSpec, reachOf, sqOf, vhfOf, layerServices, inlandMarket, depthOf } from '../shared/mharbour.js';
+import { MH, harboursFromOverlay, berthsOf, harbourCard, chartRow, markerSpec, reachOf, sqOf, vhfOf, layerServices, inlandMarket, depthOf } from '../shared/mharbour.js';
+import { MHG, waterGrid, synthPontoons, sideMask, hutSpot, geoRecord, footprintOf } from '../shared/mhgeo.js';   // 3D / radar / mooring geometry
 import { tilesInRadius, WT_NAVIGABLE } from '../shared/wtformat.js';
 import { distM } from '../shared/quayrules.js';
 import { stubLaneA, plannerShip } from './inlandlink.js';
@@ -56,6 +57,8 @@ export function diskOverlayReader(dataDir) {
  *   lane          loadLaneA() / stubLaneA() result (air draught + planInland);  graph  the inland graph for planInland
  *   sampleDepth   (lat, lon) → depth m at low water | null (tiles in memory; optional)
  *   market        (namedId) → marketSnapshot row | null;  jobs (h) → board | null;  townAt (lat, lon) → { name, km } | null
+ *   patchLand    (lat, lon) → metres inside a harbour patch's obstacle | 0 | null (game.landPenetration): pontoons stay off it
+ *   sample       (lat, lon) → { mask, h } | null (D14 tiles in memory) for the 3D / mooring geometry (setSampler)
  *   max, now (ms), log
  */
 export function createMinorHarbours(opts = {}) {
@@ -73,7 +76,7 @@ export function createMinorHarbours(opts = {}) {
   const byId = new Map();          // id → record
   const inflight = new Map();
   const reachCache = new Map();    // `${profile}|${id}` → { at, reach }
-  const st = { ingested: 0, evicted: 0, overlayMisses: 0, denied: 0, sheets: 0, reach: 0, reachHits: 0 };
+  const st = { ingested: 0, evicted: 0, overlayMisses: 0, denied: 0, sheets: 0, reach: 0, reachHits: 0, geo: 0, synth: 0 };
   let total = 0;
 
   function touch(k) { const s = squares.get(k); if (s) { squares.delete(k); squares.set(k, s); } }
@@ -207,15 +210,93 @@ export function createMinorHarbours(opts = {}) {
   function shed() {
     let keep = null; try { keep = opts.keepSquares ? opts.keepSquares() : null; } catch { keep = null; }
     for (const k of [...squares.keys()]) if (!keep || !keep.has(k)) drop(k);
-    reachCache.clear();
+    reachCache.clear(); geoCache.clear();
   }
   if (guard && typeof guard.onShed === 'function') guard.onShed(() => shed());
 
+  // ------------------------------------------------------------------ geometry for 3D, radar and mooring (shared/mhgeo.js)
+  // Built on demand for harbours near ships (GET /api/mh/geo, berth guidance), from the record and — when the D14 tiles
+  // are in memory (opts.sample = server/quays.js makeSampler) — the water around it: OSM pontoons get their box sides
+  // checked, geometry-less (FIS-only) harbours get pontoons laid on the water, the hut stands on the bank. LRU of
+  // GEO_MAX records (≈ 2–40 KB each with their berths), cleared on memguard shed; nothing new at critical.
+  const GEO_MAX = opts.geoMax ?? 96, GEO_RETRY_MS = 20000, CLUSTER_KM = 0.8;
+  const geoCache = new Map();      // id → { geo, berths, refined, at } | { pending: true, at }
+  let sampleMask = opts.sample || null, ensureTiles = opts.ensureTiles || null;
+  // where a big harbour's patch covers the water, the patch is the authority (the client draws it, the server checks moves
+  // against it): its quays / land count as land for the pontoons
+  const sampleOf = (lat, lon) => {
+    let pen = null; try { pen = opts.patchLand ? opts.patchLand(lat, lon) : null; } catch { pen = null; }
+    if (pen != null && pen > 0.5) return { mask: 1, h: 2 };
+    const t = sampleMask ? sampleMask(lat, lon) : null;
+    return t || (pen === 0 ? { mask: 0, h: -3 } : null);                       // no tile in memory: the patch's water
+  };
+  /** Is this point water (tiles / patches)? Unknown counts as water. */
+  function isWater(lat, lon) { let sm = null; try { sm = sampleOf(lat, lon); } catch { sm = null; } return !sm || WT_NAVIGABLE[sm.mask] === 1; }
+  function geoOf(id, { build = true } = {}) {
+    const h = get(id); if (!h) return null;
+    const c = geoCache.get(id), t = now();
+    if (c && (c.geo ? c.refined || !sampleMask || t - c.at < GEO_RETRY_MS : t - c.at < GEO_RETRY_MS)) { geoCache.delete(id); geoCache.set(id, c); return c; }
+    if (!build || level() >= 4) return c || null;
+    let entry;
+    try {
+      const G = sampleMask || opts.patchLand ? waterGrid(sampleOf, h.lat, h.lon) : null, ok = !!G && G.known >= MHG.KNOWN_MIN;
+      const hasGeo = (h.pont?.length || 0) + (h.quay?.length || 0) > 0;
+      if (hasGeo) {
+        const pont = ok ? sideMask(h, G) : h.pont;
+        const hut = ok ? hutSpot(G, [...(h.pont || []), ...(h.quay || [])].map((p) => [p[0], p[1]])) : null;
+        entry = { geo: geoRecord(h, { pont, hut }), refined: ok, at: t };
+      } else if (h.tier === 'ferry') entry = { geo: geoRecord(h, {}), refined: true, at: t };
+      else {
+        // harbours share water (Brielle: six marinas in one basin): the geometry-less ones within CLUSTER_KM are laid out
+        // together in id order, each avoiding the pontoons of the ones before it and of every OSM harbour nearby
+        const avoid = [];
+        for (const o of near(h.lat, h.lon, CLUSTER_KM)) {
+          if (o.id === h.id) continue;
+          if ((o.pont?.length || 0) + (o.quay?.length || 0) > 0) { avoid.push(...footprintOf(o)); continue; }
+          if (o.id > h.id) continue;
+          const oe = geoCache.get(o.id) || (ok ? geoOf(o.id) : null);
+          if (oe?.geo) avoid.push(...footprintOf(oe.geo));
+        }
+        const sy = synthPontoons(h, G, { avoid });
+        if (sy.pending) {
+          entry = { pending: true, at: t };
+          // ask for the tiles under it (server.js: world tiles at P1, disk first); the next request after they land builds it
+          if (ensureTiles) Promise.resolve().then(() => ensureTiles(h.lat, h.lon)).then(() => { const c2 = geoCache.get(id); if (c2?.pending) geoCache.delete(id); }).catch(() => {});
+        }
+        else if (sy.none) entry = { geo: geoRecord(h, {}), refined: true, at: t, none: true };
+        else { entry = { geo: geoRecord(h, { ...sy, hut: hutSpot(G, sy.pont.map((p) => [p[0], p[1]])) }), refined: true, at: t }; st.synth++; }
+      }
+    } catch (e) { log(`[mh] geo ${id}: ${e.stack || e}`); entry = { pending: true, at: t }; }
+    if (entry.geo) { try { entry.berths = berthsOf(entry.geo, { limit: 4000 }); } catch { entry.berths = { kind: 'side', total: 0, list: [], sizes: [] }; } st.geo++; }
+    geoCache.delete(id); geoCache.set(id, entry);
+    while (geoCache.size > GEO_MAX) geoCache.delete(geoCache.keys().next().value);
+    return entry;
+  }
+  /** Is the straight line between two points open water (tiles / patches; unknown counts as water; 4 m steps, dry only in the first 6 m)? */
+  function waterLine(lat0, lon0, lat1, lon1) {
+    if (!sampleMask && !opts.patchLand) return true;
+    const d = distM(lat0, lon0, lat1, lon1), n = Math.max(1, Math.ceil(d / 4));
+    for (let i = 1; i < n; i++) {
+      let sm = null; try { sm = sampleOf(lat0 + ((lat1 - lat0) * i) / n, lon0 + ((lon1 - lon0) * i) / n); } catch { sm = null; }
+      if (sm && WT_NAVIGABLE[sm.mask] !== 1 && (i * d) / n > 6) return false;   // the first 6 m: where the hull already lies
+    }
+    return true;
+  }
+  /** Geometry records of the harbours within rKm of a point, nearest first (max n): [geo | { id, pending: true }]. */
+  function geoNear(lat, lon, rKm = MHG.NEAR_KM, n = MHG.MAX_NEAR) {
+    const out = [];
+    for (const h of near(lat, lon, rKm)) { if (out.length >= n) break; const e = geoOf(h.id); out.push(e?.geo || { id: h.id, pending: true }); }
+    return out;
+  }
+  /** Depth of a harbour for the mooring rules (the card's rule: data, else tier default, deeper sampled tiles win). */
+  function depthFor(h) { let sampled = null; try { sampled = opts.sampleDepth ? opts.sampleDepth(h.lat, h.lon) : null; } catch { sampled = null; } return depthOf(h, { sampled }); }
+
   return {
-    ingest, ensureNear, harboursIn, near, inBbox, get, sheet, reach, harboursOn, servicesAt, markers, shed,
+    ingest, ensureNear, harboursIn, near, inBbox, get, sheet, reach, harboursOn, servicesAt, markers, shed, geoOf, geoNear, depthFor, waterLine, isWater,
+    setSampler(fn, ensure = null) { sampleMask = typeof fn === 'function' ? fn : null; ensureTiles = typeof ensure === 'function' ? ensure : ensureTiles; for (const [k, e] of geoCache) if (!e.refined) geoCache.delete(k); },
     setLane(l) { if (l) { lane = l; reachCache.clear(); } }, lane: () => lane, setSampleDepth(fn) { opts.sampleDepth = typeof fn === 'function' ? fn : null; },
     squaresNear, size: () => total, squareCount: () => squares.size, hasSquare: (x, y) => squares.has(`${x}/${y}`),
-    stats: () => ({ ...st, harbours: total, squares: squares.size, fisSquares: fisBySq.size, approxKB: Math.round(total * 1.0) }),
+    stats: () => ({ ...st, harbours: total, squares: squares.size, fisSquares: fisBySq.size, approxKB: Math.round(total * 1.0), geoCached: geoCache.size }),
   };
 }
 /** Squares (z12 keys) under a list of ship positions: what `keepSquares` returns for the online players. */

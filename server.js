@@ -86,7 +86,7 @@ game.liveAis = liveAis;                     // V7 step 0: the express passage ke
 if (WT_ON) {
   const wtGet = (z, x, y) => wt.get(z, x, y);
   attachFinder(game, createQuayFinder({ getTile: wtGet, harbors: HARBORS, guard: memGuard }), wtGet);
-  if (game.mh && game.quayFinder?.sample) game.mh.setSampleDepth(tileDepthSampler(game.quayFinder.sample, lowWaterAt));   // INLAND HARBOURS
+  if (game.mh && game.quayFinder?.sample) { game.mh.setSampleDepth(tileDepthSampler(game.quayFinder.sample, lowWaterAt)); game.mh.setSampler(game.quayFinder.sample, (la, lo) => wt.ensureAround(la, lo, 600, worldtiles.PRIO.P1, { timeoutMs: 4000 })); }   // INLAND HARBOURS (depths; water for pontoons laid on it)
   game.quayEnsure = (lat, lon) => wt.ensureAround(lat, lon, 1700, worldtiles.PRIO.P1, { timeoutMs: 2500 });
 }
 // WORLD TILES §3.6.4: a tile that arrives / changes revision under a ship moves her to open water (≤ 300 m, depth ≥
@@ -294,6 +294,17 @@ app.get('/api/mh', (req, res) => {
   const b = String(req.query.bbox || '').split(',').map(Number);
   if (!game.mh || b.length !== 4 || !b.every(Number.isFinite)) return res.json({ harbours: [] });
   res.json({ harbours: game.mh.inBbox(b, Number(req.query.z) || 11) });
+});
+// INLAND HARBOURS in 3D / radar / chart: geometry records (pontoons, quays, gangways, hut, fuel berth) near a point
+// (≤ 4 km, ≤ 12, nearest first) or by id (≤ 16); { id, pending: true } while the tiles under one are not in memory.
+app.get('/api/mh/geo', (req, res) => {
+  if (!game.mh) return res.json({ harbours: [] });
+  try {
+    if (req.query.ids) return res.json({ harbours: String(req.query.ids).split(',').slice(0, 16).map((id) => { const e = game.mh.geoOf(id); return e?.geo || (game.mh.get(id) ? { id, pending: true } : null); }).filter(Boolean) });
+    const lat = Number(req.query.lat), lon = Number(req.query.lon), r = Math.min(4, Math.max(0.2, Number(req.query.r) || 3)), n = Math.min(12, Math.max(1, Number(req.query.n) || 12));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.json({ harbours: [] });
+    return res.json({ harbours: game.mh.geoNear(lat, lon, r, n) });
+  } catch (e) { log('[mh] geo failed', e.message); return res.json({ harbours: [] }); }
 });
 app.get('/api/mh/:id', (req, res) => {
   const p = req.query.player ? game.byId.get(String(req.query.player)) : null;
