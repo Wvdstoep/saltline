@@ -35,7 +35,8 @@ export const SHIP_NAME_RE = /^[\p{L}\p{N} '.\-]{2,24}$/u;
 export const ORDER_TYPES = ['sail_to', 'home', 'hold', 'route', 'contract', 'stop'];
 export const STATES = ['laid_up', 'docked', 'at_sea', 'anchored'];
 export const LEDGER_CATS = ['income', 'costs', 'fuel', 'port', 'tugs', 'repairs', 'wages', 'storage', 'fees', 'arrears', 'ships'];
-export const CAPTAIN_JOB_TYPES = ['freight', 'passengers', 'charter', 'fishing', 'supply'];
+export const CAPTAIN_JOB_TYPES = ['freight', 'passengers', 'charter', 'fishing', 'supply',
+  'box', 'voyage', 'coa', 'tc', 'vehicles', 'ropax_route', 'standby', 'crewchange', 'bunkering', 'launch', 'dredge', 'survey']; // YARD H6d
 
 const cls = (c) => SHIP_CLASSES[c] || SHIP_CLASSES.coaster;
 const r5 = (v) => Math.round(v * 1e5) / 1e5;

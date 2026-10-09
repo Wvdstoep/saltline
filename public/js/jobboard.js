@@ -19,7 +19,11 @@ const FAMILY_ICON = {
 export class JobBoard {
   /** Browser: load the shared board logic and build the board (main.js H13: `app.jobBoard = await JobBoard.create(app)`). */
   static async create(app) { const lib = await import('/shared/jobs/board.js'); const fam = await import('/shared/jobs/catalogue.js'); return new JobBoard(app, { ...lib, FAMILIES: fam.FAMILIES, groupOf: fam.groupOf }); }
-  constructor(app, lib) { this.app = app; this.lib = lib; this.filter = null; this.open = { mine: true, fleet: true, other: false }; }
+  constructor(app, lib) {
+    this.app = app; this.lib = lib; this.filter = null; this.open = { mine: true, fleet: true, other: false };
+    // the hud rebuilds the tab on every harbour update: remember which groups the player opened or closed (toggle does not bubble)
+    if (typeof document !== 'undefined') document.addEventListener('toggle', (e) => { const d = e.target; if (d?.classList?.contains('jbGroup') && d.dataset.group in this.open) this.open[d.dataset.group] = d.open; }, true);
+  }
 
   harborById(id) { const hs = this.app?.world?.harbors || []; return hs.find((h) => h.id === id) || null; }
   /** Your other ships (client VesselView: { id, name, cls, harbor, status, aboard }); the one you are aboard is `you`. */

@@ -678,7 +678,7 @@ export class Fleet {
     if (!v.docked) return this.warn(p, `${v.name} is at sea — contracts are signed at the quay.`);
     const g = this.game, h = harborById(v.docked), st = g.harbors[h.id];
     if (!st) return;
-    try { g.regenHarbor?.(h, st, false); } catch { /* keep the board as it is */ }
+    try { g.regenHarbor?.(h, st, false); g.jobsx?.ensureFit(st.jobs, h, v, g.simTime, g.rnd, g.jobEnv(), { phase: 2 }); } catch { /* keep the board as it is */ }
     const C = clsOf(v.ship.cls), paxUsed = v.jobs.filter((j) => j.pax).reduce((s, j) => s + j.pax, 0);
     const ship = { cls: v.ship.cls, holdFreeT: C.capacity - cargoMass(v.cargo), paxFree: C.pax - paxUsed, warp: 1 };
     const jobs = (st.jobs || []).filter(Boolean).map((j) => ({ ...publicJob(j), est: estimateJob(j, ship), why: hardReason(j, ship) || captainRefusal(j) || null }));

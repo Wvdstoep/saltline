@@ -352,7 +352,8 @@ test('real game: freight end to end with fleet_accept and the inline planner', P
   const { g, p } = await realGame();
   g.onAction(p, { action: 'buy_ship', cls: 'trawler', tradeIn: false });
   const v = p.fleet[1];
-  g.harbors.rotterdam.jobs.push({ id: 'jfr9', type: 'freight', from: 'rotterdam', to: 'ijmuiden', good: 'grain', qty: 100, pay: 9000, hours: 30, gen: 99, title: 'Freight 100 t of Grain to IJmuiden', expiresAt: g.simTime + 86400 });
+  // gen ≥ 8: YARD H7 cargo compatibility applies — a trawler's fish hold takes fish, not grain (needs bulk holds)
+  g.harbors.rotterdam.jobs.push({ id: 'jfr9', type: 'freight', from: 'rotterdam', to: 'ijmuiden', good: 'fish', qty: 100, pay: 9000, hours: 30, gen: 99, title: 'Freight 100 t of Fish to IJmuiden', expiresAt: g.simTime + 86400 });
   g.onAction(p, { action: 'fleet_accept', vesselId: v.id, jobId: 'jfr9' });
   for (let s = 0; s < 8 * 3600 && v.docked !== 'ijmuiden'; s += 1) await g.fleet.advance(v, 1);
   assert.equal(v.docked, 'ijmuiden'); assert.ok(sum(p, 'income', v.id) >= 9000);

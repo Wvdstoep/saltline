@@ -22,6 +22,12 @@ import { planTugAssist, beginTugAssist, stepTugAssist, tickTugs, tugsPublic, ass
 import { tugOp } from './tugassist.js';                       // V6 item 5: the tug op's time compression runs the ship's clock
 import { catchRate } from '../shared/rates.js';                // V6 item 5: one catch-rate formula for the tick and the contract estimates
 import { estimateJob, fmtShipH } from '../shared/jobtime.js';            // V6 item 5: contract hours on the ship's clock
+import { setGen8 } from '../shared/jobtime.js';                                               // YARD lane D H6c
+import { JobsX } from './jobsx.js';                                                            // YARD lane D H6: the step runner
+import { wireJob, isRunnerJob, payOf, migrateActor } from '../shared/jobs/types.js';
+import { canDo, jobtimeHooks } from '../shared/jobs/eligibility.js';
+import { canLoad } from '../shared/cargo.js';                                                  // YARD lane D H7
+const JOBS_PHASE = 2;   // YARD §12: phase-2 families only; 4 = every family
 import { findSafeSpot, harbourAim, SAFE as EXPRESS_SAFE } from './safespot.js'; // V7 step 0: express arrives on safe open water
 import { lowWaterAt } from '../shared/tide.js';
 import { Fleet } from './fleet.js';                             // v6 fleet (docs/V6-FLEET-CONTRACTS.md)
@@ -87,6 +93,19 @@ export class Game {
     this.rigLimits = new WeakMap();                  // sailing: per-person rig command rate limit + rig_event times (never saved)
     this.rigViews = new WeakMap();                   // sailing: the rv each online skipper last sent (never saved)
     this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
+    this.jobsx = new JobsX({                                                   // YARD lane D: runner for JOB_GEN 8 families
+      now: () => this.simTime, harborById,
+      event: (a, kind, text) => this.event(a, kind, text),
+      pay: (a, cr, j) => { a.money += cr; if (a.stats) { a.stats.delivered++; a.stats.earned += cr; } this.sendYou?.(a); },
+      charge: (a, cr) => { if (!(a.money >= cr)) return false; a.money -= cr; return true; },
+      ctx: (a) => this.jobsCtx(a),
+      windKn: (a) => (this.weatherAt(a.ship.lat, a.ship.lon)?.wind?.spd ?? 0) / GEO.KN_TO_MS,
+      seaHs: (a) => this.weatherAt(a.ship.lat, a.ship.lon)?.waves?.height ?? 0,
+      heelDeg: (a) => this.rigFor?.(a)?.heel ?? 0,
+      offHire: (a) => (a.cond ?? 100) < 30,
+      damage: (a, pts) => { a.cond = Math.max(0, (a.cond ?? 100) - pts); },
+    });
+    setGen8(jobtimeHooks(() => ({ harborById, simTime: this.simTime })));
     this.loadState();
     this.initHarbors();
     this.initCutters();
@@ -108,6 +127,7 @@ export class Game {
         this.fleet.adoptPlayer(p);                    // v6: ship fields move onto the vessel records
         p.fishing = false;
         this.migratePlayer(p);
+        migrateActor(p);                              // YARD §8: accepted gen-7 jobs → legacy, cargo stacks get `unit`
         this.players.set(p.token, p); this.byId.set(p.id, p);
       }
       for (const h of Object.values(this.harbors)) for (const j of [...(h.jobs || []), ...((h.contact && h.contact.jobs) || [])]) maxJob = Math.max(maxJob, parseInt(j.id.slice(1), 36) + 1);
@@ -124,6 +144,7 @@ export class Game {
       const savedAt = s.savedAt ? Date.parse(s.savedAt) / 1000 : s.simTime;
       if (Number.isFinite(savedAt)) { const hours = Math.min(48, Math.max(0, (this.simTime - savedAt) / 3600)); for (const st of Object.values(this.harbors)) driftEconomy(st, hours, this.rnd); }
       this.fleet.afterLoad(savedAt);                  // v6: captained ships migrate, storage dates shift by the downtime
+      for (const v of this.fleet.vessels.values()) migrateActor(v);   // YARD §8 (fleet vessels)
       this.log(`[game] loaded ${this.players.size} players, ${this.wrecks.length} wrecks`);
     } catch (e) { this.log(`[game] state load failed: ${e.message}`); }
   }
@@ -190,7 +211,8 @@ export class Game {
     if (!st.used || !st.used.length || !(st.usedAt > 0) || this.simTime - st.usedAt > ECON.USED_REFRESH_H * 3600) { st.used = generateUsedShips(h, this.rnd); st.usedAt = this.simTime; }
     if (force || this.simTime - st.lastRegen > 3600 * 2) {
       let guard = 0;
-      while (st.jobs.length < n && guard++ < 40) { const j = generateJob(h, this.simTime, this.rnd, undefined, this.jobEnv()); if (j) st.jobs.push(j); }
+      if (st.jobs.length < n) st.jobs.push(...this.jobsx.generate(h, this.simTime, this.rnd, this.jobEnv(), { n: n - st.jobs.length, phase: JOBS_PHASE })); // YARD §5.7
+      void guard;
       // Black-market contact: 70% present per regen, 1-3 runs.
       if (this.rnd() < 0.7) {
         const k = 1 + Math.floor(this.rnd() * 3);
@@ -199,6 +221,13 @@ export class Game {
       st.lastRegen = this.simTime;
     }
     refreshPrices(h, st);
+  }
+  /** canDo context for actor `a` (YARD §5.8). Politics: pass { ds, ctx } here once the politics lane exposes them. */
+  jobsCtx(a) {
+    return {
+      harborById, simTime: this.simTime,
+      weatherAt: (id) => { const h = harborById(id); if (!h) return null; const w = this.weatherAt(h.lat, h.lon); return { windKn: (w?.wind?.spd ?? 0) / GEO.KN_TO_MS, hs: w?.waves?.height ?? 0 }; },
+    };
   }
   jobEnv() {
     return this._jobEnv || (this._jobEnv = {
@@ -352,7 +381,7 @@ export class Game {
     { const rig = this.rigFor(p); if (rig) p.sailsUp = anyHoisted(rig); }   // sailing: a yacht just bought / switched to gets her rig (moored: sails down) before `you` carries it
     return {
       id: p.id, name: p.name, ship: { ...p.ship }, cond: p.cond, flooding: p.flooding, fuel: p.fuel, cargo: p.cargo.map((c) => (c.caught ? { ...c, qty: Math.round(c.qty * 10) / 10 } : c)),
-      money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs, convoyId: p.convoyId, docked: p.docked,
+      money: p.money, wanted: p.wanted, kits: p.kits, jobs: p.jobs.map(wireJob), convoyId: p.convoyId, docked: p.docked,
       fuelEmpty: p.fuel <= 0, hail: p.hail ? { cutter: p.hail.cutter, until: p.hail.until, state: p.hail.state } : null,
       fishing: !!p.fishing, fishInfo: p.fishing ? p.fishInfo : null, towing: p.towing || null, voyage: p.voyage || null, rescue: p.rescue || null, sailsUp: p.sailsUp !== false,
       weather: this.weatherFor(p), tide: this.tideFor(p.ship.lat, p.ship.lon),
@@ -417,10 +446,11 @@ export class Game {
     const h = harborById(p.docked); if (!h) return;
     const st = this.harbors[h.id];
     this.regenHarbor(h, st, false);
+    this.jobsx.ensureFit(st.jobs, h, p, this.simTime, this.rnd, this.jobEnv(), { phase: JOBS_PHASE });   // YARD §5.7: ≥ 3 doable jobs
     const geom = this.harborGeom(h.id), anchor = this.harborAnchor(h);
     this.send(p, {
       t: 'harbor', harbor: { id: h.id, name: h.name, country: h.country, size: h.size, lat: h.lat, lon: h.lon, fuelPrice: this.fuelPrice(h), repairCost: this.repairCost(p),
-        jobs: st.jobs, market: st.market, econ: this.harborEcon(st), contact: p.contactSeen === h.id && st.contact ? st.contact : null, contactLooked: p.contactSeen === h.id,
+        jobs: st.jobs.map(wireJob), market: st.market, econ: this.harborEcon(st), contact: p.contactSeen === h.id && st.contact ? st.contact : null, contactLooked: p.contactSeen === h.id,
         shipyard: Object.values(SHIP_CLASSES).filter((c) => c.price > 0).map((c) => ({ id: c.id, name: c.name, cat: c.cat, price: c.price, desc: c.desc, tradeIn: shipValue(p.ship.cls, p.cond), specs: shipSpecs(c.id) })),
         used: st.used || [], tradeIn: shipValue(p.ship.cls, p.cond), sellValue: p.ship.cls === 'pilot' ? 0 : shipValue(p.ship.cls, p.cond),
         berths: geom ? geom.berths || [] : [], anchor: { lat: anchor.lat, lon: anchor.lon }, geomSource: geom ? geom.source : null, berth: p.berth || null,
@@ -567,6 +597,7 @@ export class Game {
         case 'repair': return this.repair(p);
         case 'buy_kit': return this.buyKit(p);
         case 'accept_job': return this.acceptJob(p, m.jobId);
+        case 'job_step': { if (!this.jobsx.onAction(p, 'job_step', String(m.jobId ?? ''))) this.event(p, 'warn', 'Not now — get on the spot and slow down.'); return this.sendYou(p); }
         case 'abandon_job': return this.abandonJob(p, m.jobId);
         case 'deliver_jobs': return this.deliverHere(p);
         case 'buy_goods': return this.tradeGoods(p, m.good, +m.qty, true);
@@ -618,6 +649,7 @@ export class Game {
   setDocked(p, harborId, berth) {
     p.docked = harborId; p.dockedAt = this.simTime; p.berth = berth || null; p.assist = null;
     p.ship.spd = 0; p.ship.throttle = 0; p.ship.rudder = 0; p.fishing = false;
+    if (p.jobs?.length) this.jobsx?.onDock(p, harborId);                       // YARD H6: players and captains (captain.js docks via setDocked/moorAt)
   }
   // Moor at a geometry berth: snap to the berth point, lie along the quay the way the ship is already pointing.
   moorAt(p, harbor, b) {
@@ -838,6 +870,7 @@ export class Game {
   }
   // Client-reported contact with a quay, breakwater or another ship (rate-limited to one per 3 s).
   collision(p, m) {
+    this.jobsx?.onIncident(p, 'collision');
     if (p.docked || p.assist || p.flooding >= 1) return;
     const now = Date.now();
     if (now - (p.lastCollision || 0) < 3000) return;
@@ -930,6 +963,17 @@ export class Game {
     let fromContact = false;
     if (!job && st.contact && p.contactSeen === p.docked) { job = st.contact.jobs.find((j) => j.id === jobId); fromContact = !!job; }
     if (!job) return this.event(p, 'warn', 'That contract is gone.');
+    if (isRunnerJob(job)) {                                                   // YARD lane D: runner families
+      const r = this.jobsx.accept(p, job);
+      if (!r.ok) return this.event(p, 'warn', r.why || 'Not possible with this ship.');
+      if (fromContact) st.contact.jobs = st.contact.jobs.filter((j) => j.id !== jobId); else st.jobs = st.jobs.filter((j) => j.id !== jobId);
+      this.event(p, 'info', `Contract signed: ${job.title} — ${fmt(payOf(r.job))} cr, ${fmtShipH(r.job.hours)} of ship time. ${r.job.steps[r.job.prog.i]?.label || ''}`.trim());
+      this.sendYou(p); this.sendHarbor(p); return;
+    }
+    if ((job.gen || 0) >= JOB_GEN) {                                           // YARD §5.8: gen-8 legacy families are checked too
+      const c = canDo(job, p, this.jobsCtx(p));
+      if (!c.ok && c.why.code !== 'time') return this.event(p, 'warn', c.why.text);
+    }
     const C = SHIP_CLASSES[p.ship.cls];
     if (job.type === 'passengers' || job.type === 'charter') {
       const used = p.jobs.filter((j) => j.pax).reduce((s, j) => s + j.pax, 0);
@@ -969,7 +1013,7 @@ export class Game {
     // Contract cargo goes back to the shipper (docked) or over the side (at sea); it never becomes free goods.
     p.cargo = p.cargo.filter((c) => c.jobId !== j.id);
     if (p.towing === j.id) p.towing = null;
-    const penalty = Math.min(p.money, Math.round(j.pay * 0.1));
+    const penalty = Math.min(p.money, Math.round(payOf(j) * 0.1));
     p.money -= penalty;
     this.event(p, 'warn', `Abandoned: ${j.title}. Cancellation fee ${fmt(penalty)} cr.`);
     this.sendYou(p);
@@ -996,7 +1040,7 @@ export class Game {
   deliverJobs(p, harbor) {
     let delivered = 0;
     for (const j of [...p.jobs]) {
-      if (j.to !== harbor.id) continue;
+      if (j.to !== harbor.id || isRunnerJob(j)) continue;   // YARD lane D: runner jobs settle in jobsx (pay is { cr, … })
       let ok = false, frac = 1;
       if (j.type === 'passengers' || j.type === 'charter') ok = true;
       else if (j.type === 'tow') { if (p.towing === j.id) { ok = true; p.towing = null; } }
@@ -1089,6 +1133,8 @@ export class Game {
     if (buying) {
       const C = SHIP_CLASSES[p.ship.cls];
       const free = C.capacity - cargoMass(p.cargo);
+      const fit = canLoad(good, p.ship.cls);                                   // YARD H7: the hull must handle the good
+      if (!fit.ok) return this.event(p, 'warn', `${GOODS[good].name}: ${fit.why.text}.`);
       const avail = Math.floor(st.stock[good] ?? 0);
       if (avail <= 0) return this.event(p, 'warn', `${GOODS[good].name}: sold out here for now.`);
       // every tonne is priced on the stock it leaves behind (TRADE.IMPACT), so buying a harbour out and selling it
@@ -1177,6 +1223,7 @@ export class Game {
     this.finishDock(p, harbor); // an arrival like any other: contracts for this port are delivered
   }
   grounding(p) {
+    this.jobsx?.onIncident(p, 'grounding');
     const now = Date.now();
     if (p.lastGrounding && now - p.lastGrounding < 4000) return;
     p.lastGrounding = now;
@@ -1325,6 +1372,7 @@ export class Game {
       // assisted or rescued player is caught too).
       if (p.warp !== 1) this.checkWarp(p);
       this.advanceShipClock(p, dt); // V6 item 5: every player's ship clock (docked, offline and rescued too), and the due-date events
+      if (p.jobs?.length) this.jobsx.onTick(p, dt * SIM.CLOCK_SCALE * this.shipRate(p));   // YARD H6: runner steps on the ship's clock
       if (p.rescue) continue;
       if (p.docked) continue;
       if (p.assist) { this.stepAssist(p, dt); continue; }

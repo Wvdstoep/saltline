@@ -1106,14 +1106,15 @@ export class Hud {
     </article>`;
   }
   tabJobs(h, you, C) {
+    const board = this.app.jobBoard ? this.app.jobBoard.html(h, you) : null;  // YARD H5b: grouped JOB_GEN 8 board (your contracts stay below it)
     const mass = you.cargo.reduce((s, c) => s + c.qty, 0);
     const mine = you.jobs || [];
     const paxUsed = mine.filter((x) => x.pax).reduce((s, x) => s + x.pax, 0);
     const rank = (j) => (this.whyNot(j, you, C, mass) ? 2 : this.jobEst(j, you, C, mass).ok ? 0 : 1); // fits, too slow, cannot
     const jobs = [...(h.jobs || [])].sort((x, y) => rank(x) - rank(y) || y.pay - x.pay);
-    return `<div class="secHead"><div><h2>${ic('contract')}Contracts</h2><p>Deliveries complete automatically when you moor at the destination. Hold ${fmtT(mass)} / ${fmtT(C.capacity)} · ${Math.max(0, C.pax - paxUsed)} of ${C.pax} berths free.</p></div>
+    return `${board != null ? board : `<div class="secHead"><div><h2>${ic('contract')}Contracts</h2><p>Deliveries complete automatically when you moor at the destination. Hold ${fmtT(mass)} / ${fmtT(C.capacity)} · ${Math.max(0, C.pax - paxUsed)} of ${C.pax} berths free.</p></div>
         <div class="tools"><span class="chip">${jobs.length} on the board</span></div></div>
-      ${jobs.length ? `<div class="cards">${jobs.map((j) => this.jobCard(j, h, you, C, mass, false)).join('')}</div>` : `<div class="empty">${ic('contract')}<span>The board is empty right now — new contracts are posted every hour.</span></div>`}
+      ${jobs.length ? `<div class="cards">${jobs.map((j) => this.jobCard(j, h, you, C, mass, false)).join('')}</div>` : `<div class="empty">${ic('contract')}<span>The board is empty right now — new contracts are posted every hour.</span></div>`}`}
       <h3 class="subHead">${ic('list')}Your contracts${mine.length ? ` · ${fmt(mine.reduce((s, j) => s + j.pay, 0))} cr outstanding` : ''}</h3>
       ${mine.length ? `<div class="mineList">${mine.map((j) => { const st = this.mineStatus(j, you); return `<div class="mineRow">${ic(JOB_ICON[j.contraband ? 'smuggling' : j.type] || 'contract')}<div class="t"><b>${esc(j.title)}</b><small>to ${esc(short(this.hname(j.to)))} · <span class="${this.deadlineSec(j) < 0 ? 'down' : ''}" title="Counted on your ship's clock">${this.deadline(j)}${this.deadlineSec(j) < 0 ? ' — half pay' : ' left (ship time)'}</span>${st.text ? ` · <span class="${st.ready ? 'up' : 'down'}">${esc(st.text)}</span>` : ''}</small></div><span class="p">${fmt(j.pay)} cr</span>${st.here ? `<button class="small primary" data-act="deliver" data-job="${esc(j.id)}">Deliver</button>` : ''}<button class="small danger" data-act="abandon" data-job="${esc(j.id)}">Abandon</button></div>`; }).join('')}</div>`
         : `<div class="empty">${ic('crate')}<span>No contracts aboard. Take one above, or look at every harbour's board in <i>Job boards</i>.</span></div>`}`;
@@ -1373,6 +1374,7 @@ export class Hud {
   // -------- delegated actions and live inputs
   sheetAction(act, el) {
     const a = this.app, net = a.net, you = a.you, root = $('harborWrap');
+    if (a.jobBoard && (act === 'jbFilter' || act === 'jbAssign')) { a.jobBoard.click(el, net); return this.renderHarborTabs(); }   // YARD H5b
     const qtyInput = (g) => root.querySelector(`input[data-qty="${CSS.escape(g)}"]`);
     switch (act) {
       case 'tab': return this.showTab(el.dataset.tab);
