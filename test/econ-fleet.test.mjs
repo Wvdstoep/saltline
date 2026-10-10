@@ -104,6 +104,7 @@ test('politics blocks are respected: the trade does not happen and she reports',
   assert.match(notes.at(-1), /could not buy steel coils at St\.? Petersburg/i);
 });
 
+const LEGACY_TERMINAL = new Set(['grain', 'ore', 'coal', 'steel', 'crude', 'fuel', 'chemicals', 'lpg', 'lng', 'livestock', 'fruit']);
 test('voyage jobs follow the market roles: they load where the good is made (P) and go where it is needed or traded', () => {
   const eds = econDataset(), rnd = seeded(11), T = Date.UTC(2026, 9, 9) / 1000;
   let n = 0;
@@ -113,7 +114,11 @@ test('voyage jobs follow the market roles: they load where the good is made (P) 
       if (!j || !catalogueOf(j.cargo?.good)) continue;
       n++;
       assert.equal(roleOf(eds, h, j.cargo.good).role, 'P', `${h.id} loads ${j.cargo.good}`);
-      assert.ok(['I', 'L'].includes(roleOf(eds, harborById(j.to), j.cargo.good).role), `${j.to} takes ${j.cargo.good}`);
+      // legacy terminal goods (grain … livestock, fruit) go to any harbour with the terminal that doesn't make them;
+      // catalogue-only goods go where they are needed or traded
+      const dr = roleOf(eds, harborById(j.to), j.cargo.good).role;
+      if (LEGACY_TERMINAL.has(j.cargo.good)) assert.notEqual(dr, 'P', `${j.to} makes ${j.cargo.good} itself`);
+      else assert.ok(['I', 'L'].includes(dr), `${j.to} takes ${j.cargo.good}`);
     }
   }
   assert.ok(n > 100, `${n} voyages checked`);

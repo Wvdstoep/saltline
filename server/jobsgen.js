@@ -254,7 +254,13 @@ const legacyExports = (h, g) => (EXPORTERS[g] && !EXPORTERS[g].includes(h.id) ? 
 // trades (I / L); EXPORTERS / EXPORT_TAG / IMPORT_OK stay as the fallback for goods outside the catalogue (fruit).
 const econRole = (h, g) => { if (!catalogueOf(g) || !h) return undefined; try { return roleOf(econDataset(), h, g).role; } catch { return undefined; } };
 const exportsGood = (h, g) => { const r = econRole(h, g); return r === undefined ? legacyExports(h, g) : r === 'P'; };
-const importsGood = (h, g) => { const r = econRole(h, g); return r === undefined ? (IMPORT_OK[g] || (() => true))(h) : r === 'I' || r === 'L'; };
+// The terminal check (IMPORT_OK) always applies: a harbour that needs chemicals but has no chemical berth can't take them.
+// The legacy goods (those with a terminal rule) go to any harbour with the terminal that doesn't make the good itself;
+// the catalogue-only goods go where the market needs or trades them (I / L).
+const importsGood = (h, g) => {
+  if (IMPORT_OK[g]) return IMPORT_OK[g](h) && econRole(h, g) !== 'P';
+  const r = econRole(h, g); return r === undefined || r === 'I' || r === 'L';
+};
 /** Voyage goods (§9.2): the legacy keys plus every bulk, liquid or gas catalogue good. */
 export const VOYAGE_GOODS = [...new Set([...Object.keys(EXPORT_TAG), ...CATALOGUE.filter((r) => ['grains', 'fert', 'ores', 'energy', 'gas'].includes(r.cat)).map((r) => r.id)])];
 const BAND_BY_HANDLING = { bulk: 'bulk', 'liquid:crude': 'crude', 'liquid:clean': 'fuel', 'liquid:chem': 'chemicals', 'gas:lpg': 'lpg', 'gas:lng': 'lng', livestock: 'livestock', reefer: 'fruit' };
