@@ -176,5 +176,28 @@ six for the maximum). It scales the cruise pay: `payMul` = 1 + 0.5 (score − 0.
 pays exactly as before, a captain who walks the ship earns up to +10 %, a neglected ship loses up to 20 %. The settlement note says
 how the guests rated the cruise. Tests: `test/cruise-venues.test.mjs`, `test/cruise-jobs.test.mjs`.
 
+**How the tables look (premium pass).** One dark-gold / emerald theme (`public/js/iv2casinoui.js`: serif capitals, gold gradient buttons, chips with
+dashed edges, glow text, win banners); every table is canvas 2D art with real shading (gradients, shadows, glass sheen), no images, no WebGL
+context (so nothing to leak on a phone), one module per table fetched when the table is used and disposed with the panel (`stop()` cancels the
+animation loop, drops the canvas and the offscreen card / symbol caches). The loop sleeps when nothing moves. Portrait on a phone (stacked layout,
+vertical roulette cloth, 44 px+ targets), landscape on a desktop; DPR capped at 2 (1.5 on a phone).
+* **Roulette (`iv2roulette.js`)** wooden bowl with grain, brass rim and frets, 37 pockets with numbers, chrome cone and brass turret on the turning rotor,
+  glossy ball. The ball path is solved *backwards from the server's pocket* (`ballPath`: ball angle = rotor + pocket + a relative angle dying as (1−u)^2.3,
+  radius from the rim to the frets with bounces): tested for all 37 numbers. Felt cloth with every bet; chips stack on the bets; the rake sweeps losing chips,
+  winners' payout stacks fly to the purse, the winning cell glows; sounds: wheel whoosh, ball ticks and pings, chips.
+* **Blackjack, baccarat, hold'em (`iv2cards.js`)** felt table with leather rail, dealer / croupier / guest avatars, drawn cards (pips, court cards, suits as
+  vector paths, a navy-and-gold back with an anchor), cards slide from the shoe, flip with a squash animation, the hole card stays face down until the server
+  sends it, community cards flip one by one, chips fly to the pot / purse / dealer, action bar (hit / stand / double / split, check / bet / call / raise /
+  fold with the amounts; the limit game has one bet size, so there is no slider), win banner, confetti and coins on big wins. Every card drawn is a card in
+  the server's view.
+* **Slots (`iv2slots.js`)** a lit cabinet with a chasing-bulb marquee, glowing frame, glossy symbol art (cherries, lemon, grapes, bell, BAR, red 7, WILD, star),
+  five reels that accelerate, blur and stop one after the other with a bounce on the server's stop positions (the shared reel strips), payline numbers, line
+  highlights with a glowing path, coin shower and light sweep, BIG / MEGA WIN text, the free-spin intro (starburst) and the free spins played out one by one,
+  LED bet / win / credit panel and the top prize for the current bet (not a progressive jackpot: nothing here is faked).
+* **Sound** `SoundEngine.casino(name)` (public/js/sound.js): chip, card, shuffle, tick, reelstop, ball, whoosh, win, big, lose, coin, all synthesised, ≤ 3
+  nodes each on the shared noise sources; dropped when the engine's node budget is full. A "Quick" toggle (remembered) cuts the animations to ~22 % and
+  skips nothing the server decided.
+Screenshots: scratchpad/cruise-shots/casino-*.png (roulette, blackjack, baccarat, poker, slots, desktop and phone).
+
 **Open:** craps, bowling, photo studio sittings and a theatre seat view are not built; baccarat, poker and the venues are menu / panel
 based (no 3D animation of the dealer), the slide is a camera glide, not a tube.
