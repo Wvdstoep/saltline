@@ -87,7 +87,7 @@ export class Chart {
     this.center = { lat: 54, lon: 3 }; this.zoom = 5;
     this.W = 0; this.H = 0; this.dpr = 1;
     this.route = []; this.track = []; this.mode = 'route';
-    this.layers = { base: true, tiles: true, seamarks: true, lanes: true, ai: true, jobs: true, track: true, storms: true, fishing: true, platforms: true, harbors: true, ships: true, wrecks: true, rescues: true, market: false, fleet: true, mh: true }; // fleet: v6; mh: inland harbours (mhchart.js) (fleet.js drawChartLayer)
+    this.layers = { base: true, tiles: true, seamarks: true, lanes: true, ai: true, jobs: true, track: true, storms: true, fishing: true, platforms: true, harbors: true, ships: true, wrecks: true, rescues: true, market: false, econ: false, fleet: true, mh: true }; // fleet: v6; mh: inland harbours (mhchart.js) (fleet.js drawChartLayer)
     this.base = { world: null, region: null };
     this.tiles = new Map(); this.tilesDrawn = 0; this.seaDrawn = 0;
     this.jobsTimer = null; this.drawTimer = null;
@@ -296,6 +296,7 @@ export class Chart {
     this.drawMe();
     if (this.layers.harbors) this.drawHarbors();
     if (this.layers.market) this.app.market?.drawLayer(this, this.ctx); // V6 item 7: harbours coloured by the price of one good
+    if (this.layers.econ) this.app.market?.drawEconLayer?.(this, this.ctx); // world economy §14.2: makers, scarce, requests
     if (this.layers.jobs) this.drawActiveJobs();
     this.drawHover();
     this.drawScaleBar();

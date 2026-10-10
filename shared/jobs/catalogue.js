@@ -4,6 +4,7 @@
 import { CARGO, unitsOf, handlingOf, eqOf, toTonnes } from '../cargo.js';
 import { typeOf, loaOf, isSail, isYacht, bpOf, basePriceOf, serviceKnOf, iceRank, ICE_RANK, rowOf } from './shipview.js';
 import { payOf, payInfoOf } from './types.js';
+import { CATALOGUE } from '../econ/catalogue.js';
 
 export const PAY = {
   PER_T_KM: 0.08,
@@ -24,6 +25,8 @@ export const PAY = {
   DELIVERY_CREW: 250, DELIVERY_NM: 4,             // Game rule (verify): mile-building delivery passage
   FISH_CR_T: 950,
 };
+// World economy §9.2: one multiplier table for trading and contracts — every catalogue good's fmul (legacy rows unchanged).
+for (const r of CATALOGUE) if (!(r.id in PAY.GOOD_MUL)) PAY.GOOD_MUL[r.id] = r.fmul;
 export const PORT_H = 0.5;                         // per harbour call step (load / discharge / board / land)
 export const SALVAGE_PCT = [0.08, 0.15];           // LOF / Salvage Convention 1989 Art. 13 award band [S15]
 

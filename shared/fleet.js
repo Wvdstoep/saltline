@@ -1,6 +1,6 @@
 // v6 fleet, office and boat storage (docs/V6-FLEET-CONTRACTS.md §4). Numbers and pure rules shared by the server
 // (server/fleet.js, server/captain.js) and the client (public/js/fleet.js, public/js/hq.js). Plain ESM, no DOM, no state.
-import { SHIP_CLASSES } from './constants.js';
+import { SHIP_CLASSES, GOODS } from './constants.js';
 
 export const FLEET = {
   MAX_VESSELS: 8,
@@ -32,7 +32,7 @@ export const FLEET = {
 export const VESSEL_ID_RE = /^v[0-9a-z]{1,16}$/;
 export const JOB_ID_RE = /^j[0-9a-z]{1,16}$/;
 export const SHIP_NAME_RE = /^[\p{L}\p{N} '.\-]{2,24}$/u;
-export const ORDER_TYPES = ['sail_to', 'home', 'hold', 'route', 'contract', 'stop'];
+export const ORDER_TYPES = ['sail_to', 'home', 'hold', 'route', 'contract', 'stop', 'trade_run'];   // trade_run: world economy §9.5
 export const STATES = ['laid_up', 'docked', 'at_sea', 'anchored'];
 export const LEDGER_CATS = ['income', 'costs', 'fuel', 'port', 'tugs', 'repairs', 'wages', 'storage', 'fees', 'arrears', 'ships'];
 export const CAPTAIN_JOB_TYPES = ['freight', 'passengers', 'charter', 'fishing', 'supply',
@@ -130,6 +130,22 @@ export function normalizeOrder(o, isHarbor) {
       const jobId = o.jobId == null ? null : String(o.jobId);
       if (jobId !== null && !JOB_ID_RE.test(jobId)) return { ok: false, why: 'Unknown contract.' };
       return { ok: true, order: { type: 'contract', jobId, then: pick(o.then, ['stay', 'home'], 'stay') } };
+    }
+    case 'trade_run': {   // world economy §9.5: buy at buyAt (≤ maxBuy), sell at sellAt (≥ minSell) or deliver to a request
+      const good = typeof o.good === 'string' && /^[a-z]{2,16}$/.test(o.good) && GOODS[o.good] && !GOODS[o.good].contraband ? o.good : null;
+      if (!good) return { ok: false, why: 'Pick a good to trade.' };
+      if (typeof o.buyAt !== 'string' || !isHarbor(o.buyAt)) return { ok: false, why: 'Pick the harbour to buy at.' };
+      const sellAt = o.sellAt == null || o.sellAt === '' ? null : typeof o.sellAt === 'string' && isHarbor(o.sellAt) ? o.sellAt : undefined;
+      if (sellAt === undefined) return { ok: false, why: 'Pick the harbour to sell at.' };
+      const reqId = o.reqId == null || o.reqId === '' ? null : String(o.reqId);
+      if (reqId !== null && !/^q[0-9a-z]{1,16}$/.test(reqId)) return { ok: false, why: 'Unknown request.' };
+      if (!sellAt && !reqId) return { ok: false, why: 'Pick where to sell, or a request to fill.' };
+      if (sellAt === o.buyAt && !reqId) return { ok: false, why: 'Buying and selling at the same harbour only loses the spread.' };
+      const qty = Number(o.qty), maxBuy = Number(o.maxBuy), minSell = o.minSell == null || o.minSell === '' ? 0 : Number(o.minSell);
+      if (!(qty > 0 && qty <= 500000)) return { ok: false, why: 'Quantity must be 1 t or more.' };
+      if (!(maxBuy > 0 && Number.isFinite(maxBuy))) return { ok: false, why: 'Set the most she may pay per tonne.' };
+      if (!(minSell >= 0 && Number.isFinite(minSell))) return { ok: false, why: 'The minimum sale price cannot be negative.' };
+      return { ok: true, order: { type: 'trade_run', good, buyAt: o.buyAt, maxBuy: Math.round(maxBuy), qty: Math.round(qty), sellAt, reqId, minSell: Math.round(minSell), then: pick(o.then, ['moor', 'hold'], 'moor'), stage: 'buy' } };
     }
     default: return { ok: true, order: { type: 'stop' } };
   }

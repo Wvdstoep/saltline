@@ -2,6 +2,7 @@
 // unit, every hull the handling it offers (model fields `handling`, `units`, `eq`, read through shared/jobs/shipview.js).
 // Pure and deterministic; plain ESM, browser-safe.
 import { modelOf, rowOf, splitVariant } from './jobs/shipview.js';
+import { CATALOGUE } from './econ/catalogue.js';   // world economy §9.1: every catalogue good is a market cargo
 
 /** Handling classes a hull can offer, with the words the "why not" chips use. */
 export const HANDLING = {
@@ -55,6 +56,14 @@ export const CARGO = {
   narcotics: G('Narcotics', [{ h: 'box' }, { h: 'breakbulk' }], 't', 1, { contraband: true }),
   antiquities: G('Looted antiquities', [{ h: 'box' }, { h: 'breakbulk' }], 't', 1, { contraband: true }),
 };
+
+// World economy §9.1 (docs/WORLD-ECONOMY-CONTRACT.md): a row for every catalogue good, `market: true` on all 80; the
+// job-only goods (reefer_box, dg_box, fruit, spoil) keep a fallback; fruit now falls back to bananas.
+for (const r of CATALOGUE) {
+  if (CARGO[r.id]) { CARGO[r.id].market = true; CARGO[r.id].fallback = null; continue; }
+  CARGO[r.id] = G(r.name, r.opts.map((o) => ({ ...o })), r.unit, r.tPer, { market: true, ...(r.id === 'ore' ? { dense: true } : {}) });
+}
+CARGO.fruit.fallback = 'bananas';
 
 const n0 = (v) => (Number.isFinite(v) ? v : 0);
 

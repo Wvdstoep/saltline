@@ -5,6 +5,9 @@ import { haversine, destination } from '../shared/geo.js';
 import { HARBORS, FISHING_GROUNDS, PLATFORMS, harborById } from './harbors.js';
 import { generateJob as legacyGenerateJob, nextJobId, DEST_BANDS } from './economy.js';
 import { RATES } from '../shared/rates.js';
+import { econDataset } from './econdata.js';                     // world economy §9.2: voyage jobs follow the market roles
+import { roleOf } from '../shared/econ/model.js';
+import { CATALOGUE, catalogueOf } from '../shared/econ/catalogue.js';
 import { CARGO, toTonnes, unitsOf, freeUnits, fromTonnes, eqOf, loadOption } from '../shared/cargo.js';
 import { JOB_GEN, step, payOf } from '../shared/jobs/types.js';
 import {
@@ -161,7 +164,8 @@ const sizeOk = (good, h, cls) => {
 // ------------------------------------------------------------------------------------------------ builders
 // Each builder: (from, o) → job | null, o = { rnd, simTime, env, good?, fit?: { cls, vessel } (size it for that ship) }.
 function bandFor(good, o) {
-  const bands = BAND_OF_GOOD[good] ? BAND_OF_GOOD[good].map((i) => BANDS.bulk[i]) : BANDS[good] || null;
+  const h0 = CARGO[good]?.opts?.[0]?.h, byH = BAND_BY_HANDLING[h0];   // world economy: new goods take their handling's bands
+  const bands = BAND_OF_GOOD[good] ? BAND_OF_GOOD[good].map((i) => BANDS.bulk[i]) : BANDS[good] || (byH === 'bulk' ? BANDS.bulk.slice(0, 4) : byH ? BANDS[byH] : null) || null;
   if (!bands) return null;
   if (o.fit) return [nameOf(o.fit.cls), o.fit.cls, null];
   return pick(o.rnd, bands);
@@ -176,8 +180,7 @@ function voyageLift(from, o, good, dest) {
   return { bandName, refCls, units, t: toTonnes(good, units) };
 }
 function voyageDest(from, o, good, refCls) {
-  const imp = IMPORT_OK[good] || (() => true);
-  return pickDest(from, o.rnd, (h) => imp(h) && sizeOk(good, h, refCls), { minKm: 150 });
+  return pickDest(from, o.rnd, (h) => importsGood(h, good) && sizeOk(good, h, refCls), { minKm: 150 });
 }
 
 const B = {};
@@ -246,7 +249,15 @@ export const EXPORTERS = {
   lng: ['ras_laffan', 'bintulu', 'hammerfest', 'gladstone', 'bonny', 'dampier', 'galveston'],
   lpg: ['ras_tanura', 'ras_laffan', 'galveston'],
 };
-const exportsGood = (h, g) => (EXPORTERS[g] && !EXPORTERS[g].includes(h.id) ? false : EXPORT_TAG[g] ? tagsOf(h).has(EXPORT_TAG[g]) : g === 'steel' ? h.size !== 'minor' : g === 'fruit' ? h.size !== 'minor' && Math.abs(h.lat) < 40 : false);
+const legacyExports = (h, g) => (EXPORTERS[g] && !EXPORTERS[g].includes(h.id) ? false : EXPORT_TAG[g] ? tagsOf(h).has(EXPORT_TAG[g]) : g === 'steel' ? h.size !== 'minor' : g === 'fruit' ? h.size !== 'minor' && Math.abs(h.lat) < 40 : false);
+// World economy §9.2: with the econ dataset loaded, a harbour exports what it makes (role P) and takes what it needs or
+// trades (I / L); EXPORTERS / EXPORT_TAG / IMPORT_OK stay as the fallback for goods outside the catalogue (fruit).
+const econRole = (h, g) => { if (!catalogueOf(g) || !h) return undefined; try { return roleOf(econDataset(), h, g).role; } catch { return undefined; } };
+const exportsGood = (h, g) => { const r = econRole(h, g); return r === undefined ? legacyExports(h, g) : r === 'P'; };
+const importsGood = (h, g) => { const r = econRole(h, g); return r === undefined ? (IMPORT_OK[g] || (() => true))(h) : r === 'I' || r === 'L'; };
+/** Voyage goods (§9.2): the legacy keys plus every bulk, liquid or gas catalogue good. */
+export const VOYAGE_GOODS = [...new Set([...Object.keys(EXPORT_TAG), ...CATALOGUE.filter((r) => ['grains', 'fert', 'ores', 'energy', 'gas'].includes(r.cat)).map((r) => r.id)])];
+const BAND_BY_HANDLING = { bulk: 'bulk', 'liquid:crude': 'crude', 'liquid:clean': 'fuel', 'liquid:chem': 'chemicals', 'gas:lpg': 'lpg', 'gas:lng': 'lng', livestock: 'livestock', reefer: 'fruit' };
 B.voyage = (from, o) => {
   const rnd = o.rnd;
   let good = o.good;
@@ -255,11 +266,11 @@ B.voyage = (from, o) => {
     if (!cands.length) return null;
     if (!good || !cands.includes(good)) good = pick(rnd, cands);
   } else if (!good) {
-    const goods = Object.keys(EXPORT_TAG).filter((g) => exportsGood(from, g));
+    const goods = VOYAGE_GOODS.filter((g) => exportsGood(from, g));
     if (!goods.length) return null;
     good = pick(rnd, goods);
   }
-  if (good === 'grain' && !o.fit && rnd() < 0.2) good = 'steel';
+  if (good === 'grain' && !o.fit && rnd() < 0.2 && exportsGood(from, 'steel')) good = 'steel';
   const lift = voyageLift(from, o, good); if (!lift) return null;
   const d = voyageDest(from, o, good, lift.refCls); if (!d) return null;
   const km = seaKm(o.env, from, d.h), g = CARGO[good];
@@ -727,7 +738,7 @@ export function generateBoard(h, simTime, rnd, env = {}, { n = BOARD_SIZE[h.size
 
 /** Goods a ship can lift on a voyage charter. */
 function voyageGoodsFor(cls) {
-  return ['grain', 'ore', 'coal', 'steel', 'crude', 'fuel', 'chemicals', 'lpg', 'lng', 'livestock', 'fruit'].filter((g) => !!loadOption(g, cls));
+  return [...new Set(['grain', 'ore', 'coal', 'steel', 'crude', 'fuel', 'chemicals', 'lpg', 'lng', 'livestock', 'fruit', ...VOYAGE_GOODS])].filter((g) => !!loadOption(g, cls));
 }
 
 /**

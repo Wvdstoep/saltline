@@ -60,6 +60,7 @@ import { createMinorHarbours, diskOverlayReader, tileDepthSampler, squaresUnder 
 import { mhNearBerth, mhDock } from './mhmoor.js';                                  // inland harbours: boxes / visitor berths (guidance + mooring)   // inland harbours (§7)
 import { boardFor as mhBoardFor, INLAND_TERMINALS } from './inlandjobs.js';
 import { loadLaneA, stubLaneA } from './inlandlink.js';
+import { WorldEcon } from './worldecon.js';                                             // world economy (docs/WORLD-ECONOMY-CONTRACT.md)
 import { buildGraph as buildInlandGraph } from './inland.js';
 import { marketSnapshot } from './market.js';
 import { BARGE_AD } from '../shared/ships/barges.js';
@@ -163,6 +164,7 @@ export class Game {
     // World politics (docs/WORLD-POLITICS-CONTRACT.md): rules per harbour, sanctions, war risk, flags. Tests pass a fixture.
     this.politics = opts.politics === false ? null : new Politics(this, { dir: opts.politicsDir, dataset: opts.politicsDataset, harbors: opts.politicsHarbors, log: this.log });
     if (this.politics?.ds.trade && !opts.politicsDataset) setTradeProfile((cc, g) => this.politics.tradeProfile(cc, g));   // only once shared/politics/trade.json exists
+    this.econ = opts.econ === false ? null : new WorldEcon(this, opts.econOpts || {});   // world economy: roles, flows, requests (before loadState)
     this.loadState();
     // INLAND HARBOURS (docs/WATERWAYS-HARBOURS-PHASE2.md §2.2): generated per z12 square from the overlay as ships sail; ≤ 3,000 in memory
     this.inlandGraph = this.fis ? buildInlandGraph(this.fis, { levels: this.levels }) : null;   // the harbour card's reach (≈ 3 MB)
@@ -173,7 +175,7 @@ export class Game {
       patchLand: (lat, lon) => this.landPenetration(lat, lon),                    // inland harbour pontoons never on a harbour patch's land / quays
       keepSquares: () => squaresUnder([...this.byId.values()].filter((p) => p.online && p.ship).map((p) => p.ship), 25),
       sampleDepth: opts.quaySample ? tileDepthSampler(opts.quaySample, lowWaterAt) : null,
-      market: (id) => { try { return marketSnapshot(this).harbors.find((h) => h.id === id) || null; } catch { return null; } },
+      market: (id) => { try { return this.econ ? this.econ.marketRow(id) : marketSnapshot(this).harbors.find((h) => h.id === id) || null; } catch { return null; } },   // world economy §9.6: by role
       jobs: (h) => { try { return this.mhBoard(h); } catch { return null; } },
       log: (...a) => this.log(...a),
     });
@@ -214,7 +216,8 @@ export class Game {
       }
       // Markets kept moving while the server was down (bounded to two days).
       const savedAt = s.savedAt ? Date.parse(s.savedAt) / 1000 : s.simTime;
-      if (Number.isFinite(savedAt)) { const hours = Math.min(48, Math.max(0, (this.simTime - savedAt) / 3600)); for (const st of Object.values(this.harbors)) driftEconomy(st, hours, this.rnd); }
+      if (Number.isFinite(savedAt)) { const hours = Math.min(48, Math.max(0, (this.simTime - savedAt) / 3600)); if (this.econ) this.econ.afterLoad(s, hours); else for (const st of Object.values(this.harbors)) driftEconomy(st, hours, this.rnd); }
+      else if (this.econ) this.econ.afterLoad(s, 0);   // world economy §12: migrate old saves (scarcity ratios kept)
       this.fleet.afterLoad(savedAt);                  // v6: captained ships migrate, storage dates shift by the downtime
       for (const v of this.fleet.vessels.values()) migrateActor(v);   // YARD §8 (fleet vessels)
       this.log(`[game] loaded ${this.players.size} players, ${this.wrecks.length} wrecks`);
@@ -258,7 +261,7 @@ export class Game {
     try {
       fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
       const s = {
-        savedAt: new Date().toISOString(), fleetSchema: 1, polSchema: 1, polVersion: this.politics?.version ?? null, simTime: this.simTime, ww: this.ww ? this.ww.toSave() : undefined, wind: this.wind, wrecks: this.wrecks, harbors: this.harbors, storms: this.storms,
+        savedAt: new Date().toISOString(), fleetSchema: 1, polSchema: 1, polVersion: this.politics?.version ?? null, ...(this.econ ? this.econ.saveMeta() : {}), simTime: this.simTime, ww: this.ww ? this.ww.toSave() : undefined, wind: this.wind, wrecks: this.wrecks, harbors: this.econ ? this.econ.harborsForSave(this.harbors) : this.harbors, storms: this.storms,
         players: [...this.players.values()].map((p) => ({ ...p, hail: null, online: false, warp: 1, warpRouted: false, warpGraceUntil: 0, warpGraceFactor: 1, ...(this.wwOn ? { radio: p.radio ? { ...p.radio, open: false } : undefined, radioLastTx: 0, radioLastDsc: 0, radioMiss: null, lockStay: null } : {}) })),
       };
       const tmp = this.stateFile + '.tmp';
@@ -284,6 +287,7 @@ export class Game {
       if (st.contact && Array.isArray(st.contact.jobs)) st.contact.jobs = st.contact.jobs.filter(current);
       this.regenHarbor(h, st, true);
     }
+    this.econ?.settle();   // world economy §10: landed ceilings once every harbour has a market
     this.lastEcon = Date.now();
   }
   regenHarbor(h, st, force) {
@@ -359,6 +363,7 @@ export class Game {
     const hours = Math.min(48, (now - (this.lastEcon || now)) / 3600e3);
     this.lastEcon = now;
     if (hours <= 0) return;
+    if (this.econ) return this.econ.step(hours, this.simTime);   // world economy §6.4: flows, events, requests
     for (const h of HARBORS) { const st = this.harbors[h.id]; if (!st) continue; driftEconomy(st, hours, this.rnd); refreshPrices(h, st); }
   }
   harborEcon(st) { return { stock: st.stock || {}, target: st.target || {}, trend: marketTrend(st) }; }
@@ -580,7 +585,7 @@ export class Game {
     this.send(p, {
       t: 'harbor', harbor: { id: h.id, name: h.name, country: h.country, size: h.size, lat: h.lat, lon: h.lon, fuelPrice: this.fuelPrice(h), repairCost: this.repairCost(p),
         rules: this.politics ? this.politics.harbourPayload(p, h) : null,
-        jobs: st.jobs.map(wireJob), market: st.market, econ: this.harborEcon(st), contact: p.contactSeen === h.id && st.contact ? st.contact : null, contactLooked: p.contactSeen === h.id,
+        jobs: st.jobs.map(wireJob), market: st.market, econ: this.econ ? { ...this.harborEcon(st), ...this.econ.harborView(h.id, p) } : this.harborEcon(st), contact: p.contactSeen === h.id && st.contact ? st.contact : null, contactLooked: p.contactSeen === h.id,
         shipyard: Object.values(SHIP_CLASSES).filter((c) => c.price > 0).map((c) => ({ id: c.id, name: c.name, cat: c.cat, price: c.price, desc: c.desc, tradeIn: shipValue(p.ship.cls, p.cond), specs: shipSpecs(c.id) })),
         used: st.used || [], tradeIn: shipValue(p.ship.cls, p.cond), sellValue: p.ship.cls === 'pilot' ? 0 : shipValue(p.ship.cls, p.cond),
         yard: this.yard.view(p, h),                  // SHIPYARD §7.3: newbuild/stock/used/orders (old shipyard/used kept one release)
@@ -750,6 +755,26 @@ export class Game {
         case 'buy_goods': return this.tradeGoods(p, m.good, +m.qty, true);
         case 'sell_goods': return this.tradeGoods(p, m.good, +m.qty, false);
         case 'dump_cargo': return this.dumpCargo(p, m.good);
+        case 'deliver_request': case 'pledge_request': case 'unpledge_request': {   // world economy §7.3
+          if (!this.econ) return this.event(p, 'warn', `Unknown action ${a}`);
+          const r = a === 'deliver_request' ? this.econ.deliver(p, m.reqId, +m.qty || Infinity) : a === 'pledge_request' ? this.econ.pledge(p, m.reqId, +m.qty) : this.econ.unpledge(p, m.reqId);
+          this.event(p, r.ok ? 'info' : 'warn', r.text); this.sendYou(p); if (p.docked) this.sendHarbor(p); return;
+        }
+        case 'mh_trade': {   // world economy §9.6: a small trade at an inland harbour, against the parent's pool
+          const mh = this.mh?.get?.(String(m.mhId || '')), parent = mh && (mh.sub?.id || mh.link?.id);
+          if (!mh || !parent || !this.econ) return this.event(p, 'warn', 'No market here.');
+          if (haversine(p.ship.lat, p.ship.lon, mh.lat, mh.lon) > 1500 || Math.abs(p.ship.spd || 0) > 1) return this.event(p, 'warn', `Come alongside at ${mh.name} first.`);
+          const r = this.econ.inlandTrade(p, { id: mh.id, parent, tier: mh.tier }, String(m.good || ''), +m.qty, m.side === 'buy');
+          this.event(p, r.ok ? 'info' : 'warn', r.text); return this.sendYou(p);
+        }
+        case 'debug_econ': {   // SALTLINE_DEBUG=1 only: force a market event or a stock level at the docked harbour
+          if (process.env.SALTLINE_DEBUG !== '1' || !this.econ || !p.docked) return this.event(p, 'warn', `Unknown action ${a}`);
+          if (m.dockAt && harborById(String(m.dockAt))) { const h2 = harborById(String(m.dockAt)), an = this.harborAnchor(h2); p.docked = h2.id; p.berth = null; Object.assign(p.ship, { lat: an.lat, lon: an.lon, spd: 0 }); p.lastValid = { lat: an.lat, lon: an.lon }; this.sendYou(p); }
+          const st = this.harbors[p.docked];
+          if (m.kind) this.econ.forceEvent(p.docked, String(m.kind), +m.hours || 48, m.good || null);
+          if (m.good && Number.isFinite(+m.ratio) && st.target?.[m.good] > 0) { st.stock[m.good] = Math.round(st.target[m.good] * +m.ratio); this.econ.step(1 / 60, this.simTime); }
+          return this.sendHarbor(p);
+        }
         case 'buy_ship': return this.fleet.buyShip(p, m);   // v6: tradeIn !== false → today's buyShip
         case 'yard_order': case 'yard_pay': case 'yard_cancel': case 'yard_deliver': case 'yard_buy_stock':
         case 'yard_inspect': case 'yard_buy_used': case 'yard_repaint': case 'yard_rename':
@@ -1308,6 +1333,7 @@ export class Game {
   }
   // Supply/demand: buying takes from the harbour stock (price rises), selling adds to it (price falls).
   tradeGoods(p, good, qty, buying) {
+    if (this.econ) return this.econ.trade(p, good, qty, buying);   // world economy §6.8–§6.9: reserve, fit, fallback buyer, stack src
     if (!p.docked) return;
     const h = harborById(p.docked), st = this.harbors[p.docked];
     if (!isGood(good) || GOODS[good].contraband || !(qty > 0)) return;

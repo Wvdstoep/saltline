@@ -16,6 +16,7 @@ import { estimateJob, hardReason, fmtShipH, JOBTIME } from '/shared/jobtime.js';
 import { TIER_TABS, SERVICE_TIERS, quayDenies } from '/shared/quayrules.js'; // DOCK ANYWHERE
 import { RadarMap } from './radarmap.js'; // RADAR MAP: map underlay, traffic / names toggles
 import { cardHTML as mhCardHTML, berthsHTML as mhBerthsHTML } from './mhchart.js';   // inland harbour card (§7.5)
+import { EconView } from './econview.js';   // world economy: the Market tab redesign (docs/WORLD-ECONOMY-CONTRACT.md §14.1)
 
 const { GOODS, SHIP_CLASSES, GEO, SIM, INTERACT } = K;
 const $ = (id) => document.getElementById(id);
@@ -1175,6 +1176,7 @@ export class Hud {
 
   // -------- market
   tabMarket(h, you, C) {
+    if (Array.isArray(h.econ?.goods)) return (this.econView ||= new EconView(this)).render(h, you, C);   // world economy §14.1
     const econ = h.econ || null;
     // V6 item 7: the World market's trade plan shows on that good's card at the buying and at the selling harbour
     const tp = this.app.tradePlan;
@@ -1397,6 +1399,7 @@ export class Hud {
   // -------- delegated actions and live inputs
   sheetAction(act, el, e) {
     if (act && act.startsWith('yard-') && this.app.yardUi) return this.app.yardUi.action(act, el, e);   // SHIPYARD H5
+    if (act && act.startsWith('econ-') && this.econView) return this.econView.action(act, el, e);   // world economy §14.1
     const a = this.app, net = a.net, you = a.you, root = $('harborWrap');
     if (a.jobBoard && (act === 'jbFilter' || act === 'jbAssign')) { a.jobBoard.click(el, net); return this.renderHarborTabs(); }   // YARD H5b
     const qtyInput = (g) => root.querySelector(`input[data-qty="${CSS.escape(g)}"]`);
@@ -1457,6 +1460,7 @@ export class Hud {
   /** Live previews for quantity boxes and the fuel slider (no re-render). */
   sheetInput(i) {
     if (!i || !i.dataset) return;
+    if (this.econView?.input(i)) return;   // world economy: the goods search and the bottom-sheet slider
     if (i.id === 'fuelSlider') {
       const v = +i.value || 0, price = +i.dataset.price || 0, cap = +i.dataset.cap || 1, have = +i.dataset.have || 0;
       const max = +i.max || 1; i.style.setProperty('--pct', `${Math.round((v / max) * 100)}%`);

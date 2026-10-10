@@ -43,6 +43,7 @@ test('harbour sheet carries rules, you carries pol, fleet view carries complianc
 
 test('buying stamps the origin; selling keeps stacks per origin', () => {
   const g = mkGame(); const { p } = join(g, 'Ann');
+  const rs = g.harbors.rotterdam; rs.stock.grain = rs.target.grain * 2;   // world economy §6.8: an importer sells its surplus only
   g.tradeGoods(p, 'grain', 10, true);
   const st = p.cargo.find((c) => c.good === 'grain');
   assert.equal(st.origin, 'NL');
