@@ -1654,7 +1654,10 @@ export class Game {
     if (underway && p.cond > 0) {
       // Overdue maintenance ramps the wear multiplier (+2 %/day past serviceDue, up to +60 %).
       const svc = serviceWearMul(p.serviceDue, this.simTime);
-      p.cond = Math.max(0, p.cond - wearPerSimHour(s.throttle, wx.wind.spd, C.wearMul) * svc * hrs);
+      // Wear alone never sinks a ship the crew sails for you (autopilot, offline voyage, captains, tugs): it stops at 1 %.
+      // Only a skipper sailing by hand can wear the hull to 0 % (then the ship floods and sinks).
+      const autoSail = !!(p.voyage || p.assist || p.isActor || !p.online);
+      p.cond = Math.max(autoSail ? Math.min(1, p.cond) : 0, p.cond - wearPerSimHour(s.throttle, wx.wind.spd, C.wearMul) * svc * hrs);
       if (svc > 1 && !p.serviceWarned) { p.serviceWarned = true; this.event(p, 'warn', 'Service overdue: the engineer reports rising wear. Book a service at the next yard (1 % of the hull price).'); }
       if (svc <= 1) p.serviceWarned = false;
       if (p.cond < 30 && !p.condWarned) { p.condWarned = true; this.event(p, 'warn', 'Hull condition under 30 %: steering is getting sluggish, leaks likely. Find a yard.'); }
@@ -2236,7 +2239,7 @@ export class Game {
       if (x.incidents.some((i) => i.outcome === 'loss')) return;
     }
     p.money -= cost; p.fuel = Math.max(0, p.fuel - fuelNeeded);
-    p.cond = Math.max(0, p.cond - wearPerSimHour(0.8, this.wind.spd, C.wearMul) * hours);
+    p.cond = Math.max(Math.min(1, p.cond), p.cond - wearPerSimHour(0.8, this.wind.spd, C.wearMul) * hours);   // an express passage never takes the hull below 1 %
     const s = p.ship;
     s.lat = arr.lat; s.lon = arr.lon; s.hdg = normDeg(arr.hdg); s.spd = 0; s.throttle = 0; s.rudder = 0;
     // grounding watch starts afresh at the new position (no stale shallow timer, no teleport back to the old water)

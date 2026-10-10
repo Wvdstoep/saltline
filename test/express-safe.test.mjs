@@ -224,3 +224,29 @@ test('express into a big port builds the extra harbour patches first and arrives
     g.disconnect(p); g.players.delete(p.id);
   }
 });
+
+// ------------------------------------------------------------------------------------------------ hull never hits 0 % unless sailed by hand
+test('hull wear: express, autopilot, offline and captain voyages stop at 1 %; a skipper sailing by hand can reach 0 % and then floods', async () => {
+  const g = mkGame();
+  const base = { lat: 54.0, lon: 5.0 };
+  // 1. express: a long passage on a worn hull leaves at least 1 %
+  const a = atSea(g, 'Ex1', destination(base.lat, base.lon, 90, 6000000 / 1852 * 0 + 600000));
+  a.p.cond = 3; a.p.ship.throttle = 0;
+  const far = destination(base.lat, base.lon, 270, 900000);
+  await g.expressPassage(a.p, far.lat, far.lon);
+  assert.ok(a.p.cond >= 1 || /No safe water|on land|Too close|Not enough|costs/.test(lastEvent(a.ws)), `express hull ${a.p.cond}: ${lastEvent(a.ws)}`);
+  // 2. the shared at-sea step: autopilot / offline / captain / tug-assist stop at 1 %; by hand goes to 0 %
+  const run = (p, h = 500) => { p.ship.throttle = 1; p.ship.spd = 12; g.stepAtSea(p, h / 3600 * 3600); };
+  const cases = [['autopilot', (p) => { p.voyage = { route: [], i: 0 }; }], ['offline', (p) => { p.online = false; }], ['captain', (p) => { p.isActor = true; }], ['tug assist', (p) => { p.assist = {}; }]];
+  for (const [label, mark] of cases) {
+    const { p } = atSea(g, `Au-${label}`, base);
+    p.cond = 1.2; mark(p);
+    run(p, 1000);
+    assert.ok(p.cond >= 1 - 1e-9, `${label}: hull ${p.cond}`);
+  }
+  const { p: hand } = atSea(g, 'ByHand', base);
+  hand.cond = 1.2; run(hand, 1000);
+  assert.equal(hand.cond, 0, 'by hand the hull can wear out');
+  run(hand, 100);
+  assert.ok(hand.flooding > 0, 'and a 0 % hull floods');
+});
