@@ -293,7 +293,8 @@ app.get('/api/market', (req, res) => res.json(cachedSnapshot(game)));
 app.get('/api/mh', (req, res) => {
   const b = String(req.query.bbox || '').split(',').map(Number);
   if (!game.mh || b.length !== 4 || !b.every(Number.isFinite)) return res.json({ harbours: [] });
-  res.json({ harbours: game.mh.inBbox(b, Number(req.query.z) || 11) });
+  const harbours = game.mh.inBbox(b, Number(req.query.z) || 11);
+  res.json({ harbours, pending: game.mh.pending?.() || 0 });
 });
 // INLAND HARBOURS in 3D / radar / chart: geometry records (pontoons, quays, gangways, hut, fuel berth) near a point
 // (≤ 4 km, ≤ 12, nearest first) or by id (≤ 16); { id, pending: true } while the tiles under one are not in memory.

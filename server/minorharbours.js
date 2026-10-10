@@ -142,9 +142,41 @@ export function createMinorHarbours(opts = {}) {
     for (const k of squaresNear(lat, lon, rKm)) { const [x, y] = k.split('/').map(Number); for (const h of harboursIn(x, y)) { const d = distM(lat, lon, h.lat, h.lon); if (d <= rKm * 1000) out.push({ h, d }); } }
     return out.sort((a, b) => a.d - b.d || (a.h.id < b.h.id ? -1 : 1)).map((o) => o.h);
   }
-  /** Chart rows inside a bbox [s, w, n, e] at a chart zoom (§7.5: zoom ≥ 11), memory only. */
+  /** z12 square keys covering a bbox [s, w, n, e] (null when more than `cap` squares: too far zoomed out). */
+  function squaresInBbox([s, w, n, e], cap = MH.CHART_MAX_SQUARES) {
+    const [x0, y0] = sqOf(n, w).split('/').map(Number), [x1, y1] = sqOf(s, e).split('/').map(Number);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > cap) return null;
+    const out = [];
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) out.push(`${x}/${y}`);
+    return out;
+  }
+  /**
+   * Chart rows inside a bbox [s, w, n, e] at a chart zoom (§7.5: zoom ≥ 11). The squares under the bbox are generated
+   * on the spot from the FIS list (cheap, sync) and their overlays are read in the background (memguard < shed), so
+   * the chart shows harbours wherever the player looks, not only where a ship has been.
+   */
   function inBbox([s, w, n, e], zoom = 11) {
     if (zoom < MH.CHART_MIN_ZOOM) return [];
+    const keys = squaresInBbox([s, w, n, e]) || [];
+    const lv = level();
+    for (const k of keys) {
+      const sq = squares.get(k);
+      if (sq) touch(k);
+      else if (fisBySq.has(k) && lv < 4) { const [x, y] = k.split('/').map(Number); ingest(x, y, null); }
+    }
+    if (opts.readOverlay && lv < 3) {
+      const t = now(), want = keys.filter((k) => { const q = squares.get(k); return !q?.full && !inflight.has(k) && !(q?.missAt && t - q.missAt < 300000); }).slice(0, MH.CHART_LOAD_PER_REQ);
+      for (const k of want) {
+        const [x, y] = k.split('/').map(Number);
+        const p = (async () => {
+          let ov = null;
+          try { ov = await opts.readOverlay(x, y); } catch { ov = null; }
+          if (!ov) { st.overlayMisses++; if (!squares.has(k)) squares.set(k, { ids: [], full: false, at: now() }); squares.get(k).missAt = now(); return; }
+          if (level() < 4) ingest(x, y, ov);
+        })().catch(() => {}).finally(() => inflight.delete(k));
+        inflight.set(k, p);
+      }
+    }
     const out = [];
     for (const h of byId.values()) if (h.lat >= s && h.lat <= n && h.lon >= w && h.lon <= e) out.push(chartRow(h));
     out.sort((a, b) => (a.id < b.id ? -1 : 1));
@@ -292,7 +324,7 @@ export function createMinorHarbours(opts = {}) {
   function depthFor(h) { let sampled = null; try { sampled = opts.sampleDepth ? opts.sampleDepth(h.lat, h.lon) : null; } catch { sampled = null; } return depthOf(h, { sampled }); }
 
   return {
-    ingest, ensureNear, harboursIn, near, inBbox, get, sheet, reach, harboursOn, servicesAt, markers, shed, geoOf, geoNear, depthFor, waterLine, isWater,
+    ingest, ensureNear, harboursIn, near, inBbox, pending: () => inflight.size, get, sheet, reach, harboursOn, servicesAt, markers, shed, geoOf, geoNear, depthFor, waterLine, isWater,
     setSampler(fn, ensure = null) { sampleMask = typeof fn === 'function' ? fn : null; ensureTiles = typeof ensure === 'function' ? ensure : ensureTiles; for (const [k, e] of geoCache) if (!e.refined) geoCache.delete(k); },
     setLane(l) { if (l) { lane = l; reachCache.clear(); } }, lane: () => lane, setSampleDepth(fn) { opts.sampleDepth = typeof fn === 'function' ? fn : null; },
     squaresNear, size: () => total, squareCount: () => squares.size, hasSquare: (x, y) => squares.has(`${x}/${y}`),

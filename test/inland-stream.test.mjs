@@ -145,3 +145,37 @@ test('with lane A merged: the shipped FIS registry and its inland graph drive ha
   assert.ok(['yes', 'openings', 'no'].includes(card.reach.state));
   assert.ok(card.fit.total > 0);
 });
+
+test('chart bbox loads the squares under it (not only where a ship has been): FIS at once, overlays in the background', async () => {
+  const fis = { harbours: [{ id: 'fis1', name: 'Fis Haven', p: [51.83, 4.135] }] };
+  const [ox, oy] = sqOf(51.80, 4.05).split('/').map(Number);
+  const reads = [];
+  const mh = createMinorHarbours({ named: [], fis, guard: guardAt(1), readOverlay: async (x, y) => { reads.push(`${x}/${y}`); return x === ox && y === oy ? overlayWith(x, y, 4) : null; } });
+  assert.equal(mh.size(), 0);
+  const bbox = [51.75, 3.95, 51.90, 4.25];
+  const first = mh.inBbox(bbox, 12);
+  assert.ok(first.some((r) => r.name === 'Fis Haven'), 'FIS harbour on the first answer');
+  assert.ok(mh.pending() > 0 || reads.length > 0);
+  await new Promise((r) => setTimeout(r, 20));
+  const second = mh.inBbox(bbox, 12);
+  assert.ok(second.length >= first.length + 4, 'overlay marinas after the background read');
+  assert.ok(reads.includes(`${ox}/${oy}`));
+  // too far out (> CHART_MAX_SQUARES) or under zoom 11: nothing is generated
+  const mh2 = createMinorHarbours({ named: [], fis, readOverlay: async () => { throw new Error('no read'); } });
+  assert.deepEqual(mh2.inBbox([40, -10, 60, 20], 11), []);
+  assert.deepEqual(mh2.inBbox(bbox, 10), []);
+  // critical memory: no new squares, no reads
+  const mh3 = createMinorHarbours({ named: [], fis, guard: guardAt(4), readOverlay: async () => { throw new Error('no read'); } });
+  assert.deepEqual(mh3.inBbox(bbox, 12), []);
+});
+
+test('chart bbox: a square without an overlay is not re-read on every request (5 min pause)', async () => {
+  let reads = 0;
+  const mh = createMinorHarbours({ named: [], fis: { harbours: [] }, readOverlay: async () => { reads++; return null; } });
+  const bbox = [51.80, 4.10, 51.85, 4.15];
+  mh.inBbox(bbox, 12); await new Promise((r) => setTimeout(r, 10));
+  const n = reads; assert.ok(n > 0);
+  mh.inBbox(bbox, 12); await new Promise((r) => setTimeout(r, 10));
+  assert.equal(reads, n);
+  assert.equal(mh.pending(), 0);
+});

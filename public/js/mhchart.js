@@ -80,7 +80,7 @@ export class MHChartLayer {
     if (!b) { this.rows = []; this.key = null; return; }
     if (this.busy || (b.key === this.key && Date.now() - this.at < 30000)) return;
     this.busy = true; this.key = b.key; this.at = Date.now();
-    this.fetchImpl(`/api/mh?bbox=${b.key}&z=${Math.floor(chart.zoom)}`).then((j) => { this.rows = j?.harbours || []; chart.requestDraw?.(); }).catch(() => {}).finally(() => { this.busy = false; });
+    this.fetchImpl(`/api/mh?bbox=${b.key}&z=${Math.floor(chart.zoom)}`).then((j) => { this.rows = j?.harbours || []; if (j?.pending) this.at = Date.now() - 28000; chart.requestDraw?.(); }).catch(() => {}).finally(() => { this.busy = false; });
   }
   drawChartLayer(chart, g) {
     this.refresh(chart);

@@ -38,7 +38,7 @@ export const MH = {
   FEE: { marina: 1.6, passant: 1.2, city: 1.0, fishing: 0.8 }, POWER_CR: 3,
   FUEL_TRUCK_MUL: 1.08, MOBILE_REPAIR_MUL: 1.25, YACHT_REPAIR_MUL: 1.3,
   VHF_SIM: { NL: 31, other: 9 },
-  CHART_MIN_ZOOM: 11, CHART_MAX_ROWS: 400,
+  CHART_MIN_ZOOM: 11, CHART_MAX_ROWS: 400, CHART_MAX_SQUARES: 160, CHART_LOAD_PER_REQ: 24,
   REACH_TTL_S: 600,
   BOARD_MAX: { marina: 4, passant: 2, inland_port: 6, fishing: 0, city: 0, ferry: 0 },
   MARKET_SPREAD: 0.06, MARKET_STOCK_FRAC: 0.1, MARKET_GOODS: [3, 5],
