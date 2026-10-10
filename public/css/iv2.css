@@ -1,0 +1,18 @@
+/* Interiors v2 — engine panel (public/js/iv2panel.js) */
+.iv2-panel { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 18; display: none;
+  width: min(440px, calc(100vw - 32px)); padding: 12px 14px 14px; border-radius: 12px; box-sizing: border-box;
+  background: rgba(8, 16, 24, .94); border: 1px solid rgba(140, 190, 230, .45); color: #dbe9f4; font: 14px/1.35 "Segoe UI", system-ui, sans-serif; }
+.iv2-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.iv2-head b { font-size: 16px; }
+.iv2-sub { flex: 1; color: #9fb8cc; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv2-x { min-width: 44px; min-height: 44px; border: 0; border-radius: 8px; background: rgba(40, 60, 80, .8); color: inherit; font-size: 22px; cursor: pointer; }
+.iv2-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.iv2-cell { padding: 6px 8px; border-radius: 8px; background: rgba(20, 40, 60, .75); }
+.iv2-cell span { display: block; font-size: 11px; color: #8fa8bc; }
+.iv2-cell b { font: 600 15px/1.2 ui-monospace, Menlo, Consolas, monospace; color: #9ef0b0; }
+.iv2-cell.warn b { color: #ffb070; }
+.iv2-alarms { margin-top: 10px; min-height: 22px; }
+.iv2-alarm { color: #ff9a7a; font-weight: 600; }
+.iv2-ok { color: #8fd0a0; }
+.iv2-drill { display: flex; align-items: center; gap: 8px; margin-top: 10px; min-height: 44px; color: #9fb8cc; cursor: pointer; }
+@media (max-width: 420px) { .iv2-grid { grid-template-columns: repeat(2, 1fr); } }

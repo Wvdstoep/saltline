@@ -16,6 +16,8 @@ import { buildPlan } from './shipplan.js';
 import { WalkMap, stairEnds } from './walker.js';
 import { drawGAProp, GA_PROP_KINDS, buildZoned, gaInteract, gaZoneUpdate, openGotoMenu } from './gaprops.js';   // SHIPYARD H11 (docs/SHIPS-LANEC-PHASE2.md)
 import { baseOf } from '/shared/ships/index.js';
+import { buildInteriorV2 } from './iv2draw.js';   // IV2 HV2 (docs/INTERIORS-V2-CONTRACT.md §9.5)
+import { iv2Interact, iv2Frame } from './iv2interact.js';   // IV2 HV3b, HV4
 
 const EYE = 1.65;
 const WALK = 1.7, RUN = 3.3;
@@ -262,6 +264,7 @@ export class Interior {
   interact() {
     if (this.atHelm) { this.leaveHelm(); return; }
     const h = this.nearHotspot; if (!h) return;
+    if (this.plan?.v === 2 && iv2Interact(this, h)) return;   // IV2 HV4: stations, VHF / GMDSS panel, engine panel, animated ladders
     if (gaInteract(this, h)) return;   // ladder climb, Go-to / lift, telegraph, thrusters, whistle, GMDSS, ECR, info points
     const app = this.app, you = app.you;
     switch (h.kind) {
@@ -332,6 +335,7 @@ export class Interior {
     // ---- zone streaming (GA plans): the zone you stand in and its neighbours; a tower landing of a neighbour deck
     // reloads that deck's plan (cruise ships, big ro-pax)
     if (this.zoneGroups) gaZoneUpdate(this, this.isTouch || window.innerWidth < 900);
+    this.v2?.frame(this, dt);   // IV2 HV3a: detail chunks, window views, light mode, wipers
     // ---- hotspots
     let best = null, bd = 1e9;
     for (const h of this.hotspots) {
@@ -348,6 +352,7 @@ export class Interior {
     const bob = this.avatar.userData.animate(dt, moving, this.runVis && moving);
     this.avatar.position.set(this.pos.x, this.y + bob, this.pos.z);
     this.avatar.rotation.y = -this.yaw;
+    iv2Frame(this, dt);   // IV2 HV3b: ladder climb, door leaves, sill foot-lift
     const bobY = third ? 0 : (moving ? Math.sin(this.bob) * 0.03 : 0);
     const V = this.v, dirL = V.dir.set(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));
     const eyeL = V.eye.set(this.pos.x, this.y + EYE + bobY, this.pos.z), lookL = V.look;
@@ -378,7 +383,7 @@ export class Interior {
       const r = room;
       const lampL = V.lamp.set(this.pos.x, r && !r.open ? r.y + r.h - 0.25 : this.y + 3.0, this.pos.z);
       this.light.position.copy(lampL.applyMatrix4(mesh.matrixWorld));
-      this.light.intensity = r && r.dark ? 6 : r && r.open ? 4 : 6;
+      this.light.intensity = (r && r.dark ? 6 : r && r.open ? 4 : 6) * (this.plan?.v === 2 ? 0.35 : 1);   // IV2 HV5
     }
     // ---- screens and controls
     const now = performance.now();
@@ -414,7 +419,8 @@ export class Interior {
     const g = new THREE.Group(); g.name = 'interior'; g.visible = false;
     this.mats = this.makeMaterials(plan.style);
     this.zoneGroups = null;
-    if (plan.zones?.length) this.zoneGroups = buildZoned(this, plan, g);   // GA plans: one group per zone (§6.6 streaming)
+    this.v2 = null;
+    if (plan.zones?.length) this.zoneGroups = plan.v === 2 ? buildInteriorV2(this, plan, g, { phone: this.isTouch || window.innerWidth < 900 }) : buildZoned(this, plan, g);   // GA plans: one group per zone (§6.6 streaming); IV2 HV2
     else {
       this.pb = new PartBuilder();
       const ctx = { g, M: this.mats, pb: this.pb, plan };

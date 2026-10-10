@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saltline — interiors v2 viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1626; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #info { position: fixed; left: 8px; bottom: 8px; padding: 4px 8px; border-radius: 6px; background: rgba(4, 12, 20, .7); color: #dbe9f4; font: 12px/1.3 system-ui, sans-serif; pointer-events: none; }
+</style>
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.min.js" } }</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="info">loading…</div>
+<script type="module" src="/js/iv2view.js"></script>
+</body>
+</html>
