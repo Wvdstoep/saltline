@@ -10,6 +10,8 @@
 //   ladder (with `to`), goto, galley, hospital, muster, lab, info
 // Pure (no three.js, no DOM): the node tests walk every catalogue model with the game's own walker.
 import { generalArrangement, hullHalf, deckHalf, outlineHalf, fitHalf, demihullAt, RULES, stairRun } from '../../shared/ships/ga.js';
+import { IV2_READY } from '../../shared/ships/gaspace.js';   // IV2 HV1
+import { planV2 } from './gaplan2.js';                         // IV2 HV1
 
 export const R = 0.25;          // walker radius (shipplan.js R)
 export const STEP = 0.32;       // shipplan.js STEP
@@ -1273,6 +1275,7 @@ function finishCommon(P, ga) {
 export function planFromGA(gaOrId, opts = {}) {
   const ga = typeof gaOrId === 'string' ? generalArrangement(gaOrId) : gaOrId;
   if (!ga || ga.gen === 'sail') return null;
+  if (IV2_READY.has(ga.gen) && opts.v !== 1 && globalThis.__iv2 !== false) return planV2(ga, opts);   // IV2 HV1 (docs/INTERIORS-V2-CONTRACT.md §9.5)
   const P = new GPlan(ga);
   const layout = ga.layout;
   if (layout === 'big') planBig(P, ga);

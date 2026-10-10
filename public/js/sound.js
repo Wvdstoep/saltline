@@ -86,6 +86,18 @@ const ENV = {
   ashore: { eng: 0.1, lp: 0.45, clat: 0.05, turbo: 0.15, water: 0.45, wlp: 0.8, wind: 0.75, whistle: 0.4, windLP: 0.9, rain: 1, rmode: 3, harbor: 1.6, ships: 1, hotel: 0, hlp: 220, sfxLP: 16000, radio: 0, reverb: 0.55, steps: 'concrete' },
 };
 ENV.chart = { ...ENV.bridge, eng: 0.2, water: 0.28, wind: 0.35, harbor: 0.35 };
+// IV2 HV7 (docs/INTERIORS-V2-CONTRACT.md §5.3): the spaces of interiors v2, each with its own sound
+Object.assign(ENV, {
+  ecr: { ...ENV.cabin, eng: 0.42, lp: 0.32, turbo: 0.08, hotel: 0.95, hlp: 900, reverb: 0.12, steps: 'vinyl' },
+  galley: { ...ENV.mess, hotel: 1.0, hlp: 700, reverb: 0.3, steps: 'vinyl' },
+  public: { ...ENV.mess, eng: 0.16, hotel: 0.75, hlp: 420, reverb: 0.35, steps: 'carpet' },
+  cardeck: { ...ENV.passage, eng: 0.5, lp: 0.45, hotel: 0.5, reverb: 0.8, steps: 'steel' },
+  hold: { ...ENV.passage, eng: 0.3, hotel: 0.1, reverb: 0.9, steps: 'steel' },
+  steering: { ...ENV.engine, eng: 0.55, turbo: 0.2, hotel: 1.0, hlp: 1600, reverb: 0.5, steps: 'chequer' },
+  workshop: { ...ENV.engine, eng: 0.7, lp: 0.15, turbo: 0.4, reverb: 0.4, steps: 'chequer' },
+  wet: { ...ENV.cabin, reverb: 0.3, steps: 'vinyl' },
+  stair: { ...ENV.passage, reverb: 0.5, steps: 'vinyl' },
+});
 for (const k in ENV) ENV[k].key = k;
 const RAIN_MODE = [[3200, 0.35], [2300, 0.9], [380, 0.7], [2600, 0.45]];
 
@@ -94,6 +106,9 @@ const SURF = {
   wood: { bp: 340, q: 0.9, dec: 0.022, toe: 0.05, ring: 0, amp: 0.55 },
   concrete: { bp: 1500, q: 0.5, dec: 0.012, toe: 0.04, ring: 0, amp: 0.55, scuff: true },
   grating: { bp: 2300, q: 1.6, dec: 0.01, toe: 0.03, ring: 1250, ringDec: 0.07, ringAmp: 0.1, amp: 0.45, rattle: true },
+  carpet: { bp: 260, q: 0.7, dec: 0.03, toe: 0.06, ring: 0, amp: 0.3 },        // IV2 HV7
+  vinyl: { bp: 700, q: 0.8, dec: 0.014, toe: 0.045, ring: 0, amp: 0.45, scuff: true },
+  chequer: { bp: 900, q: 1.2, dec: 0.014, toe: 0.04, ring: 520, ringDec: 0.04, ringAmp: 0.1, amp: 0.5 },
 };
 
 function envKey(s) {
@@ -737,7 +752,7 @@ export class SoundEngine {
     const race = s.waveH > 2.5 ? Math.sin(this._racePh) * 0.035 * Math.min((s.waveH - 2.5) / 3, 1) * rf : 0;
     const rpm = ci.rpm[1] * Math.max(idle, rf) * (1 + race);
     const cyc = rpm / 60 / (pr.stroke === 4 ? 2 : 1);
-    let level = running ? env.eng * pr.gain * boost * (0.5 + 0.5 * Math.max(idle, rf)) * (0.85 + 0.35 * load) * 0.5 : 0;
+    let level = running ? env.eng * pr.gain * boost * (0.5 + 0.5 * Math.max(idle, rf)) * (0.85 + 0.35 * load) * 0.5 * (s.engNear != null ? 0.65 + 0.45 * s.engNear : 1) : 0;   // IV2 HV7: engNear
     let lp = env.lp === 0 ? pr.roomLP : Math.max(110, pr.deckLP * env.lp);
     lp *= 0.75 + 0.35 * load + 0.2 * rf;
     if (!wf) { level = running ? env.eng * pr.gain * 0.12 : 0; lp = 260; } // time-warp: muted engine bed only

@@ -97,6 +97,7 @@ class App {
     // visuals and HUD only (the server's SALTLINE_DEBUG=1 action 'debug_sea' {bft} does the same server-side).
     this.forceBft = null; this.camJolt = 0;
     try { const q = new URLSearchParams(location.search).get('bft') ?? new URLSearchParams(location.search).get('sea'); if (q !== null && q !== '' && Number.isFinite(+q)) this.forceBft = Math.max(0, Math.min(12, Math.round(+q))); } catch { /* no URL API */ }
+    this.iv2 = true; try { if (new URLSearchParams(location.search).get('iv2') === '0') { globalThis.__iv2 = false; this.iv2 = false; } } catch { /* no URL API */ }   // IV2 HV9: ?iv2=0 → v1 interiors
     window.saltlineSea = (n) => { this.forceBft = n === null || n === undefined || !Number.isFinite(+n) ? null : Math.max(0, Math.min(12, Math.round(+n))); if (this.you?.weather) { const w = this.forceBft != null ? this.forcedWeather(this.you.weather) : this.you.weather; this.applyWeather(w); this.ocean.snapSea?.(); } return this.forceBft; };
     try { this.sound = new SoundEngine(); } catch (e) { console.warn('[sound] unavailable', e); this.sound = null; }
     this.soundState = { view: 'deck', room: null, shipCls: 'coaster', throttle: 0, rpmFrac: 0, speedKn: 0, windSpd: 0, windRelDeg: 0, waveH: 0, rain: 0, storm: 0, night: 0, nearHarborM: null, nearShips: [], underway: false, docked: true, towing: false, warp: 1 };
@@ -555,10 +556,11 @@ class App {
       const I = this.interior, r = I.roomAt?.(I.pos.x, I.pos.z, I.y), id = String(r?.id || '');
       room = id.startsWith('cabin') ? 'cabin' : id === 'engine' ? 'engine' : (id === 'bridge' || id === 'wheelhouse') ? 'bridge' : (id === 'mess' || id === 'saloon' || id === 'galley') ? 'mess' : 'passage';
       if (r?.kind && ['cabin', 'engine', 'bridge', 'mess'].includes(r.kind)) room = r.kind; // deck-plan rooms (shipplan.js) carry their kind
+      if (r?.acoustic) room = r.acoustic; st.engNear = I.v2?.engNear ?? null;   // IV2 HV6: v2 spaces carry their acoustic
       if (r?.open) { view = 'deck'; room = null; } // out on the open deck: wind and sea, not a room
       if (room === 'bridge') view = 'bridge';
       const moving = I.keys?.size > 0 || this.touchHelm?.stick?.active;
-      if (moving && now - this.lastFootstep > (I.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep(room === 'engine' ? 'grating' : room === 'cabin' ? 'wood' : 'steel'); }
+      if (moving && now - this.lastFootstep > (I.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep(I.v2 && r?.floor ? ({ lino: 'vinyl', carpet: 'carpet', grating: 'grating', steel: 'chequer', wood: 'wood', teak: 'wood' }[r.floor] || 'steel') : room === 'engine' ? 'grating' : room === 'cabin' ? 'wood' : 'steel'); }   // IV2 HV6: footsteps by floor
     } else if (this.hud.chartOpen?.()) view = 'chart';
     else if (this.cam.mode === 2) view = 'bridge';
     if (ashore && this.ashore?.keys?.size > 0 && now - this.lastFootstep > (this.ashore.run ? 330 : 520)) { this.lastFootstep = now; snd.footstep('concrete'); }
@@ -1335,6 +1337,7 @@ class App {
     const rainW = Number(this.wx?.rain) || 0, gale = THREE.MathUtils.smoothstep(Number(this.wx?.windSpd) || 0, 10, 26);
     // overcast and storm darkening: a gale sky is low and grey, a storm at noon is dusk-dark
     const gloom = THREE.MathUtils.clamp(0.5 * storm + 0.35 * gale + 0.25 * cloud + 0.15 * rainW, 0, 0.88);
+    this.dayK = day; this.gloomK = gloom;   // IV2 HV8: daylight through the interior windows
     const grey = new THREE.Color(0x5d6670).lerp(new THREE.Color(0x2c3438), THREE.MathUtils.clamp(Math.max(storm, gale) * 1.2 - 0.2, 0, 1)); // storm: slate, nearly black under the scud
     const top = new THREE.Color(0x101e33).lerp(new THREE.Color(0x3f7fc9), day).lerp(new THREE.Color(0x8c5a6a), dusk * 0.35).lerp(grey, gloom * day);
     const hor = new THREE.Color(0x24364d).lerp(new THREE.Color(0xbfd9ee), day).lerp(new THREE.Color(0xf2a860), dusk * 0.7).lerp(grey.clone().multiplyScalar(1.3 - 0.45 * Math.max(storm, gale)), gloom * day);
