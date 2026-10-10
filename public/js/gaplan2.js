@@ -306,7 +306,18 @@ function decorate(plan, P) {
     }
   }
   const roomById = new Map(plan.rooms.map((r) => [r.id, r]));
-  for (const p of plan.props) if (p.t === 'k2' || p.t === 'run') { const r = p.room && roomById.get(p.room); if (r) p.chunk = r.chunk; }
+  // a big room (engine-room levels of large ships) is cut into 12 m detail cells, so the walker's surroundings stream
+  const sub = new Map(), CELL = 12;
+  for (const p of plan.props) {
+    if (p.t !== 'k2' && p.t !== 'run') continue;
+    const r = p.room && roomById.get(p.room); if (!r) continue;
+    if ((r.x1 - r.x0) * (r.z1 - r.z0) <= 150) { p.chunk = r.chunk; continue; }
+    const px = p.x ?? (p.pts ? (p.pts[0][0] + p.pts[p.pts.length - 1][0]) / 2 : (r.x0 + r.x1) / 2), pz = p.z ?? (p.pts ? (p.pts[0][2] + p.pts[p.pts.length - 1][2]) / 2 : (r.z0 + r.z1) / 2);
+    const i = Math.floor((px - r.x0) / CELL), j = Math.floor((pz - r.z0) / CELL), id = `${r.chunk}.${i}.${j}`;
+    if (!sub.has(id)) { const x0 = r.x0 + i * CELL, z0 = r.z0 + j * CELL; sub.set(id, { id, zone: r.zone, rooms: [], area: 0, y: r.y, center: { x: r2((x0 + Math.min(r.x1, x0 + CELL)) / 2), y: r.y, z: r2((z0 + Math.min(r.z1, z0 + CELL)) / 2) } }); }
+    p.chunk = id;
+  }
+  for (const c of sub.values()) chunks.push(c);
   plan.v = 2; plan.lights = lights; plan.emitters = emitters; plan.views = views; plan.chunks = chunks.map(({ y, ...c }) => c); plan.iv2 = P.iv2 || null;
   return plan;
 }

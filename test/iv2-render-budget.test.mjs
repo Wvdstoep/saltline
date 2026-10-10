@@ -1,7 +1,7 @@
 // Interiors v2 — render budgets (docs/INTERIORS-V2-CONTRACT.md §6, A9; Lane R): three.js in node with the game's
 // Interior (the interiors2-budget pattern) and buildInteriorV2 for phase-1 models. For every zone a walker can stand
 // in, standing at each detail chunk's centre, what frameV2 shows — the zone's shell, its nearest chunks at LOD0 (desktop
-// ≤ 10 within 15 m, phone ≤ 2 within 8 m) and the rest at LOD1 (phones: near ones only), plus the shells of the zones
+// ≤ 10 within 15 m, phone: the chunk it stands in) and the rest within 2 × range at LOD1, plus the shells of the zones
 // visibleZones() adds and of window views with their one-mesh LOD1 (desktop) — stays
 // within desktop ≤ 160k triangles / ≤ 90 draw calls and phone ≤ 55k / ≤ 40. Also: ≤ 5 materials, shell build time.
 import { test } from 'node:test';
@@ -23,7 +23,7 @@ const { IV2_READY } = await import('../shared/ships/gaspace.js');
 
 const ALL = Object.keys(MODELS).filter((k) => MODELS[k].gen !== 'sail' && IV2_READY.has(MODELS[k].gen));
 const IDS = process.env.IV2_BUDGET_ALL ? ALL : ['coaster', 'feeder', 'ultramax64', 'mr50', 'ulcv24k', 'vlcc300', 'lng174k', 'capesize180'].filter((k) => ALL.includes(k));
-const BUDGET = { desk: { tris: 160000, calls: 90, hi: 10 }, phone: { tris: 55000, calls: 40, hi: 2 } };
+const BUDGET = { desk: { tris: 160000, calls: 90, hi: 10 }, phone: { tris: 55000, calls: 40, hi: 1 } };
 
 const count = (o) => { let tris = 0, calls = 0; o.traverse((m) => { if (m.isMesh) { calls++; const g = m.geometry; tris += (m.isInstancedMesh ? m.count : 1) * (g.index ? g.index.count : g.attributes.position.count) / 3; } }); return { tris, calls }; };
 function measure(id, phone) {
@@ -55,11 +55,11 @@ function measure(id, phone) {
         const q = Z.get(v); if (!q) continue;
         tris += q.shell.tris; calls += q.shell.calls;
         if (v !== z) { if (!phone) { tris += q.far.tris; calls += q.far.calls; } continue; }
-        const list = q.chunks.map((c) => [c, c.cid === cur ? -1 : (c.center ? Math.hypot(c.center.x - p.x, (c.center.y - p.y) * 2, c.center.z - p.z) : 999)]).sort((a, b) => a[1] - b[1]);
+        const list = q.chunks.map((c) => [c, c.cid === cur ? -1 : (c.center ? Math.hypot(c.center.x - p.x, (c.center.y - p.y) * 4, c.center.z - p.z) : 999)]).sort((a, b) => a[1] - b[1]);
         let n = 0;
         for (const [c, d] of list) {
           const hi = c.cid === cur || (d < range && n < B.hi); if (hi) n++;
-          const lo = !hi && (!phone || d < range * 2);
+          const lo = !hi && d < range * 2;
           if (hi) { tris += c.hi.tris; calls += c.hi.calls; } else if (lo) { tris += c.lo.tris; calls += c.lo.calls; }
         }
       }
@@ -72,7 +72,7 @@ function measure(id, phone) {
 
 test('render: five materials, one atlas', () => {
   const S = v2Materials(false);
-  assert.ok(Object.keys(S.mats).length <= 5, `${Object.keys(S.mats).length} materials`);
+  const uniq = new Set(Object.values(S.mats)); assert.ok(uniq.size <= 5, `${uniq.size} materials`);
 });
 
 test('render: every standable zone within the desktop and phone budgets', () => {

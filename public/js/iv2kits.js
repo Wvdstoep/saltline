@@ -872,7 +872,7 @@ export function roomLights(P, room, ctx = {}) {
     return out;
   }
   const unlined = !s.lined || s.unlined;
-  const per = sp === 'mess' || sp === 'galley' || sp === 'recreation' || sp === 'lounge_crew' ? 6 : unlined ? 9 : sp === 'bridge' ? 12 : 8;
+  const per = sp === 'mess' || sp === 'galley' || sp === 'recreation' || sp === 'lounge_crew' ? 6 : sp === 'er_platform' || sp === 'er_walkway' ? 16 : unlined ? 9 : sp === 'bridge' ? 12 : 8;
   const n = Math.max(1, Math.round(A / per));
   const cols = Math.max(1, Math.round(Math.sqrt(n * W / Math.max(D, 0.1)))), rows = Math.max(1, Math.ceil(n / cols));
   for (let a = 0; a < cols; a++) for (let b = 0; b < rows; b++) {

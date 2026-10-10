@@ -106,6 +106,7 @@ function box(G, F, tile, cx, cy, cz, w, h, d, o = {}) {
 }
 /** A cylinder along local y (or x / z with axis), radius r, height h, seg sides; caps optional. */
 function cyl(G, F, tile, cx, cy, cz, r, h, seg = 8, o = {}) {
+  if (G.segCap && seg > G.segCap) seg = G.segCap;   // phones: coarser round parts
   const axis = o.axis || 'y', rt = o.rt ?? r;
   const P = (a, t, rad) => { const ca = Math.cos(a) * rad, sa = Math.sin(a) * rad; const L = axis === 'y' ? [cx + ca, cy + t, cz + sa] : axis === 'x' ? [cx + t, cy + ca, cz + sa] : [cx + ca, cy + sa, cz + t]; return W(F, L[0], L[1], L[2]); };
   const N = (a) => { const ca = Math.cos(a), sa = Math.sin(a); const L = axis === 'y' ? [ca, 0, sa] : axis === 'x' ? [0, ca, sa] : [ca, sa, 0]; return WN(F, L[0], L[1], L[2]); };
@@ -127,6 +128,7 @@ function cyl(G, F, tile, cx, cy, cz, r, h, seg = 8, o = {}) {
 }
 /** A rod (cylinder) between two world points. */
 function rod(G, tile, a, b, r, seg = 6) {
+  if (G.segCap && seg > G.segCap) seg = Math.max(4, G.segCap - 2);
   const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], len = Math.hypot(dx, dy, dz); if (len < 1e-3) return;
   const d = [dx / len, dy / len, dz / len];
   const up = Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
@@ -552,8 +554,9 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
   for (const zid of zones) {
     if (opts.only && !opts.only.has(zid)) continue;
     const zg = new THREE.Group(); zg.name = `zone:${zid}`;
-    const shell = new Geo(size), chunkGeo = new Map(), chunkLo = new Map(), zoneLo = new Geo(size);
-    const chunkOf = (cid) => { if (!chunkGeo.has(cid)) { chunkGeo.set(cid, new Geo(size)); chunkLo.set(cid, new Geo(size)); } return [chunkGeo.get(cid), chunkLo.get(cid)]; };
+    const shell = new Geo(size); if (phone) shell.segCap = 8;
+    const chunkGeo = new Map(), chunkLo = new Map(), zoneLo = new Geo(size);
+    const chunkOf = (cid) => { if (!chunkGeo.has(cid)) { const g = new Geo(size); if (phone) g.segCap = 6; chunkGeo.set(cid, g); chunkLo.set(cid, new Geo(size)); } return [chunkGeo.get(cid), chunkLo.get(cid)]; };
     const rooms = plan.rooms.filter((r) => zoneOf(r) === zid);
     // ---- rooms: floors, ceilings / deckheads, walls with openings, lights
     const ops = new Map();
@@ -643,6 +646,7 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
 }
 function chunkCenter(plan, cid) {
   const c = (plan.chunks || []).find((q) => q.id === cid); if (!c) return null;
+  if (c.center) return c.center;
   let x = 0, y = 0, z = 0, n = 0;
   for (const rid of c.rooms) { const r = plan.rooms.find((q) => q.id === rid); if (!r) continue; x += (r.x0 + r.x1) / 2; y += r.y; z += (r.z0 + r.z1) / 2; n++; }
   return n ? { x: x / n, y: y / n, z: z / n } : null;
@@ -668,7 +672,7 @@ function windowFrame(G, r, w) {
 function lightFitting(G, r, l) {
   const y = l.y ?? r.y + r.h - 0.02;
   if (l.kind === 'panel') G.quad('light', [l.x - 0.3, y - 0.01, l.z - 0.3], [l.x + 0.3, y - 0.01, l.z - 0.3], [l.x + 0.3, y - 0.01, l.z + 0.3], [l.x - 0.3, y - 0.01, l.z + 0.3], [0, -1, 0], 0, 0, 0.6, 0.6);
-  else if (l.kind === 'strip') { const ax = l.axis === 'z' ? 0 : 1, len = l.len || 1.2; const F = frameOf(l.x, 0, l.z, ax ? 0 : Math.PI / 2); box(G, F, 'paint_white', 0, y - 0.05, 0, len, 0.08, 0.14, { faces: 'bsnew' }); box(G, F, 'light', 0, y - 0.095, 0, len - 0.08, 0.01, 0.08, { faces: 'b' }); }
+  else if (l.kind === 'strip') { const ax = l.axis === 'z' ? 0 : 1, len = l.len || 1.2; const F = frameOf(l.x, 0, l.z, ax ? 0 : Math.PI / 2); box(G, F, 'paint_white', 0, y - 0.05, 0, len, 0.08, 0.14, { faces: 'sn' }); box(G, F, 'light', 0, y - 0.095, 0, len - 0.08, 0.01, 0.08, { faces: 'b' }); }
   else if (l.kind === 'bulkhead' || l.kind === 'red') { const F = frameOf(l.x, 0, l.z, 0); box(G, F, l.kind === 'red' ? 'paint_red' : 'light', 0, (l.y ?? y) - 0.05, 0, 0.22, 0.1, 0.12, { faces: 'tbsnew' }); }
   else if (l.kind === 'flood') { const F = frameOf(l.x, 0, l.z, 0); box(G, F, 'light', 0, (l.y ?? y), 0, 0.3, 0.18, 0.18, { faces: 'tbsnew' }); }
 }
@@ -761,7 +765,7 @@ function frameV2(ctrl, I, dt) {
   const cur = room ? ctrl.chunkOfRoom.get(room.id) : null;
   const zid = room?.zone || null;
   // detail chunks: the walker's and the ones close by (phones: ≤ 2 hi; desktop: ≤ 10 within 15 m)
-  const maxHi = ctrl.phone ? 2 : 10, range = ctrl.phone ? 8 : 15;
+  const maxHi = ctrl.phone ? 1 : 10, range = ctrl.phone ? 8 : 15;
   for (const [id, z] of ctrl.zones) {
     if (!z.group.visible) continue;
     if (id !== zid) {   // a neighbouring zone: its LOD1 in one draw call (desktop), shell only on phones
@@ -771,10 +775,10 @@ function frameV2(ctrl, I, dt) {
     }
     if (z.far) z.far.visible = false;
     const list = [];
-    for (const [cid, c] of z.chunks) { const d = c.center ? Math.hypot(c.center.x - pos.x, (c.center.y - y) * 2, c.center.z - pos.z) : 999; list.push([cid, c, cid === cur ? -1 : d]); }
+    for (const [cid, c] of z.chunks) { const d = c.center ? Math.hypot(c.center.x - pos.x, (c.center.y - y) * 4, c.center.z - pos.z) : 999; list.push([cid, c, cid === cur ? -1 : d]); }
     list.sort((a, b) => a[2] - b[2]);
     let n = 0;
-    for (const [cid, c, d] of list) { const hi = cid === cur || (d < range && n < maxHi); if (hi) n++; c.hi.visible = hi; c.lo.visible = !hi && (!ctrl.phone || d < range * 2); }
+    for (const [cid, c, d] of list) { const hi = cid === cur || (d < range && n < maxHi); if (hi) n++; c.hi.visible = hi; c.lo.visible = !hi && d < range * 2; }
   }
   // window views: the zones the room looks onto show their shell (and LOD1 on desktop)
   const views = room ? ctrl.views.get(room.id) : null;
