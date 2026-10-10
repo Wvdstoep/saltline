@@ -49,3 +49,39 @@ export function cruiseDeckPlan(P, ga, d, tw) {
   }
   return out;
 }
+
+// ------------------------------------------------------------------------------------------------ quick travel to the venues
+/** Venue kinds worth a Go-to entry, most wanted first, with the most entries per kind (a mega ship has 30+ bars). */
+const GOTO_VENUES = [['casino', 1], ['theatre', 1], ['atrium', 3], ['dining', 4], ['spec', 5], ['buffet', 1], ['court', 1], ['cafe', 2], ['bar', 4], ['club', 2], ['lounge', 3], ['pool', 2], ['waterpark', 1], ['sports', 1], ['climb', 1], ['rink', 1], ['solarium', 1], ['spa', 1], ['fitness', 1], ['cinema', 1], ['kids', 1], ['teens', 1], ['arcade', 1], ['art_gallery', 1], ['library', 1], ['card_room', 1], ['street', 3], ['shop', 2], ['guest_services', 1], ['medical', 1], ['conference', 1]];
+const memoGoto = new Map();
+/**
+ * Go-to seeds for every guest venue of a cruise ship on every public / lido / sun deck, `deck:<id>` rooms so gaplan.js
+ * finishCommon snaps each to a standable floor (here) or sends the walker to that deck's plan (another deck). Cabin and crew
+ * decks are not built for this (the cabin decks are the heavy ones). → [{ id, label, x, y, z, room }]
+ */
+export function cruiseGotoSeeds(ga) {
+  if (!ga?.pax || ga.type !== 'cruise') return [];
+  if (memoGoto.has(ga.id)) return memoGoto.get(ga.id);
+  const found = new Map();   // venue → [{ room, deck }]
+  for (const d of ga.pax.decks) {
+    if (d.use !== 'public' && d.use !== 'lido' && d.use !== 'sun') continue;
+    const spec = cruiseDeck(ga, d.id); if (!spec) continue;
+    for (const r of spec.rooms) {
+      if (!r.venue || r.walk === false) continue;
+      if (!found.has(r.venue)) found.set(r.venue, []);
+      found.get(r.venue).push({ r, d });
+    }
+  }
+  const out = [];
+  for (const [kind, max] of GOTO_VENUES) {
+    const list = (found.get(kind) || []).slice(0, max);
+    const total = new Map(), seen = new Map();
+    for (const { r } of list) total.set(r.name, (total.get(r.name) || 0) + 1);
+    for (const { r, d } of list) {
+      const n = (seen.get(r.name) || 0) + 1; seen.set(r.name, n);
+      out.push({ id: `v:${r.id}`, label: `${r.name}${total.get(r.name) > 1 ? ` ${n}` : ''} · ${d.name.replace(/ \(.*\)/, '')}`, x: r2((r.x0 + r.x1) / 2), y: d.y, z: r2((r.z0 + r.z1) / 2), room: `deck:${d.id}`, venue: kind });
+    }
+  }
+  memoGoto.set(ga.id, out); if (memoGoto.size > 12) memoGoto.delete(memoGoto.keys().next().value);
+  return out;
+}

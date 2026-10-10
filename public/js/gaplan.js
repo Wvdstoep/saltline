@@ -12,7 +12,7 @@
 import { generalArrangement, hullHalf, deckHalf, outlineHalf, fitHalf, demihullAt, RULES, stairRun } from '../../shared/ships/ga.js';
 import { IV2_READY } from '../../shared/ships/gaspace.js';   // IV2 HV1
 import { planV2 } from './gaplan2.js';                         // IV2 HV1
-import { cruiseDeckPlan } from './gacruise.js';                // cruise decks of interiors v2 (docs/CRUISE-CONTRACT.md §4)
+import { cruiseDeckPlan, cruiseGotoSeeds } from './gacruise.js';                // cruise decks of interiors v2 (docs/CRUISE-CONTRACT.md §4)
 
 export const R = 0.25;          // walker radius (shipplan.js R)
 export const STEP = 0.32;       // shipplan.js STEP
@@ -1247,7 +1247,10 @@ function finishCommon(P, ga) {
     return best;
   };
   const seen = new Set();
-  for (const g of ga.goto || []) {
+  // cruise ships (interiors v2): every guest venue is a Go-to entry (casino, theatre, restaurants, pools, spa …)
+  const venueSeeds = ga.type === 'cruise' && P.cruiseV2 ? cruiseGotoSeeds(ga) : [];
+  const seeds = venueSeeds.length ? [...(ga.goto || []).filter((g) => g.id !== 'theatre' && g.id !== 'reception'), ...venueSeeds] : (ga.goto || []);
+  for (const g of seeds) {
     if (seen.has(g.id)) continue;
     let tgt = g;
     if (g.room === 'ecr') { const r = P.byId('er-ecr'); if (!r) continue; tgt = { ...g, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, y: r.y }; }
@@ -1592,6 +1595,7 @@ function planPax(P, ga, opts = {}) {
   const X = ga.pax, L = ga.L, B = ga.B, decks = X.decks;
   const cruise = ga.type === 'cruise', hsc = ga.model === 'hsc112', de = X.doubleEnded;
   const cruiseV2 = cruise && !!opts.iv2 && globalThis.__iv2 !== false;   // the cruise deck programme of interiors v2
+  P.cruiseV2 = cruiseV2;
   P.style = 'ship';
   const bridgeDeck = decks[X.bridgeDeck - 1];
   const cur = opts.deck ? decks.find((d) => d.id === opts.deck) || bridgeDeck : bridgeDeck;

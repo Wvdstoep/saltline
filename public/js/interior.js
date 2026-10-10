@@ -200,6 +200,7 @@ export class Interior {
     this.updateViewBtn();
     this.curRoom = null;
     app.hud.event?.({ kind: 'info', text: this.isTouch ? 'Walking your ship. Stick to walk (push it all the way to hurry), drag the right half to look, tap to use things. The signs by the stairs show the way to the bridge and the engine room.' : 'Walking your ship. WASD walk (Shift runs), mouse look, E to use things, V first / third person. The signs by the stairs show the way to the bridge and the engine room; doors lead out on deck. I to stop walking.' });
+    if (this.plan?.goto?.some((g) => /^v:/.test(g.id))) app.hud.event?.({ kind: 'info', text: 'This ship is huge: tap the "Go to…" button (top left) to jump straight to the casino, theatre, restaurants, pools, spa and more.' });
     this.light.intensity = 7;
     return true;
   }

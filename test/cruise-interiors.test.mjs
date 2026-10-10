@@ -10,6 +10,7 @@ const { planFromGA } = await import('../public/js/gaplan.js');
 const { generalArrangement } = await import('../shared/ships/ga.js');
 const { cruiseProfile } = await import('../shared/ships/cruiseprofile.js');
 const { IV2_READY } = await import('../shared/ships/gaspace.js');
+const { cruiseCounts } = await import('../shared/ships/cruiselayout.js');
 
 const IDS = ['rivercruise110', 'boutique125', 'expedition105', 'cruise230', 'cruise285', 'cruise330', 'cruise362', 'cruise370'];
 const survey = new Map();
@@ -84,5 +85,27 @@ test('cruise interiors: every deck has few big empty areas — furnished props p
     const area = p.rooms.filter((r) => r.walk !== false && r.space !== 'stair').reduce((s, r) => s + (r.x1 - r.x0) * (r.z1 - r.z0), 0);
     const k2 = p.props.filter((q) => q.t === 'k2').length;
     assert.ok(k2 / area > 0.03, `${id}: ${k2} items on ${Math.round(area)} m²`);
+  }
+});
+
+test('cruise quick travel: the Go-to list names every guest venue (casino first), reaches other decks, and lands inside the venue', () => {
+  for (const id of IDS) {
+    const ga = generalArrangement(id), pub = ga.pax.decks.find((d) => d.use === 'public');
+    const plan = planFromGA(id, { deck: pub.id });
+    const labels = plan.goto.map((g) => g.label);
+    assert.ok(plan.goto.some((g) => g.id === 'bridge'), `${id}: bridge`);
+    assert.ok(plan.goto.some((g) => /^v:/.test(g.id)), `${id}: venues in the list`);
+    assert.equal(new Set(plan.goto.map((g) => g.id)).size, plan.goto.length, `${id}: unique ids`);
+    if (cruiseCounts(id).venues.casino > 0) {   // only the ships that have a casino
+      const casino = plan.goto.find((g) => /^Casino/.test(g.label));
+      assert.ok(casino, `${id}: casino in the list (${labels.slice(0, 8).join(', ')})`);
+      // the casino is on another deck from the first public deck → a deck travel entry; on that deck's plan the point is inside the casino room
+      const cdeck = casino.deck || plan.deckGroup;
+      const there = planFromGA(id, { deck: cdeck });
+      const here = there.goto.find((g) => g.id === casino.id && !g.deck);
+      assert.ok(here, `${id}: casino point on deck ${cdeck}`);
+      const room = there.rooms.find((r) => /^Casino/.test(r.name) && here.x >= r.x0 - 0.01 && here.x <= r.x1 + 0.01 && here.z >= r.z0 - 0.01 && here.z <= r.z1 + 0.01 && Math.abs(r.y - here.y) < 0.3);
+      assert.ok(room, `${id}: the point stands inside the casino`);
+    }
   }
 });
