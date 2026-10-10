@@ -1,0 +1,18 @@
+{
+  "mdic-2024": { "what": "Brazil exports 2024 (MDIC): crude ≈ US$ 44.8 bn, first time top; soybeans ≈ US$ 43 bn", "url": "https://datamarnews.com/noticias/oil-becomes-brazils-top-export-challenging-lulas-environmental-agenda/", "accessed": "2026-10-09" },
+  "datamar-2025": { "what": "Datamar — oil set to top Brazilian exports in 2024", "url": "https://datamarnews.com/noticias/oil-set-to-top-brazilian-exports-in-2024/", "accessed": "2026-10-09" },
+  "disr-req-2024": { "what": "Australia DISR Resources and Energy Quarterly: iron ore ≈ A$141 bn (2023/24); mineral resources 59 % of exports", "url": "https://www.industry.gov.au/news/commodity-markets-stabilising-following-disruptions-2024", "accessed": "2026-10-09" },
+  "igu-2025": { "what": "IGU World LNG Report 2025: US 88.4 Mt (21.5 %), AU 81.0 Mt, QA 77.2 Mt", "url": "https://www.gulf-times.com/article/705813/business/qatar-accounts-for-188-share-of-global-lng-exports-in-2024-igu", "accessed": "2026-10-09" },
+  "eia-2025": { "what": "US EIA — US the top LNG exporter 2024; refinery capacity by PADD", "url": "https://jpt.spe.org/us-ranked-as-worlds-top-lng-exporter-in-2024-eia-reports", "accessed": "2026-10-09" },
+  "usgs-chile-2024": { "what": "USGS — Chile ≈ 24 % of world mined copper 2024 (#1)", "url": "https://www.usgs.gov/centers/national-minerals-information-center/chile", "accessed": "2026-10-09" },
+  "usgs-mcs-2025": { "what": "USGS Mineral Commodity Summaries 2025 (bauxite, manganese, nickel, potash, phosphate)", "url": "https://www.usgs.gov/centers/national-minerals-information-center/mineral-commodity-summaries", "accessed": "2026-10-09" },
+  "nsc-2025": { "what": "Norwegian Seafood Council: salmon NOK 122.9 bn, 1.26 Mt in 2024", "url": "https://seafood.mynewsdesk.com/pressreleases/2024-was-the-best-year-ever-for-norwegian-seafood-exports-3362349", "accessed": "2026-10-09" },
+  "cocoa-2024": { "what": "Côte d'Ivoire ≈ ⅓–45 % of world cocoa; Ghana 2nd (≈ 15–20 %)", "url": "https://www.statista.com/statistics/263855/cocoa-bean-production-worldwide-by-region", "accessed": "2026-10-09" },
+  "mpob-2024": { "what": "MPOB / S&P Global: Malaysia ≈ 23 % of palm-oil production, 30 % of exports; ID + MY ≈ 85 % of trade", "url": "https://www.spglobal.com/commodityinsights/en/market-insights/latest-news/agriculture/011124-tight-palm-oil-supplies-to-support-prices-in-2024-mpob", "accessed": "2026-10-09" },
+  "te-hs0603-2023": { "what": "Trend Economy HS 0603: NL ≈ 47 % of world cut-flower exports 2023, Colombia ≈ 20 %", "url": "https://trendeconomy.com/data/commodity_h2/0603", "accessed": "2026-10-09" },
+  "cepii-baci": { "what": "CEPII BACI HS6 bilateral flows (harmonised UN Comtrade) — refresh source for all tiers", "url": "http://www.cepii.fr/CEPII/en/bdd_modele/bdd_modele_item.asp?id=37", "accessed": "2026-10-09" },
+  "oec-profiles": { "what": "OEC country export baskets (seed rows marked verify)", "url": "https://oec.world/en/profile/country", "accessed": "2026-10-09" },
+  "usda-psd": { "what": "USDA FAS PSD — grain, oilseed and sugar trade", "url": "https://apps.fas.usda.gov/psdonline/", "accessed": "2026-10-09" },
+  "fao-stat": { "what": "FAOSTAT trade — bananas, coffee, live animals, fish", "url": "https://www.fao.org/faostat/en/#data/TCL", "accessed": "2026-10-09" },
+  "jodi": { "what": "JODI Oil World Database", "url": "https://www.jodidata.org/oil/", "accessed": "2026-10-09" }
+}

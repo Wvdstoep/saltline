@@ -7,13 +7,15 @@ import { RATES } from '../shared/rates.js';
 import { JOBTIME, refClassFor, budgetFor } from '../shared/jobtime.js'; // V6 item 5: contract hours rated for a reference ship
 import { payOf, payInfoOf } from '../shared/jobs/types.js';   // YARD lane D: runner jobs carry pay as { cr, … }
 import { shipValueCompat, modelOf } from '../shared/ships/index.js';   // SHIPYARD H8b
+import { activeEcon } from './econstate.js';                            // world economy (server/worldecon.js) when running
+import { LEGACY_GOODS } from '../shared/econ/catalogue.js';
 
 export const PAY_PER_T_KM = 0.08;
 export const SMUGGLE_MULT = 5;
 export const LEGAL_GOODS = ['grain', 'steel', 'machinery', 'containers'];
 export const CONTRABAND = ['cigarettes', 'weapons', 'narcotics', 'antiquities'];
-/** Goods that trade on harbour markets (everything that is not contraband). */
-export const MARKET_GOODS = Object.keys(GOODS).filter((g) => !GOODS[g].contraband);
+/** The 7 legacy market goods (the legacy /api/market snapshot and history keep exactly these, world economy §15). */
+export const MARKET_GOODS = LEGACY_GOODS.slice();
 /** Supply/demand tuning (docs/V3-CONTRACTS.md §3): price = base × local × clamp(0.55, 1.9, sqrt(target / stock)). */
 export const ECON = { PRICE_MIN: 0.55, PRICE_MAX: 1.9, DRIFT_PER_H: 0.05, USED_REFRESH_H: 6, TREND_BAND: 0.05, DEMAND_BONUS_MAX: 0.3 };
 
@@ -267,18 +269,21 @@ export function targetStock(harbor) {
 
 /** Fresh stock/target for a harbour (stock 60–140 % of target → prices ±30 % around local). */
 export function initEconomy(harbor, rnd) {
+  const e = activeEcon(); if (e) return e.initStock(harbor);   // world economy: every listed good at its equilibrium
   const target = targetStock(harbor), stock = {};
   for (const g of MARKET_GOODS) stock[g] = Math.round(target[g] * (0.6 + rnd() * 0.8));
   return { stock, target };
 }
 
 export function priceOf(harbor, g, stock, target) {
+  const e = activeEcon(); if (e) return e.priceFor(harbor, g, stock, target);   // world economy §6.6
   const ratio = Math.sqrt(Math.max(1, target) / Math.max(1, stock));
   return Math.max(1, Math.round(GOODS[g].base * localProfile(harbor)[g] * Math.min(ECON.PRICE_MAX, Math.max(ECON.PRICE_MIN, ratio))));
 }
 
 /** Recompute st.market (cr/t) from st.stock/st.target. Adds missing goods, drops unknown ones. */
 export function refreshPrices(harbor, st) {
+  const e = activeEcon(); if (e) return e.refresh(harbor, st);
   if (!st.stock || !st.target) Object.assign(st, initEconomy(harbor, Math.random));
   const m = st.market || (st.market = {});
   for (const g of Object.keys(m)) if (!GOODS[g] || GOODS[g].contraband) delete m[g];
@@ -292,6 +297,7 @@ export function refreshPrices(harbor, st) {
 
 /** Stock drifts 5 %/h toward target with a little noise so prices keep moving. */
 export function driftEconomy(st, hours, rnd) {
+  const e = activeEcon(); if (e) return e.stepState(st, hours);   // world economy §6.4 (one harbour)
   if (!st.stock || !st.target || !(hours > 0)) return;
   const k = 1 - Math.pow(1 - ECON.DRIFT_PER_H, hours);
   for (const g of MARKET_GOODS) {
@@ -302,6 +308,7 @@ export function driftEconomy(st, hours, rnd) {
 
 /** Expected PRICE direction per good: stock below target refills → price falls (−1); glut clears → price rises (+1). */
 export function marketTrend(st) {
+  const e = activeEcon(); if (e) return e.trendFor(st);
   const out = {};
   if (!st.stock || !st.target) return out;
   for (const g of MARKET_GOODS) {

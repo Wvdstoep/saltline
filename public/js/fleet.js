@@ -291,6 +291,11 @@ export class FleetUi {
       case 'flHold': this.act('fleet_order', { vesselId: vid, order: { type: 'hold' } }); this.closeDialog(); return true;
       case 'flStop': this.act('fleet_order', { vesselId: vid, order: { type: 'stop' } }); this.closeDialog(); return true;
       case 'flWork': this.act('fleet_order', { vesselId: vid, order: { type: 'contract', jobId: null, then: el.dataset.then || 'stay' } }); this.closeDialog(); return true;
+      case 'flTradeRun': {   // world economy §9.5: the World market's plan as a captain's trade_run (limits: +5 % buy, −5 % sale)
+        const t = this.app.tradePlan; if (!t) return true;
+        this.act('fleet_order', { vesselId: vid, order: { type: 'trade_run', good: t.good, buyAt: t.from, maxBuy: Math.round(t.buy * 1.05), qty: Math.round(t.qty), sellAt: t.reqId ? null : t.to, reqId: t.reqId || null, minSell: t.reqId ? 0 : Math.round((t.sellArrive || 0) * 0.95), then: 'moor' } });
+        this.closeDialog(); return true;
+      }
       case 'flBoard': this.board = null; this.act('fleet_board', { vesselId: vid }); this.openDialog({ kind: 'board', vid }); return true;
       case 'flAccept': this.act('fleet_accept', { vesselId: vid, jobId: el.dataset.jid, then: el.dataset.then || 'stay' }); this.closeDialog(); return true;
       case 'flSvc': return this.openDialog({ kind: 'services', vid }), true;
@@ -418,6 +423,7 @@ export class FleetUi {
       v.harbor ? '' : btn('flHold', `${ic('anchor')} Hold here <small>anchor at a safe spot</small>`, v.can.orders, `data-vid="${esc(v.id)}"`, 'block'),
       v.harbor ? btn('flBoard', `${ic('contract')} Take a contract… <small>${esc(F.shortName(v.harborName))} board</small>`, v.can.contract, `data-vid="${esc(v.id)}"`, 'block') : '',
       (v.jobs || []).length ? btn('flWork', `${ic('crate')} Work through her contracts`, v.can.orders, `data-vid="${esc(v.id)}"`, 'block') : '',
+      this.app.tradePlan ? btn('flTradeRun', `${ic('market')} Run the planned trade <small>${esc(F.shortName(this.app.tradePlan.fromName || this.app.tradePlan.from))} → ${esc(F.shortName(this.app.tradePlan.toName || this.app.tradePlan.to))}</small>`, v.can.orders, `data-vid="${esc(v.id)}"`, 'block') : '',   // world economy §9.5
       atHome ? btn('flLayup', `${ic('hold')} Lay up here`, v.can.layUp, `data-vid="${esc(v.id)}"`, 'block') : '',
       btn('flStop', `${ic('pause')} Stop <small>${v.harbor ? 'stay moored' : 'hold where she is'}</small>`, v.can.orders, `data-vid="${esc(v.id)}"`, 'block ghost'),
     ].join('');

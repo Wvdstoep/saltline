@@ -58,6 +58,7 @@ test('the legacy deliverJobs never pays a runner job (its pay is an object)', ()
 
 test('H7 market: a container ship cannot buy grain; a coaster can', () => {
   const g = mkGame(); const { p, ws } = join(g, 'Cid');
+  const rs = g.harbors.rotterdam; rs.stock.grain = rs.target.grain * 2;   // world economy §6.8: Rotterdam sells only its grain surplus
   g.sendHarbor(p);
   p.ship.cls = 'boxship';
   g.onAction(p, { action: 'buy_goods', good: 'grain', qty: 10 });

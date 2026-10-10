@@ -125,7 +125,7 @@ test('captain runs a voyage offline (fleet vessel; nextTarget drives the captain
   const r = rig(), v = { id: 'v1', ship: { cls: 'ultramax64', lat: 0, lon: 0, spd: 0 }, docked: 'santos', cargo: [], jobs: [], shipTime: T0 };
   const job = generateFamilyJob(harborById('santos'), T0, seeded(4), 'voyage', {}, { good: 'grain' });
   assert.ok(job && job.cargo.qty <= 73800);
-  const fit = generateFamilyJob(harborById('santos'), T0, seeded(4), 'voyage', {}, { good: 'grain', fit: { cls: 'ultramax64', vessel: v }, fitGoods: ['grain'] });
+  const fit = generateFamilyJob(harborById('santos'), T0, seeded(4), 'voyage', {}, { good: 'soybeans', fit: { cls: 'ultramax64', vessel: v }, fitGoods: ['soybeans'] });   // world economy §9.2: Santos exports soybeans (role P), not wheat
   assert.equal(r.jx.accept(v, fit).ok, true);
   assert.equal(v.cargo.length, 1, 'loaded at Santos on accept');
   const tgt = r.jx.nextTarget(v, v.jobs[0]);

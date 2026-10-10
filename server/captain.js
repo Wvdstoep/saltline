@@ -10,7 +10,8 @@ import { FLEET, accrueWage, wageRateMcrH } from '../shared/fleet.js';
 import { serviceKn, serviceBurnTph } from '../shared/rates.js';
 import { findSafeSpot, harbourAim, separation } from './safespot.js';
 import { landOnLeg } from './searoute.js';
-import { cargoMass } from './economy.js';
+import { cargoMass, tradeQuote } from './economy.js';
+import { GOODS } from '../shared/constants.js';                         // world economy §9.5 (trade_run)
 import { harborById, FISHING_GROUNDS } from './harbors.js';
 import { throttleCap, stormOnRoute } from '../public/js/pilotcore.js';
 import { rigOf } from '../shared/sail/rigs.js';                              // sailing (docs/SAILING-CONTRACT.md §3.5)
@@ -69,6 +70,7 @@ export function orderText(fleet, v, o) {
     case 'hold': return o.lat != null ? `hold position at ${o.lat.toFixed(2)}, ${o.lon.toFixed(2)}` : 'hold position here';
     case 'route': return `follow the route${o.harbor ? ` to ${short(harborById(o.harbor)?.name)}` : ''} (${o.route.length} waypoint${o.route.length > 1 ? 's' : ''})`;
     case 'contract': { const j = o.jobId && v.jobs.find((x) => x.id === o.jobId); return j ? `deliver ${j.title}` : 'work through her contracts'; }
+    case 'trade_run': return `${o.stage === 'sell' ? 'carry' : 'buy'} ${fmt(o.qty)} t of ${(GOODS[o.good]?.name || o.good).toLowerCase()}${o.stage === 'sell' ? '' : ` at ${short(harborById(o.buyAt)?.name)} (up to ${fmt(o.maxBuy)} cr/t)`} and ${o.reqId ? 'fill the request' : `sell at ${short(harborById(o.sellAt)?.name)}${o.minSell ? ` (at least ${fmt(o.minSell)} cr/t)` : ''}`}`;
     default: return 'stop';
   }
 }
@@ -82,6 +84,7 @@ export function leaveText(fleet, v) {
     case 'home': return 'sails home under her captain';
     case 'route': return `follows your route${o.harbor ? ` to ${short(harborById(o.harbor)?.name)}` : ''} under her captain`;
     case 'contract': return v.fishing ? 'keeps fishing under her captain' : 'carries on with her contracts under her captain';
+    case 'trade_run': return 'runs your trade under her captain';
     default: return 'waits for orders';
   }
 }
@@ -203,6 +206,12 @@ function targetFor(fleet, v) {
       return { kind: h ? 'harbor' : 'route', harbor: h ? h.id : undefined, name: h ? short(h.name) : null, lat: last[0], lon: last[1], then: o.then, points: o.route };
     }
     case 'contract': return contractTarget(fleet, v);
+    case 'trade_run': {   // world economy §9.5
+      const at = o.stage === 'sell' ? (o.sellAt || fleet.game.econ?.findReq(o.reqId)?.h.id) : o.buyAt;
+      if (!at) return { fail: 'the request closed before she could deliver' };
+      const t = harbourTarget(fleet, v, at, 'moor'); if (t.here) t.trade = true;
+      return t;
+    }
     default: return { done: true };
   }
 }
@@ -281,6 +290,7 @@ function approachOf(fleet, h) {
 /** Docked at the order's harbour already (sail_to here, a contract ending here). */
 function arrivedHere(fleet, v, tgt) {
   const g = fleet.game, a = fleet.actorOf(v);
+  if (tgt.trade) return tradeRunHere(fleet, v);
   if (tgt.runner) {                                                      // YARD H6e: the dock hook already advanced the job
     g.jobsx?.onDock(a, v.docked); g.sendYou(a);
     if (tgt.stay) { v.cap.nextAt = g.simTime + 60; return; }
@@ -301,6 +311,45 @@ function arrivedHere(fleet, v, tgt) {
     return;
   }
   onArrived(fleet, v);
+}
+/** trade_run at the buy or sell harbour (§9.5): the player's own tradeGoods / request path (impact, spread, politics);
+ *  limits not met → she moors and reports, never a silent loss. */
+export function tradeRunHere(fleet, v) {
+  const g = fleet.game, a = fleet.actorOf(v), o = v.orders, h = harborById(v.docked), st = g.harbors?.[h?.id];
+  if (!o || !h || !st) return;
+  const name = (GOODS[o.good]?.name || o.good), lname = name.toLowerCase();
+  const stop = (kind, text) => { fleet.note(v, kind, text); v.orders = null; v.cap = newCap(g, 'idle'); };
+  const have = () => (a.cargo || []).filter((c) => c.good === o.good && !c.jobId).reduce((s, c) => s + c.qty, 0);
+  if (o.stage !== 'sell') {
+    if (g.econ?.marketClosed(st)) return stop('warn', `${short(h.name)}: ${st.ev.text}. Waiting for orders.`);
+    const first = tradeQuote(h, st, o.good, 1, 'buy').unit;
+    if (first > o.maxBuy) return stop('warn', `${name} at ${short(h.name)} is ${fmt(first)} cr/t — over your limit of ${fmt(o.maxBuy)}. Waiting for orders.`);
+    let lo = 0, hi = Math.max(0, o.qty);                       // the largest lot whose average stays within the limit
+    if (tradeQuote(h, st, o.good, hi, 'buy').unit > o.maxBuy) { while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (tradeQuote(h, st, o.good, mid, 'buy').unit <= o.maxBuy) lo = mid; else hi = mid; } hi = lo; }
+    const before = have();
+    if (hi > 0) { a._cat = 'trade'; try { g.tradeGoods(a, o.good, hi, true); } finally { a._cat = null; } }
+    const got = Math.round((have() - before) * 1000) / 1000;
+    if (!(got > 0)) return stop('warn', `could not buy ${lname} at ${short(h.name)} (see the log). Waiting for orders.`);
+    if (o.reqId && g.econ) { const r = g.econ.pledge(a, o.reqId, got); fleet.note(v, r.ok ? 'info' : 'warn', r.text); }
+    o.stage = 'sell'; o.qty = got;
+    const to = o.sellAt ? short(harborById(o.sellAt)?.name) : short(g.econ?.findReq(o.reqId)?.h.name || 'the request');
+    fleet.note(v, 'info', `bought ${fmt(got)} t of ${lname} at ${short(h.name)} — sailing for ${to}.`);
+    v.cap = newCap(g, 'idle');
+    return;
+  }
+  if (g.econ?.marketClosed(st)) return stop('warn', `${short(h.name)}: ${st.ev.text}. Waiting for orders.`);
+  if (o.reqId && g.econ && g.econ.findReq(o.reqId)?.h.id === h.id) {
+    const r = g.econ.deliver(a, o.reqId, Infinity);
+    fleet.note(v, r.ok ? 'info' : 'warn', r.text);
+  }
+  if (o.sellAt === h.id && have() > 0) {
+    const px = tradeQuote(h, st, o.good, have(), 'sell').unit;
+    if (px < o.minSell) return stop('warn', `${name} at ${short(h.name)} pays ${fmt(px)} cr/t — under your minimum of ${fmt(o.minSell)}. Waiting for orders.`);
+    a._cat = 'trade'; try { g.tradeGoods(a, o.good, have(), false); } finally { a._cat = null; }
+  }
+  const left = have();
+  if (o.then === 'hold') { fleet.note(v, 'info', `trade run done${left > 0 ? ` (${fmt(left)} t still aboard)` : ''}.`); return setOrder(fleet, v, { type: 'hold' }); }
+  stop('info', `trade run done at ${short(h.name)}${left > 0 ? ` — ${fmt(left)} t still aboard` : ''}.`);
 }
 function finishOrder(fleet, v) {
   const g = fleet.game, o = v.orders, p = fleet.ownerOf(v);

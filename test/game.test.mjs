@@ -24,6 +24,8 @@ function freightJob(g, maxQty = 1000) {
   if (!j) { j = { id: 'jfr' + st.jobs.length, type: 'freight', from: 'rotterdam', to: 'ijmuiden', good: 'grain', qty: 400, pay: 9000, distKm: 60, deadline: g.simTime + 36000, contraband: false, title: 'Freight 400 t of grain to IJmuiden' }; st.jobs.push(j); }
   return j;
 }
+/** World economy §6.8: an importer sells only what lies above normal — give `id` a surplus of `good` for buying tests. */
+function glut(g, id, good, f = 2) { const st = g.harbors[id]; st.stock[good] = Math.round(st.target[good] * f); g.econ?.refresh(harborById(id), st); }
 // ---- fakes implementing the v0.3 contracts of harborgeom / WeatherService / Traffic (docs/V3-CONTRACTS.md) ----
 const ROT = harborById('rotterdam');
 function mkBerth(id, name, brgFromAnchor, distM, extra = {}) { return { id, name, ...destination(ROT.lat, ROT.lon, brgFromAnchor, distM), hdg: 45, length: 200, depth: 12, kind: 'quay', maxLength: 220, ...extra }; }
@@ -82,6 +84,7 @@ test('accepting freight loads cargo, delivering at the destination pays', () => 
 });
 test('contract cargo cannot be sold; free cargo can', () => {
   const g = mkGame(); const { p } = join(g, 'Cid');
+  glut(g, 'rotterdam', 'grain');   // world economy §6.8: Rotterdam imports grain and sells only a surplus above normal
   const m0 = p.money; g.onAction(p, { action: 'buy_goods', good: 'grain', qty: 10 });
   assert.ok(p.money < m0 && p.cargo[0].qty === 10);
   const m = p.money; g.onAction(p, { action: 'sell_goods', good: 'grain', qty: 10 });
@@ -147,6 +150,7 @@ test('implausible position jumps are rejected', () => {
 });
 test('trade between docked players transfers goods and credits', () => {
   const g = mkGame(); const a = join(g, 'Ian'), b = join(g, 'Jo');
+  glut(g, 'rotterdam', 'grain');
   g.onAction(a.p, { action: 'buy_goods', good: 'grain', qty: 50 });
   g.onAction(a.p, { action: 'trade_offer', toId: b.p.id, good: 'grain', qty: 20, price: 1000 });
   const offer = last(b.ws, 'trade').offer; const ma = a.p.money, mb = b.p.money;
@@ -353,23 +357,31 @@ test('sell_ship pays shipValue and leaves a 60 % pilot boat; the pilot boat itse
 });
 test('supply and demand: buying raises the price, selling lowers it, stock caps purchases, deliveries earn a demand bonus', () => {
   const g = mkGame(); const { p, ws } = join(g, 'Fy'); p.money = 1e9; g.rnd = () => 0.99;
+  glut(g, 'rotterdam', 'grain');
+  g.econ.ceil.fill(Infinity); g.econ.refresh(ROT, g.harbors.rotterdam);   // the §6.6 formula itself (no landed ceiling)
   const st = g.harbors.rotterdam; const p0 = st.market.grain, s0 = st.stock.grain;
   assert.equal(p0, priceOf(ROT, 'grain', s0, st.target.grain), 'price is a function of stock/target');
   g.onAction(p, { action: 'buy_goods', good: 'grain', qty: 1000 });
   assert.equal(st.stock.grain, s0 - 1000); assert.ok(st.market.grain > p0, `price ${p0} → ${st.market.grain}`);
   g.onAction(p, { action: 'sell_goods', good: 'grain', qty: 1000 });
   assert.equal(st.stock.grain, s0); assert.equal(st.market.grain, p0);
-  st.stock.grain = 1; st.target.grain = 30000; g.sendHarbor(p);
-  assert.ok(st.market.grain <= Math.round(GOODS.grain.base * ECON.PRICE_MAX * 1.3) && st.market.grain >= GOODS.grain.base, 'shortage clamps at 1.9×');
-  st.stock.grain = 1e9; g.sendHarbor(p); assert.ok(st.market.grain <= Math.round(GOODS.grain.base * ECON.PRICE_MIN * 1.3) + 1, 'glut clamps at 0.55×');
+  // world economy §6.6: σ = S × clamp(−0.8, 1.5, ln(n / s)) — a shortage and a glut both stop at the clamp
+  const n = st.target.grain;
+  st.stock.grain = 1; g.sendHarbor(p);
+  assert.ok(st.market.grain > p0 && st.market.grain === priceOf(ROT, 'grain', n * Math.exp(-2), n), 'shortage clamps at σ = +1.5 S');
+  st.stock.grain = 1e9; g.sendHarbor(p); assert.equal(st.market.grain, priceOf(ROT, 'grain', n * Math.exp(1), n), 'glut clamps at σ = −0.8 S');
   st.stock.grain = s0;
   const econ = last(ws, 'harbor').harbor.econ;
   assert.ok(econ.stock.grain >= 0 && econ.target.grain > 0 && [-1, 0, 1].includes(econ.trend.grain));
+  // a maker keeps a reserve of 0.2 n (§6.8): Rotterdam makes machinery, 5 t above the reserve is all it sells
+  st.stock.machinery = Math.round(0.2 * st.target.machinery) + 5; g.onAction(p, { action: 'buy_goods', good: 'machinery', qty: 100 });
+  assert.equal(p.cargo.find((c) => c.good === 'machinery').qty, 5, 'cannot buy more than the harbour holds above its reserve');
+  g.onAction(p, { action: 'buy_goods', good: 'machinery', qty: 100 }); assert.ok(events(ws).some((t) => /sold out/.test(t)));
   st.stock.steel = 5; g.onAction(p, { action: 'buy_goods', good: 'steel', qty: 100 });
-  assert.equal(p.cargo.find((c) => c.good === 'steel').qty, 5, 'cannot buy more than the harbour holds');
-  g.onAction(p, { action: 'buy_goods', good: 'steel', qty: 100 }); assert.ok(events(ws).some((t) => /sold out/.test(t)));
+  assert.ok(!p.cargo.some((c) => c.good === 'steel') && /does not sell steel coils — it imports it/.test(events(ws).at(-1)), 'an importer below normal sells nothing');
   // demand bonus at a destination short of the good; the delivery restocks it
-  const job = freightJob(g, 900); g.onAction(p, { action: 'accept_job', jobId: job.id }); assert.equal(p.jobs.length, 1);
+  const job = { id: 'jfrsd', type: 'freight', from: 'rotterdam', to: 'ijmuiden', good: 'grain', qty: 400, pay: 9000, distKm: 60, deadline: g.simTime + 36000, contraband: false, title: 'Freight 400 t of grain to IJmuiden' };
+  st.jobs.push(job); g.onAction(p, { action: 'accept_job', jobId: job.id }); assert.equal(p.jobs.length, 1);
   const dest = harborById(job.to), ds = g.harbors[dest.id]; ds.stock[job.good] = 0;
   g.onAction(p, { action: 'undock' }); p.ship.lat = dest.lat; p.ship.lon = dest.lon; p.ship.spd = 0; const m = p.money;
   g.onAction(p, { action: 'dock' });
@@ -378,10 +390,11 @@ test('supply and demand: buying raises the price, selling lowers it, stock caps 
   assert.equal(ds.stock[job.good], job.qty, 'delivered cargo restocks the destination');
 });
 test('markets drift toward target between visits and over a restart', () => {
-  const g = mkGame(); const st = g.harbors.rotterdam;
-  st.stock.grain = 1000; st.target.grain = 30000; g.lastEcon = Date.now() - 2 * 3600e3; g.driftMarkets();
-  assert.ok(st.stock.grain > 1000 && st.stock.grain < 30000, `drifted to ${st.stock.grain}`);
-  assert.ok(Math.abs(st.stock.grain - (1000 + 29000 * (1 - 0.95 ** 2))) < 0.03 * 30000, 'about 5 %/h');
+  const g = mkGame(); const st = g.harbors.rotterdam, n = st.target.grain;
+  st.stock.grain = 1000; const want = g.econ.expectedStock('rotterdam', 'grain', 2);   // world economy §6.4 closed form
+  g.lastEcon = Date.now() - 2 * 3600e3; g.driftMarkets();
+  assert.ok(st.stock.grain > 1000 && st.stock.grain < n, `drifted to ${st.stock.grain}`);
+  assert.ok(Math.abs(st.stock.grain - want) < 0.02 * n, `about ${Math.round(want)} t (AI shipping refills at R = 3 %/h)`);
   assert.equal(st.market.grain, priceOf(ROT, 'grain', st.stock.grain, st.target.grain), 'prices refreshed');
 });
 test('berth fee per started day on undock, pilotage for big ships at big ports, service resets the wear ramp', () => {

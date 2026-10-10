@@ -4,6 +4,7 @@
 // Every rule is a table row in the dataset; there are no per-country code paths (principle P3).
 import { SHIP_CLASSES, GOODS } from './constants.js';
 import { haversine } from './geo.js';
+import { catalogueOf } from './econ/catalogue.js';   // world economy §9.3: polGroup matching
 
 export const POL = {
   DAY_TO_H: 1,              // one real-world day of paperwork/waiting = one game hour (world clock)
@@ -363,7 +364,8 @@ export function reasonText(r) {
 function measureText(m) { return m.text || `${m.regimeTitle || m.regimeId}${m.art ? ', ' + m.art : ''}`; }
 
 // ---------------------------------------------------------------------------------------------- trade / duty
-function goodsMatch(m, good) { return !m.goods || m.goods.includes(good); }
+/** World economy §9.3: a measure listing a legacy good also covers the catalogue goods of that polGroup. */
+export function goodsMatch(m, good) { return !m.goods || m.goods.includes(good) || m.goods.includes(catalogueOf(good)?.polGroup); }
 function measureFor(ds, simTime, filter) { return ds.measures.filter((m) => isActive(m, simTime) && filter(m)); }
 
 export function dutyFor(ds, ctx, { harbor, good, origin, value }) {

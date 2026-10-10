@@ -39,7 +39,9 @@ test('units and tonnes', () => {
   assert.deepEqual(['containers', 'reefer_box', 'dg_box'].map((g) => CARGO[g].unit), ['teu', 'teu', 'teu']);
   // every market good of today is in the taxonomy
   for (const g of Object.keys(GOODS)) assert.ok(CARGO[g], g);
-  assert.equal(marketGoodOf('crude'), 'fuel'); assert.equal(marketGoodOf('ore'), 'steel'); assert.equal(marketGoodOf('grain'), 'grain');
+  // world economy §9.1: every catalogue good trades on the markets; only job-only goods fall back (fruit → bananas)
+  assert.equal(marketGoodOf('crude'), 'crude'); assert.equal(marketGoodOf('ore'), 'ore'); assert.equal(marketGoodOf('grain'), 'grain');
+  assert.equal(marketGoodOf('fruit'), 'bananas'); assert.equal(marketGoodOf('reefer_box'), 'containers');
 });
 
 test('market compatibility (§5.10)', () => {

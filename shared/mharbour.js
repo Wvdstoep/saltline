@@ -589,9 +589,11 @@ function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>>
  * (1 ± 0.06), stock 10 % of a regional harbour's. Fishing harbours: fish only. named = { goods: { g: { buy, sell, stock, target } } }
  * (server/market.js marketSnapshot row). Deterministic per harbour id. → { goods: [{ id, buy, sell, stock }], from }
  */
+export const INLAND_CATS = ['grains', 'reefer', 'box', 'energy'];   // world economy §9.6
 export function inlandMarket(h, named, { regionalTarget = null, contraband = new Set() } = {}) {
   if (!named?.goods) return null;
-  const pool = Object.keys(named.goods).filter((g) => !contraband.has(g) && Number.isFinite(named.goods[g]?.buy)).sort();
+  // world economy §9.6: with roles in the row, the pool is the parent's needed or traded (I / L) food, fuel and shop goods
+  const pool = Object.keys(named.goods).filter((g) => !contraband.has(g) && Number.isFinite(named.goods[g]?.buy) && (named.goods[g].role == null || (['I', 'L'].includes(named.goods[g].role) && INLAND_CATS.includes(named.goods[g].cat)))).sort();
   if (!pool.length) return null;
   const r = rng(hash32(String(h.id)));
   let chosen;
@@ -605,7 +607,7 @@ export function inlandMarket(h, named, { regionalTarget = null, contraband = new
   const goods = chosen.map((g) => {
     const q = named.goods[g], f = Math.round((1 + (r() * 2 - 1) * MH.MARKET_SPREAD) * 1000) / 1000;
     const tgt = regionalTarget?.[g] ?? q.target ?? q.stock ?? 0;
-    return { id: g, buy: Math.round(q.buy * f), sell: Math.round(q.sell * f), stock: Math.round(MH.MARKET_STOCK_FRAC * (Number(tgt) || 0)), f };
+    return { id: g, buy: Math.round(q.buy * f), sell: Math.round(q.sell * f), stock: Math.round(MH.MARKET_STOCK_FRAC * (Number(tgt) || 0)), f, ...(q.role ? { role: q.role, cat: q.cat } : {}) };
   });
   return { goods, from: named.id || null };
 }

@@ -24,6 +24,8 @@ import { planRoute, parseRouteQuery } from './server/searoute.js';              
 import { RoutePlanner } from './server/routeworker.js';                           // AUTOPILOT
 import { RouteTable } from './server/routetable.js';                              // MARKET
 import { PriceHistory, cachedSnapshot, routesHandler, historyAnswer } from './server/market.js'; // MARKET
+import { EconHistory, econHandlers, econHistoryAnswer } from './server/market.js';                    // WORLD ECONOMY (§13, §15)
+import { econPayload } from './server/econdata.js';
 import { tideAt } from './shared/tide.js';
 import zlib from 'node:zlib';
 import v8 from 'node:v8';
@@ -72,7 +74,10 @@ pruneRasterCache(world, log, { keep: [routeTable.file] });   // WORLD TILES phas
 const WW_ON = process.env.SALTLINE_WW_OFF !== '1';                                // BRIDGES & LOCKS / VHF / inland harbours (SALTLINE_WW_OFF=1 = off)
 const vts = WW_ON ? await loadVtsFile() : null;                                  // VHF (§6.3)
 game = new Game(stack, log, { weather, traffic, harborgeom: geom, routeTable, routePlanner, ...(WW_ON ? { vts, memGuard, maskAt: WT_ON ? (la, lo) => wt.maskAt(la, lo) : null } : {}) });     // MARKET adds routeTable; TIME reads it; v6 fleet: captains plan with routePlanner   // WORLD TILES: stack + facade
-const priceHistory = new PriceHistory({ file: path.join(DATA_DIR, 'market-history.json'), log });           // MARKET
+const priceHistory = game.econ   // WORLD ECONOMY §13: 16-bit rings in market-history.bin (a v1 JSON converts once)
+  ? new EconHistory({ file: path.join(DATA_DIR, 'market-history.bin'), v1File: path.join(DATA_DIR, 'market-history.json'), econ: game.econ, log })
+  : new PriceHistory({ file: path.join(DATA_DIR, 'market-history.json'), log });                         // MARKET
+if (game.econ) game.econ.history = priceHistory;
 priceHistory.load(); priceHistory.maybeSample(game); routeTable.start();                                     // MARKET
 setInterval(() => { try { priceHistory.maybeSample(game); } catch (e) { log('[market] sample failed', e.message); } }, 60000);
 // Live AIS (AISStream worldwide with the key in data/secrets/aisstream.key or AISSTREAM_API_KEY; Digitraffic Baltic):
@@ -128,6 +133,7 @@ function patchResidency() {
   } catch (e) { log('[geom] residency failed', e.message); }
 }
 setInterval(patchResidency, 10_000).unref?.();
+if (priceHistory.onLevel) memGuard.onLevel((lvl) => { try { priceHistory.onLevel(lvl, LEVEL); } catch (e) { log('[market] history shed failed', e.message); } });   // WORLD ECONOMY §13
 memGuard.onShed(({ mode }) => {
   try {
     const keep = (mode === 'critical' ? onlineShips() : activeShips()).map((s) => ({ lat: s.lat, lon: s.lon }));
@@ -300,7 +306,13 @@ app.get('/api/mh/:id', (req, res) => {
   let card = null; try { card = game.mh?.sheet(String(req.params.id), p?.ship ? { cls: p.ship.cls, lat: p.ship.lat, lon: p.ship.lon, cargo: p.cargo } : null); } catch (e) { log('[mh] card failed', e.message); }
   return card ? res.json(card) : res.status(404).json({ error: 'unknown harbour' });
 });
-app.get('/api/market/history', (req, res) => { const a = historyAnswer(priceHistory, req.query); res.status(a.status).json(a.body); });
+app.get('/api/market/history', (req, res) => { const a = (priceHistory.econ ? econHistoryAnswer : historyAnswer)(priceHistory, req.query); res.status(a.status).json(a.body); });
+const econApi = econHandlers({ game, payload: econPayload });                                       // WORLD ECONOMY §15 (split market API)
+app.get('/api/econ/data', econApi.data);
+app.get('/api/market/good/:good', econApi.good);
+app.get('/api/market/harbor/:id', econApi.harbor);
+app.get('/api/market/requests', econApi.requests);
+app.get('/api/market/movers', econApi.movers);
 app.get('/api/market/routes', routesHandler({ game, routeTable }));
 app.get('/api/players', (req, res) => res.json([...game.byId.values()].filter((p) => p.online).map((p) => game.publicState(p))));
 app.get('/api/fleetstats', (req, res) => res.json(game.fleet.stats()));   // v6 fleet: counts only (no private data)

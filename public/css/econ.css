@@ -1,0 +1,165 @@
+/* World economy — harbour Market tab, request cards, world-market econ overlay (docs/WORLD-ECONOMY-CONTRACT.md §14). */
+.ecTab { display: flex; flex-direction: column; gap: var(--s3); position: relative; }
+.ecTab h3 { display: flex; align-items: center; gap: var(--s2); margin: 0 0 var(--s2); font-size: 15px; }
+.ecTab h3 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.ecTab h4 { margin: 0 0 var(--s1); font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* 1. country strip */
+.ecCountry { background: var(--card); border: 1px solid var(--line); border-radius: var(--r3); padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+.ecFlagRow { display: flex; align-items: center; gap: var(--s3); }
+.ecFlagRow > div:nth-child(2) { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ecFlagRow b { font-size: 16px; }
+.ecFlagRow small { color: var(--muted); }
+.ecFlag { font-size: 30px; line-height: 1; }
+.ecTopBtns { display: flex; gap: var(--s2); flex-wrap: wrap; justify-content: flex-end; }
+.ecChips { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.ecChipsHead { flex: 0 0 auto; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; width: 92px; }
+.ecChips-make .ecChipsHead { color: var(--green); }
+.ecChips-need .ecChipsHead { color: var(--orange); }
+.ecChipScroll { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.ecChip { min-height: 30px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; border: 1px solid var(--line-2); background: var(--card-2); color: var(--fg-2); }
+.ecChips-make .ecChip { border-color: rgba(79, 209, 139, 0.45); }
+.ecChips-make .ecChip.t1 { background: var(--green-soft); color: #c9f3dc; font-weight: 650; }
+.ecChips-need .ecChip { border-color: rgba(255, 159, 67, 0.45); }
+.ecChips-need .ecChip.t1 { background: rgba(255, 159, 67, 0.16); color: #ffd9b3; font-weight: 650; }
+.ecChip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-2); display: inline-flex; align-items: center; gap: 4px; }
+.ecChip .ic { width: 14px; height: 14px; }
+.ecBanner { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-radius: var(--r2); background: var(--red-soft); color: #ffd0d0; font-weight: 600; }
+.ecBanner.ecEv-storm, .ecBanner.ecEv-restricted { background: var(--accent-soft); color: var(--accent-2); }
+.ecBanner.ecEv-boom, .ecBanner.ecEv-bust { background: var(--cyan-soft); color: #c6f0ff; }
+
+/* 2. requests board */
+.ecReqList { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: var(--s3); }
+.ecReqList.carousel { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: var(--s3); padding-bottom: var(--s2); -webkit-overflow-scrolling: touch; }
+.ecReqList.carousel > .ecReq { flex: 0 0 85%; scroll-snap-align: start; }
+.ecReq { background: var(--card); border: 1px solid rgba(242, 177, 52, 0.35); border-radius: var(--r3); padding: var(--s3); display: flex; flex-direction: column; gap: 6px; }
+.ecReq header { display: flex; align-items: center; gap: var(--s2); }
+.ecReq header > div { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.ecReq header small { color: var(--muted); font-size: 12px; }
+.ecPrem { font-weight: 800; font-size: 18px; color: var(--accent); }
+.ecProg { position: relative; height: 10px; border-radius: 5px; background: rgba(255, 255, 255, 0.08); overflow: hidden; display: flex; }
+.ecProg i { display: block; height: 100%; }
+.ecProg i.d { background: var(--green); }
+.ecProg i.p { background: repeating-linear-gradient(45deg, var(--accent), var(--accent) 4px, rgba(242, 177, 52, 0.5) 4px, rgba(242, 177, 52, 0.5) 8px); }
+.ecReqNums { display: flex; justify-content: space-between; gap: var(--s2); font-size: 12.5px; color: var(--fg-2); flex-wrap: wrap; }
+.ecDue { color: var(--accent-2); font-weight: 600; }
+.ecMine { color: var(--cyan); font-weight: 600; }
+.ecFit { font-size: 12px; }
+.ecFit.ok { color: var(--green); }
+.ecFit.no { color: var(--orange); }
+.ecReqBtns { display: flex; gap: var(--s2); flex-wrap: wrap; margin-top: 2px; }
+.ecReqBtns button { min-height: var(--tap); flex: 1 1 auto; }
+.ecReqIcon, .ecIcon { width: 26px; height: 26px; flex: 0 0 26px; border-radius: 7px; background: var(--card-hi) center/16px no-repeat; }
+
+/* 3. goods list */
+.ecTools { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.ecSearch { display: flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r2); padding: 0 var(--s2); flex: 1 1 200px; max-width: 320px; }
+.ecSearch input { border: 0; background: transparent; min-height: 38px; width: 100%; }
+.ecCat { border: 1px solid var(--line); border-radius: var(--r3); overflow: hidden; margin-bottom: var(--s2); background: rgba(15, 34, 53, 0.55); }
+.ecCatHead { width: 100%; display: flex; align-items: center; gap: var(--s2); min-height: var(--tap); padding: 0 var(--s3); background: var(--card-2); border: 0; border-radius: 0; color: var(--fg); justify-content: flex-start; }
+.ecCatHead b { flex: 1; text-align: left; }
+.ecCatHead small { color: var(--muted); }
+.ecRow { display: grid; grid-template-columns: minmax(200px, 1.35fr) minmax(250px, 1.6fr) auto; align-items: center; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); border-top: 1px solid var(--line); }
+.ecRow.open { background: rgba(90, 214, 255, 0.05); }
+.ecL1 { display: contents; }
+.ecName { display: flex; align-items: center; gap: var(--s2); background: none; border: 0; padding: 0; color: var(--fg); text-align: left; min-height: var(--tap); justify-content: flex-start; cursor: pointer; }
+.ecName > span:last-child { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.ecName small { color: var(--muted); font-size: 11.5px; width: 100%; }
+.ecRole { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; letter-spacing: 0.02em; }
+.ecRoleP { background: var(--green-soft); color: var(--green); }
+.ecRoleL { background: rgba(255, 255, 255, 0.08); color: var(--fg-2); }
+.ecRoleI { background: rgba(255, 159, 67, 0.16); color: var(--orange); }
+.ecPx { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; grid-column: 2; grid-row: 1; }
+.ecBuy b, .ecSell b { font-size: 15px; }
+.ecBuy small, .ecSell small { color: var(--muted); margin-left: 3px; font-size: 11px; }
+.ecSell b { color: var(--fg-2); font-weight: 600; }
+.ecUnit { color: var(--muted); font-size: 11px; width: 100%; }
+.ecNotSold { color: var(--orange); font-size: 12.5px; font-weight: 600; }
+.ecL2 { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; grid-column: 2; grid-row: 2; }
+.ecTrade { display: flex; align-items: center; gap: 6px; grid-column: 3; grid-row: 1 / span 2; }
+.ecTrade input { width: 84px; min-height: 38px; }
+.ecTrade button { min-height: 38px; padding: 0 12px; }
+.ecSpark polyline { fill: none; stroke: var(--cyan); stroke-width: 1.6; stroke-linejoin: round; }
+.ecSpark circle { fill: var(--cyan); }
+.ecSpark.up polyline { stroke: #e76f51; } .ecSpark.up circle { fill: #e76f51; }
+.ecSpark.down polyline { stroke: #2a9d8f; } .ecSpark.down circle { fill: #2a9d8f; }
+.ecSparkNone { stroke: var(--faint); stroke-dasharray: 3 3; }
+.ecTrend { font-size: 11px; width: 14px; text-align: center; }
+.ecTrend.up { color: #e76f51; } .ecTrend.down { color: #2a9d8f; } .ecTrend.flat { color: var(--muted); }
+.ecD24 { font-size: 12px; color: var(--fg-2); min-width: 54px; }
+.ecWhy { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--fg-2); white-space: nowrap; }
+.ecWhy-short, .ecWhy-strike, .ecWhy-closed, .ecWhy-sanction { background: var(--red-soft); color: #ffc4c4; }
+.ecWhy-glut { background: var(--green-soft); color: #c9f3dc; }
+.ecWhy-harvest, .ecWhy-boom { background: rgba(79, 209, 139, 0.12); color: #bdf0d4; }
+.ecWhy-winter, .ecWhy-holiday, .ecWhy-valentine, .ecWhy-mothers, .ecWhy-request { background: var(--accent-soft); color: var(--accent-2); }
+.ecWhy-storm, .ecWhy-restricted, .ecWhy-monsoon, .ecWhy-bust, .ecWhy-ice { background: var(--cyan-soft); color: #c6f0ff; }
+.ecStock { position: relative; display: inline-block; width: 90px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); }
+.ecStock i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--green); }
+.ecStock.short i { background: var(--red); } .ecStock.glut i { background: var(--cyan); }
+.ecStock .ecNorm, .ecStock .ecEq { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; }
+.ecStock .ecNorm { background: rgba(255, 255, 255, 0.45); }
+.ecStock .ecEq { background: var(--accent); }
+.ecDetail { grid-column: 1 / -1; padding: var(--s3); border-top: 1px dashed var(--line-2); background: rgba(90, 214, 255, 0.04); display: flex; flex-direction: column; gap: var(--s3); }
+.ecDetailGrid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
+.ecChart polyline { fill: none; stroke: var(--cyan); stroke-width: 1.8; }
+.ecChart text { fill: var(--muted); font-size: 9px; }
+.ecSeason { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; }
+.ecSeason span { text-align: center; font-size: 11px; padding: 4px 0; border-radius: 4px; background: rgba(255, 255, 255, 0.05); color: var(--muted); }
+.ecSeason span.hi { background: rgba(79, 209, 139, 0.32); color: #e6fff1; }
+.ecSeason span.lo { background: rgba(255, 159, 67, 0.22); color: #ffe4c9; }
+.ecSeason span.now { outline: 2px solid var(--accent); }
+.ecList5 { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.ecList5 li { display: grid; grid-template-columns: 1fr auto auto; gap: var(--s2); font-size: 12.5px; align-items: baseline; }
+.ecList5 li small { color: var(--muted); min-width: 64px; text-align: right; }
+.ecFoot { margin: 0; }
+.ecDump { border: 1px solid var(--line); border-radius: var(--r3); padding: var(--s2) 0 0; }
+.ecDump h3 { padding: 0 var(--s3); }
+
+/* bottom sheet */
+.ecSheetBack { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 80; }
+.ecSheet { position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: min(520px, 100%); z-index: 81; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r4) var(--r4) 0 0; padding: var(--s4) var(--s4) calc(var(--s4) + var(--sab)); box-shadow: var(--shadow); }
+.ecSheet h3 { margin: 0 0 var(--s1); }
+.ecSheetQty { display: flex; align-items: center; gap: var(--s3); margin: var(--s3) 0; }
+.ecSheetQty input { flex: 1; }
+.ecSheetQty output { min-width: 140px; text-align: right; font-weight: 650; }
+.ecSheetBtns { display: flex; gap: var(--s2); }
+.ecSheetBtns button { flex: 1; min-height: var(--tap); }
+
+/* world market: good picker, movers strip, econ legend */
+.ecPicker { display: flex; flex-direction: column; gap: var(--s2); }
+.ecCatTabs, .ecGoodTabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.ecCatTabs button, .ecGoodTabs button { flex: 0 0 auto; min-height: 36px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+.ecCatTabs button.on, .ecGoodTabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-2); }
+.ecMovers { display: flex; gap: var(--s2); overflow-x: auto; padding: 2px 0; }
+.ecMover { flex: 0 0 auto; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--r2); padding: 6px 10px; font-size: 12px; min-width: 150px; }
+.ecMover b { font-size: 13px; }
+.ecMover .up { color: #e76f51; } .ecMover .down { color: #2a9d8f; }
+#ecLegend { position: absolute; left: 12px; bottom: 12px; z-index: 6; padding: 8px 10px; border-radius: var(--r2); font-size: 12px; display: flex; flex-direction: column; gap: 4px; max-width: 280px; }
+#ecLegend .ecLgRow { display: flex; align-items: center; gap: 6px; }
+#ecLegend label { display: flex; align-items: center; gap: 6px; min-height: 28px; cursor: pointer; }
+#ecLegend .sw { width: 14px; height: 14px; display: inline-block; }
+#ecLegend .sw.tri { width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 13px solid #4fd18b; }
+#ecLegend .sw.dot { border-radius: 50%; background: #ff6b6b; }
+#ecLegend .sw.bell { color: var(--accent); }
+.mkModeSeg { display: inline-flex; }
+
+/* phone (390 × 844): one column, chips scroll sideways, two-line rows, 44 px targets */
+@media (max-width: 640px) {
+  .ecFlagRow { flex-wrap: wrap; }
+  .ecTopBtns { width: 100%; justify-content: stretch; }
+  .ecTopBtns button { flex: 1; min-height: var(--tap); }
+  .ecChips { flex-direction: column; align-items: stretch; gap: 4px; }
+  .ecChipScroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+  .ecChip { flex: 0 0 auto; min-height: var(--tap); }
+  .ecRow { grid-template-columns: 1fr auto; gap: 4px var(--s2); padding: var(--s2); }
+  .ecPx { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-end; gap: 0; }
+  .ecUnit { text-align: right; }
+  .ecL2 { grid-column: 1 / -1; grid-row: 2; }
+  .ecStock { width: 64px; }
+  .ecTrade { grid-column: 1 / -1; grid-row: 3; }
+  .ecTrade input { flex: 1; min-height: var(--tap); width: auto; }
+  .ecTrade button { min-height: var(--tap); flex: 0 0 auto; }
+  .ecDetailGrid { grid-template-columns: 1fr; }
+  .ecSearch { max-width: none; }
+  #ecLegend { left: 8px; right: 8px; bottom: 8px; max-width: none; }
+}

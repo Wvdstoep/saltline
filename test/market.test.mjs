@@ -14,6 +14,8 @@ import { RATES, serviceKn, serviceBurnTph, serviceWearPerH, kmHours } from '../s
 import {
   MARKET_GOODS, TRADE, tradeQuote, priceOf, refreshPrices, driftEconomy, marketTrend, portDues, pilotageFee, berthFeePerDay, repairCostFor,
 } from '../server/economy.js';
+import { dumpPrice } from '../shared/econ/model.js';
+import { GOODS } from '../shared/constants.js';
 import {
   MARKET, marketSnapshot, expectedStockAfter, expectedPriceAfter, findTrades, parseRoutesQuery, PriceHistory, routesHandler,
   historyAnswer, affordableQty,
@@ -59,6 +61,7 @@ test('snapshot: every harbour × good, buy = sell = market, stock/target/trend/f
     assert.ok(Number.isFinite(e.anchor.lat) && Number.isFinite(e.anchor.lon));
     for (const k of MARKET_GOODS) {
       const x = e.goods[k];
+      if (st.market[k] == null) { assert.equal(x.stock, null); assert.equal(x.buy, dumpPrice(GOODS[k].base)); continue; }   // world economy: not listed here
       assert.equal(x.buy, st.market[k]); assert.equal(x.sell, st.market[k]);
       assert.equal(x.stock, Math.round(st.stock[k])); assert.equal(x.target, Math.round(st.target[k])); assert.equal(x.trend, tr[k] ?? 0);
     }
@@ -71,11 +74,12 @@ test('expected stock = driftEconomy without noise (rnd 0.5) for 1, 6, 24 h; expe
   for (const id of ['rotterdam', 'hull', 'bergen']) {
     const h = harborById(id);
     for (const hours of [1, 6, 24]) {
-      const st = structuredClone(g.harbors[id]);
+      const st = structuredClone(g.harbors[id]); g.econ.refresh(h, st);   // world economy: the clone is that harbour's state
       st.stock.steel = Math.round(st.target.steel * 0.4); st.stock.fish = Math.round(st.target.fish * 1.7);
-      const copy = structuredClone(st);
+      const copy = structuredClone(st); g.econ.refresh(h, copy);
       driftEconomy(copy, hours, () => 0.5);
       for (const k of MARKET_GOODS) {
+        if (st.target[k] == null) continue;   // not listed at this harbour
         assert.ok(Math.abs(expectedStockAfter(st, k, hours) - copy.stock[k]) <= 1, `${id} ${k} ${hours} h`);
         assert.equal(expectedPriceAfter(h, st, k, hours), priceOf(h, k, expectedStockAfter(st, k, hours), st.target[k]));
       }
@@ -139,6 +143,7 @@ test('history answer: good, harbour, errors', () => {
 // ------------------------------------------------------------------------------------------------ 4 trade maths
 test('trade maths: qty limited by hold, stock and cash; costs equal the economy functions', () => onePrice(() => {
   const g = mkGame(); flatten(g);
+  g.econ.ceil.fill(Infinity);   // the finder's arithmetic on the bare §6.6 formula (no landed ceiling)
   const A = harborById('rotterdam');
   // a steel glut at Rotterdam, a steel shortage at Hull
   setStock(g, 'rotterdam', 'steel', 50000, 15000);
@@ -149,8 +154,8 @@ test('trade maths: qty limited by hold, stock and cash; costs equal the economy 
   // hold
   let row = pick(findTrades(g, T, q0({ hold: 1000 })));
   assert.equal(row.qty, 1000); assert.equal(row.limitedBy, 'hold');
-  // stock
-  setStock(g, 'rotterdam', 'steel', 640, 640);
+  // stock: Rotterdam imports steel, so only the part above normal is for sale (world economy §6.8)
+  setStock(g, 'rotterdam', 'steel', g.econ.n(g.econ.row('rotterdam', 'steel')) + 640);
   row = pick(findTrades(g, T, q0()));
   assert.equal(row.qty, 640); assert.equal(row.limitedBy, 'stock');
   setStock(g, 'rotterdam', 'steel', 50000, 15000);
@@ -276,12 +281,15 @@ test('tradeQuote: the old one-price rule; impact and spread behave; balance numb
   for (const h of HARBORS) {
     const st = g.harbors[h.id];
     for (const k of MARKET_GOODS) for (const q of [1, 100, 5000]) for (const side of ['buy', 'sell']) {
+      if (st.market[k] == null) continue;   // world economy: not listed here (the general traders' price applies)
       const r = tradeQuote(h, st, k, q, side);
       assert.equal(r.unit, st.market[k]); assert.equal(r.total, r.unit * q);
     }
   }
   const A = harborById('rotterdam'), stA = g.harbors.rotterdam;
   assert.ok(Number.isInteger(tradeQuote(A, stA, 'fish', 123.4, 'sell').total));
+  g.econ.ceil.fill(Infinity);   // impact mechanics on the bare formula: an importer at its landed ceiling does not move
+  stA.stock.steel = stA.target.steel * 2;
   const saved = { ...TRADE };
   try {
     TRADE.IMPACT = true;
@@ -293,17 +301,18 @@ test('tradeQuote: the old one-price rule; impact and spread behave; balance numb
     TRADE.IMPACT = false; TRADE.SPREAD = 0.01;
     assert.ok(tradeQuote(A, stA, 'steel', 1, 'buy').unit > tradeQuote(A, stA, 'steel', 1, 'sell').unit);
   } finally { Object.assign(TRADE, saved); }
-  // the balance case of V5-WAVE2 §3.10 (a full coaster hold of steel, Rotterdam → Hull, 410 km). The contract's crafted
-  // stocks (9,800 / 15,000 → 4,100 / 6,960) make no trade at all once Hull's stock drifts back toward normal during the
-  // 23 h passage (sellArrive), so the case is a steel glut at Rotterdam sold into a thin, balanced Hull market.
+  // the balance case of V5-WAVE2 §3.10, moved to the world economy (docs/WORLD-ECONOMY-CONTRACT.md §10): Rotterdam and Hull
+  // both import steel now, so the case is the real maker → importer hop, IJmuiden's steelworks → Hull (410 km). Under the
+  // landed ceiling Hull's price can exceed IJmuiden's only by the freight, so the one-price rule leaves a thin margin and
+  // impact + spread (wave 2) leave none: the short-hop money printer of v6 stays closed.
   const balance = () => {
     const g2 = mkGame();
-    setStock(g2, 'rotterdam', 'steel', 17000, 15000); setStock(g2, 'hull', 'steel', 3000, 3000);
-    const row = findTrades(g2, onlyTo('hull', 410), q0({ good: 'steel', limit: 50 })).trades.find((t) => t.to === 'hull');
-    return row ? row.net / row.hours : -Infinity;
+    const row = findTrades(g2, onlyTo('hull', 410), q0({ from: 'ijmuiden', good: 'steel', limit: 50 })).trades.find((t) => t.to === 'hull');
+    return row ? row.net / row.hours : 0;
   };
-  assert.ok(balance() > 7000, `defaults: ${balance()} cr per ship hour`);
-  try { TRADE.IMPACT = true; TRADE.SPREAD = 0.01; assert.ok(balance() < 2000, `wave 2: ${balance()} cr per ship hour`); } finally { Object.assign(TRADE, saved); }
+  const oneP = balance();
+  assert.ok(oneP > 0 && oneP < 2000, `defaults: ${oneP} cr per ship hour`);
+  try { TRADE.IMPACT = true; TRADE.SPREAD = 0.02; const w2 = balance(); assert.ok(w2 < oneP && w2 < 2000, `wave 2: ${w2} cr per ship hour`); } finally { Object.assign(TRADE, saved); }
   // cash-limited search returns the largest affordable integer (also with impact)
   try {
     TRADE.IMPACT = true;
@@ -369,7 +378,8 @@ test('routes handler: 429 after 30 a minute per IP; identical queries within 30 
 test('tradeGoods: a buy-out followed by a sell-back at the same harbour loses money; buys never overdraw', () => {
   const g = mkGame(); flatten(g);
   g.sendYou = () => {}; g.sendHarbor = () => {}; g.event = () => {};
-  for (const good of ['steel', 'fish', 'grain'].filter((k) => MARKET_GOODS.includes(k))) {
+  for (const good of ['steel', 'fish', 'grain', 'machinery'].filter((k) => MARKET_GOODS.includes(k))) {
+    const rs = g.harbors.rotterdam; rs.stock[good] = rs.target[good] * 3;   // world economy §6.8: importers sell only a surplus
     const p = { docked: 'rotterdam', ship: { cls: 'coaster' }, cargo: [], money: 1e7, stats: { earned: 0 } };
     g.tradeGoods(p, good, 1200, true);
     const bought = p.cargo.reduce((s, c) => s + c.qty, 0);

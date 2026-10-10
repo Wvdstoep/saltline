@@ -1,5 +1,6 @@
 // Shared constants — imported by both the Node server and the browser client (plain ESM, no deps).
 import { installVariants } from './ships/classes.js';   // SHIPYARD H1 (docs/SHIPS-LANEA-PHASE2.md)
+import { CATALOGUE } from './econ/catalogue.js';        // world economy §4: GOODS is generated from the catalogue
 
 export const GEO = {
   EARTH_R: 6371000,
@@ -82,6 +83,11 @@ export const GOODS = {
   narcotics: { name: 'Narcotics', base: 42000, contraband: true },
   antiquities: { name: 'Looted antiquities', base: 18000, contraband: true },
 };
+
+// World economy (docs/WORLD-ECONOMY-CONTRACT.md §4): the 73 new catalogue goods join GOODS; the 7 legacy rows and the
+// 4 contraband rows above are kept exactly (rule E6). `cat`, `unit`, `tPer` ride along for the client.
+for (const r of CATALOGUE) if (!GOODS[r.id]) GOODS[r.id] = { name: r.name, base: r.base, contraband: false };
+for (const r of CATALOGUE) Object.assign(GOODS[r.id], { cat: r.cat, unit: r.unit, tPer: r.tPer });
 
 // Interaction ranges in metres (1 unit = 1 m).
 export const INTERACT = {

@@ -124,6 +124,15 @@ const P = {
   key: '<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3"/><path d="M17 6l3 3M15 8l2 2"/>',
   logout: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/>',
   expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  // world economy categories (§4.3)
+  sack: '<path d="M9 3.5h6l-1.5 3c3.5 1.5 5.5 5 5.5 8.5 0 3.5-2.5 5.5-7 5.5s-7-2-7-5.5c0-3.5 2-7 5.5-8.5L9 3.5z"/><path d="M10.5 6.5h3"/>',
+  rock: '<path d="M3 17l3.5-7 4-3 5 1.5 3.5 4.5 2 4.5-4 2.5H7z"/><path d="M10.5 7l1 5 4.5 1M11.5 12L7 17"/>',
+  drop: '<path d="M12 3s-6 6.6-6 11a6 6 0 0 0 12 0c0-4.4-6-11-6-11z"/><path d="M9.5 15a2.5 2.5 0 0 0 2.5 2.5"/>',
+  flame: '<path d="M12 21c-4 0-6.5-2.6-6.5-6 0-4 3.5-6 3.5-10 2.5 1.5 4 4 4 6 1-1 1.5-2.5 1.5-4 2.5 2 4 5 4 8 0 3.4-2.5 6-6.5 6z"/>',
+  snowflake: '<path d="M12 2.5v19M3.8 7.2l16.4 9.6M20.2 7.2L3.8 16.8"/><path d="M9.5 4l2.5 2 2.5-2M9.5 20l2.5-2 2.5 2"/>',
+  girder: '<path d="M3 6h18M3 18h18"/><path d="M5 6l3.5 12L12 6l3.5 12L19 6"/>',
+  car: '<path d="M4 16.5V12l2-5h12l2 5v4.5"/><path d="M3 16.5h18"/><path d="M4 12h16"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/>',
+  cow: '<path d="M5 9h11.5a3.5 3.5 0 0 1 3.5 3.5V15"/><path d="M6 9v9M16 12v6M9 13v5"/><path d="M5 9L3 6.5M5 9c-1 0-2 .8-2 2"/><path d="M20 15h1.5"/>',
 };
 
 /** `ICON.anchor` → '<svg class="ic" …>…</svg>' */
@@ -143,7 +152,9 @@ export const JOB_ICON = Object.freeze({
   aid: 'lifebuoy', corridor: 'grain', state: 'flag', avoid: 'compass', evac: 'users',   // world politics (diplomatic contracts)
 });
 /** Ship market category → icon name. */
-export const CAT_ICON = Object.freeze({ working: 'crane', cargo: 'containers', passenger: 'users', 'motor yacht': 'yacht', 'sailing yacht': 'sail' });
+export const CAT_ICON = Object.freeze({ working: 'crane', cargo: 'containers', passenger: 'users', 'motor yacht': 'yacht', 'sailing yacht': 'sail',
+  // world economy product categories (docs/WORLD-ECONOMY-CONTRACT.md §4.3); a good with no own icon uses its category's
+  grains: 'grain', fert: 'sack', ores: 'rock', energy: 'drop', gas: 'flame', reefer: 'snowflake', box: 'containers', breakbulk: 'girder', vehicles: 'car', animals: 'cow', offshore: 'platform' });
 
 /** CSS `url()` value of an icon (for backgrounds / placeholders), in a given colour. */
 export function iconDataUrl(name, color = '#8fb0c8') {

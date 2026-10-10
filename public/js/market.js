@@ -2,7 +2,9 @@
 // stock and 7-day sparklines, a trade-route finder for YOUR ship, and a price heat-map layer on the chart.
 import { haversine } from '/shared/geo.js';
 import { serviceKn } from '/shared/rates.js';
-import { ic, GOOD_ICON } from './icons.js';
+import { ic, GOOD_ICON, CAT_ICON } from './icons.js';
+import { CATS, CATALOGUE, catalogueOf, roleBadge, reasonChip, d24Text, premiumText, deadlineText, perUnitText } from './econfmt.js';   // world economy §14.2
+const gIcon = (g) => GOOD_ICON[g] || CAT_ICON[catalogueOf(g)?.cat] || 'crate';
 
 function ensureCss(id, href) {
   if (document.getElementById(id)) return;
@@ -68,7 +70,10 @@ export class WorldMarket {
     this.layerGood = this.good === 'all' ? 'fish' : this.good;
     this.query = ''; this.region = store.get('mkRegion', 'world');
     this.sort = store.get('mkSort', { key: 'harbor', dir: 1 });
-    this.routes = { from: null, sort: 'tkm', data: null, loading: false, error: '' };
+    this.routes = { from: null, sort: 'tkm', data: null, loading: false, error: '', mode: 'trades', good: null };
+    this.goodData = new Map(); this.reqData = new Map(); this.movers = null; this.moversAt = 0;   // world economy §14.2
+    this.cat = catalogueOf(this.good)?.cat || 'grains';
+    this.econLayers = store.get('ecLayers', { makers: true, scarce: true, requests: true, heat: true });
     this.app.tradePlan = store.get('mkPlan', null);
     try { ensureCss('mkCss', 'css/market.css'); this.inject(); } catch (e) { console.warn('[market] ui unavailable', e); }
     setInterval(() => this.tick(), 5000);
@@ -97,6 +102,7 @@ export class WorldMarket {
     const c = this.chart(); if (!c) return;
     if (c.layers && !('market' in c.layers)) c.layers.market = false;
     c.layers.market = !!on;
+    c.layers.econ = !!on;   // world economy §14.2: makers / scarce / requests overlay (chart.js econ hook)
     $('chartMarketBtn')?.classList.toggle('on', !!on);
     if (on) this.refresh();
     this.syncLegend();
@@ -135,6 +141,7 @@ export class WorldMarket {
       try {
         const r = await fetch('/api/market');
         if (r.ok) { this.snap = await r.json(); this.snapAt = Date.now(); this.byId = new Map(this.snap.harbors.map((h) => [h.id, h])); }
+        await Promise.all([this.loadGood(this.good, true), this.layerOn() ? this.loadGood(this.layerGood, true) : null, this.loadMovers()]);
       } catch { /* keep the old snapshot */ }
       this.loading = null;
       if (this.isOpen()) this.render();
@@ -152,6 +159,30 @@ export class WorldMarket {
     return p;
   }
   histFor(good, id) { return this.hist.get(good)?.data?.series?.[id] || null; }
+  /** /api/market/good/:g → rows by harbour { buy, sell, stock, target, trend, role, d24, reqId, tier } (world economy §15). */
+  async loadGood(g, force = false) {
+    if (!g || g === 'all' || !catalogueOf(g)) return null;
+    const c = this.goodData.get(g);
+    if (c && !force && Date.now() - c.at < REFRESH_MS) return c;
+    try {
+      const [r, q] = await Promise.all([fetch(`/api/market/good/${encodeURIComponent(g)}`), fetch(`/api/market/requests?good=${encodeURIComponent(g)}`)]);
+      if (!r.ok) return c || null;
+      const body = await r.json(), rows = new Map();
+      for (const x of body.rows || []) rows.set(x[0], { buy: x[2], sell: x[3], stock: x[4], target: x[5], trend: x[6], role: x[1], d24: x[7], reqId: x[8], tier: x[9] ?? null });
+      const reqs = q.ok ? (await q.json()).requests || [] : [];
+      const d = { at: Date.now(), rows, reqs: new Map(reqs.map((x) => [x.harbor, x])) };
+      this.goodData.set(g, d);
+      return d;
+    } catch { return c || null; }
+  }
+  async loadMovers() {
+    if (this.movers && Date.now() - this.moversAt < REFRESH_MS) return this.movers;
+    try { const r = await fetch('/api/market/movers'); if (r.ok) { this.movers = (await r.json()).movers || []; this.moversAt = Date.now(); } } catch { /* keep */ }
+    return this.movers;
+  }
+  gname(g) { return catalogueOf(g)?.name || this.snap?.goods?.find((x) => x.id === g)?.name || g; }
+  /** From the harbour sheet's request card: the finder in requests mode for one good. */
+  requestsFor(good) { this.routes.mode = 'requests'; this.routes.good = good || null; this.routes.from = 'all'; this.routes.data = null; this.open('routes'); }
   you() { return this.app.you || null; }
   cls() { return this.you()?.ship?.cls || this.app.ship?.cls || 'coaster'; }
   capacity() { return this.app.world?.classes?.[this.cls()]?.capacity ?? 0; }
@@ -159,6 +190,8 @@ export class WorldMarket {
   async findTrades(opts = {}) {
     const y = this.you(), s = this.app.ship;
     const q = new URLSearchParams({ from: opts.from || 'all', cls: this.cls(), hold: String(Math.max(1, this.freeHold())), cash: String(Math.max(0, Math.floor(y?.money ?? 0))), sort: opts.sort || 'tkm', limit: '20' });
+    if (opts.mode && opts.mode !== 'trades') q.set('mode', opts.mode);
+    if (opts.good) q.set('good', opts.good);
     if (s && Number.isFinite(s.lat)) { q.set('lat', s.lat.toFixed(3)); q.set('lon', s.lon.toFixed(3)); }
     const r = await fetch(`/api/market/routes?${q}`);
     const body = await r.json().catch(() => ({}));
@@ -192,7 +225,7 @@ export class WorldMarket {
   }
   renderSub() {
     const el = $('mkSub'); if (!el) return;
-    el.textContent = this.snap ? `${this.snap.harbors.length} harbours · ${this.snap.goods.length} goods · updated ${ago(Date.now() - this.snapAt)}` : 'loading…';
+    el.textContent = this.snap ? `${this.snap.harbors.length} harbours · ${CATALOGUE.length} goods · updated ${ago(Date.now() - this.snapAt)}` : 'loading…';
   }
   render() {
     if (!$('marketWrap')) return;
@@ -206,11 +239,16 @@ export class WorldMarket {
     const el = $('mk-prices'); if (!el) return;
     if (!this.snap) { el.innerHTML = '<p class="muted">Loading prices…</p>'; return; }
     const goods = this.snap.goods;
-    const chips = [['all', 'All goods', 'grid'], ...goods.map((g) => [g.id, g.name, GOOD_ICON[g.id] || 'crate'])]
-      .map(([id, name, i]) => `<button class="mkChip${this.good === id ? ' on' : ''}" data-mk="good" data-good="${esc(id)}">${ic(i)}<span>${esc(name)}</span></button>`).join('');
+    // world economy §14.2: a good picker (category tabs, then goods) instead of the 7 fixed columns; "All" keeps the legacy 7
+    const catTabs = [['all', 'Classic 7', 'grid'], ...CATS.map((c) => [c.id, c.name, CAT_ICON[c.id] || 'crate'])].map(([id, name, i]) => `<button class="${(this.good === 'all' ? 'all' : this.cat) === id ? 'on' : ''}" data-mk="cat" data-cat="${esc(id)}">${ic(i)}<span>${esc(name)}</span></button>`).join('');
+    const inCat = this.good === 'all' ? [] : CATALOGUE.filter((r) => r.cat === this.cat);
+    const chips = this.good === 'all' ? [['all', 'All 7 goods', 'grid'], ...goods.map((g) => [g.id, g.name, gIcon(g.id)])].map(([id, name, i]) => `<button class="mkChip${this.good === id ? ' on' : ''}" data-mk="good" data-good="${esc(id)}">${ic(i)}<span>${esc(name)}</span></button>`).join('')
+      : inCat.map((r) => `<button class="${this.good === r.id ? 'on' : ''}" data-mk="good" data-good="${esc(r.id)}">${esc(r.name)}</button>`).join('');
+    const movers = (this.movers || []).map((m) => `<button class="ecMover" data-mk="good" data-good="${esc(m.good)}" title="${esc(this.gname(m.good))} at ${esc(m.name)}"><b>${esc(this.gname(m.good))}</b><span>${esc(m.name)} · <span class="${m.d24 > 0 ? 'up' : 'down'}">${d24Text(m.d24)}</span></span>${reasonChip(m.why)}</button>`).join('');
     const sortOpts = [['harbor', 'Harbour A–Z'], ['country', 'Country'], ['good', 'Good'], ['price', 'Price'], ['stock', 'Stock vs normal'], ['dist', 'Distance from you']];
     el.innerHTML = `<div class="mkControls">
-        <div class="mkChips" role="tablist" aria-label="Goods">${chips}</div>
+        ${movers ? `<div class="ecMoversWrap"><small class="muted">What moved today</small><div class="ecMovers">${movers}</div></div>` : ''}
+        <div class="ecPicker"><div class="ecCatTabs" role="tablist" aria-label="Categories">${catTabs}</div>${this.good === 'all' ? `<div class="mkChips" role="tablist" aria-label="Goods">${chips}</div>` : `<div class="ecGoodTabs" role="tablist" aria-label="Goods">${chips}</div>`}</div>
         <div class="mkTools">
           <label class="mkSearch">${ic('filter')}<input id="mkSearch" type="search" placeholder="Harbour or country" value="${esc(this.query)}" aria-label="Filter harbours"></label>
           <div class="mkSeg" role="group" aria-label="Region"><button data-mk="region" data-v="region" class="${this.region === 'region' ? 'on' : ''}">North Sea</button><button data-mk="region" data-v="world" class="${this.region !== 'region' ? 'on' : ''}">World</button></div>
@@ -230,7 +268,16 @@ export class WorldMarket {
     const inRegion = (h) => !L || (h.lat >= L.latMin && h.lat < L.latMax && h.lon >= L.lonMin && h.lon < L.lonMax);
     const goods = this.good === 'all' ? this.snap.goods.map((g) => g.id) : [this.good];
     const rows = [];
+    const gd = this.good !== 'all' ? this.goodData.get(this.good) : null;
     for (const h of this.snap.harbors) {
+      if (gd) {   // world economy: one good across every harbour that lists it
+        if (this.region === 'region' && !inRegion(h)) continue;
+        if (q && !h.name.toLowerCase().includes(q) && !String(h.country).toLowerCase().includes(q) && !h.id.includes(q)) continue;
+        const x = gd.rows.get(h.id); if (!x) continue;
+        const dist = s && Number.isFinite(s.lat) ? haversine(s.lat, s.lon, h.lat, h.lon) / 1000 : null;
+        rows.push({ h, g: this.good, x, dist, ratio: x.target > 0 ? x.stock / x.target : null, req: gd.reqs.get(h.id) || null });
+        continue;
+      }
       if (this.region === 'region' && !inRegion(h)) continue;
       if (q && !h.name.toLowerCase().includes(q) && !String(h.country).toLowerCase().includes(q) && !h.id.includes(q)) continue;
       const dist = s && Number.isFinite(s.lat) ? haversine(s.lat, s.lon, h.lat, h.lon) / 1000 : null;
@@ -252,25 +299,28 @@ export class WorldMarket {
     const box = $('mkRows'); if (!box || !this.snap) return;
     const rows = this.rowsData();
     const split = this.snap.harbors.some((h) => Object.values(h.goods).some((x) => x.buy !== x.sell));
-    const gname = (g) => this.snap.goods.find((x) => x.id === g)?.name || g;
+    const gname = (g) => this.gname(g);
     const docked = this.you()?.docked;
+    if (this.good !== 'all' && !this.goodData.get(this.good)) { box.innerHTML = '<p class="muted">Loading…</p>'; this.loadGood(this.good).then(() => this.renderRows()); return; }
+    const econ = this.good !== 'all';
+    const roleCell = (r) => (econ ? `${roleBadge(r.x.role)}${r.req ? ` <span class="ecWhy ecWhy-request" title="Request open">${ic('bell')}${premiumText(r.req.premium)}</span>` : ''}` : '');
     const note = $('mkNote');
-    if (note) note.textContent = `${rows.length} row${rows.length === 1 ? '' : 's'}${this.good !== 'all' ? ` · median ${fmt(median(this.snap.harbors.map((h) => h.goods[this.good]?.buy)))} cr/t` : ''}${split ? '' : ' · buying and selling price are the same today'} · prices in cr per tonne`;
+    if (note) note.textContent = `${rows.length} row${rows.length === 1 ? '' : 's'}${this.good !== 'all' ? ` · median ${fmt(median(rows.map((r) => r.x.buy)))} cr/t${perUnitText(median(rows.map((r) => r.x.buy)), this.good) ? ` (${perUnitText(median(rows.map((r) => r.x.buy)), this.good)})` : ''}` : ''}${split ? '' : ' · buying and selling price are the same today'} · prices in cr per tonne${econ ? ' · "Not sold" = imported: that harbour keeps its stock' : ''}`;
     if (!rows.length) { box.innerHTML = '<p class="muted mkEmpty">No harbour matches.</p>'; return; }
     const acts = (r) => `<button class="mkAct" data-mk="chart" data-h="${esc(r.h.id)}" data-good="${esc(r.g)}" title="Show on the chart">${ic('chart')}<span>Chart</span></button><button class="mkAct" data-mk="tradesFrom" data-h="${esc(r.h.id)}" title="Best trades from this harbour">${ic('route')}<span>Trades</span></button>`;
     if (this.narrow()) {
       box.className = 'mkRows cards';
       box.innerHTML = rows.map((r) => `<article class="mkCard${docked === r.h.id ? ' here' : ''}" data-spark="${esc(r.g)}|${esc(r.h.id)}">
-          <div class="mkCardTop"><span class="mkGood">${ic(GOOD_ICON[r.g] || 'crate')}</span><div class="mkCardName"><b>${esc(short(r.h.name))}</b><small>${esc(r.h.country)}${this.good === 'all' ? ` · ${esc(gname(r.g))}` : ''}${r.dist != null ? ` · ${fmtKm(r.dist)}` : ''}${docked === r.h.id ? ' · you are here' : ''}</small></div>
+          <div class="mkCardTop"><span class="mkGood">${ic(gIcon(r.g))}</span><div class="mkCardName"><b>${esc(short(r.h.name))}</b> ${roleCell(r)}<small>${esc(r.h.country)}${this.good === 'all' ? ` · ${esc(gname(r.g))}` : ''}${r.dist != null ? ` · ${fmtKm(r.dist)}` : ''}${docked === r.h.id ? ' · you are here' : ''}${econ ? ` · 24 h ${d24Text(r.x.d24)}` : ''}</small></div>
             <div class="mkPrice"><b>${fmt(r.x.buy)}</b>${split ? `<small>sell ${fmt(r.x.sell)}</small>` : '<small>cr/t</small>'}</div>${this.trendIcon(r.x.trend)}</div>
           <div class="mkCardMid">${this.stockCell(r)}<span class="mkSparkCell"></span></div>
           <div class="mkCardActs">${acts(r)}</div></article>`).join('');
     } else {
       box.className = 'mkRows';
       const th = (k, l, cls = '') => `<th class="${cls}${this.sort.key === k ? ' sorted' : ''}" data-mk="sort" data-k="${k}" tabindex="0" aria-sort="${this.sort.key === k ? (this.sort.dir > 0 ? 'ascending' : 'descending') : 'none'}">${l}${this.sort.key === k ? (this.sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
-      box.innerHTML = `<table class="mkTable"><thead><tr>${th('harbor', 'Harbour')}${th('country', 'Country')}${th('good', 'Good')}${split ? th('price', 'Buy', 'num') + '<th class="num">Sell</th>' : th('price', 'Price <small>(buy = sell)</small>', 'num')}${th('stock', 'Stock')}<th>Trend</th><th>7 days</th>${th('dist', 'Distance', 'num')}<th></th></tr></thead><tbody>
-        ${rows.map((r) => `<tr class="${docked === r.h.id ? 'here' : ''}" data-spark="${esc(r.g)}|${esc(r.h.id)}"><td><b>${esc(short(r.h.name))}</b>${docked === r.h.id ? ' <span class="chip good">here</span>' : ''}</td><td>${esc(r.h.country)}</td><td class="mkG">${ic(GOOD_ICON[r.g] || 'crate')}${esc(gname(r.g))}</td>
-          <td class="num"><b>${fmt(r.x.buy)}</b></td>${split ? `<td class="num">${fmt(r.x.sell)}</td>` : ''}<td>${this.stockCell(r)}</td><td>${this.trendIcon(r.x.trend)}</td><td class="mkSparkCell"></td><td class="num">${r.dist != null ? fmtKm(r.dist) : '—'}</td><td class="mkActs">${acts(r)}</td></tr>`).join('')}</tbody></table>`;
+      box.innerHTML = `<table class="mkTable"><thead><tr>${th('harbor', 'Harbour')}${th('country', 'Country')}${econ ? '<th>Role</th>' : th('good', 'Good')}${split ? th('price', 'Buy', 'num') + '<th class="num">Sell</th>' : th('price', 'Price <small>(buy = sell)</small>', 'num')}${th('stock', 'Stock')}<th>Trend</th><th>7 days</th>${econ ? '<th class="num">24 h</th>' : ''}${th('dist', 'Distance', 'num')}<th></th></tr></thead><tbody>
+        ${rows.map((r) => `<tr class="${docked === r.h.id ? 'here' : ''}" data-spark="${esc(r.g)}|${esc(r.h.id)}"><td><b>${esc(short(r.h.name))}</b>${docked === r.h.id ? ' <span class="chip good">here</span>' : ''}</td><td>${esc(r.h.country)}</td>${econ ? `<td>${roleCell(r)}</td>` : `<td class="mkG">${ic(gIcon(r.g))}${esc(gname(r.g))}</td>`}
+          <td class="num">${econ && r.x.role === 'I' && !(r.x.stock > r.x.target) ? '<span class="ecNotSold" title="Imported: not sold here">not sold</span>' : `<b>${fmt(r.x.buy)}</b>`}</td>${split ? `<td class="num">${fmt(r.x.sell)}</td>` : ''}<td>${this.stockCell(r)}</td><td>${this.trendIcon(r.x.trend)}</td><td class="mkSparkCell"></td>${econ ? `<td class="num">${d24Text(r.x.d24)}</td>` : ''}<td class="num">${r.dist != null ? fmtKm(r.dist) : '—'}</td><td class="mkActs">${acts(r)}</td></tr>`).join('')}</tbody></table>`;
     }
     this.fillSparks(false);
   }
@@ -280,7 +330,7 @@ export class WorldMarket {
     this.io?.disconnect();
     const draw = (el) => {
       const [g, id] = el.dataset.spark.split('|');
-      const x = this.byId?.get(id)?.goods?.[g]; if (!x) return;
+      const x = this.goodData.get(g)?.rows?.get(id) || this.byId?.get(id)?.goods?.[g]; if (!x) return;
       const cell = el.querySelector('.mkSparkCell'); if (!cell) return;
       cell.innerHTML = sparkline(this.histFor(g, id), x.buy, x.trend); el.dataset.drawn = this.hist.get(g)?.data ? '2' : '1';
     };
@@ -305,7 +355,7 @@ export class WorldMarket {
     R.loading = true; R.error = ''; this.renderRoutes();
     // a full hold has nothing to trade with: no 1 t "trades" (the server needs hold > 0)
     if (this.freeHold() < 1) { R.data = { trades: [], cash: this.you()?.money ?? 0 }; R.loading = false; R.at = Date.now(); if (this.isOpen()) this.renderRoutes(); return; }
-    try { R.data = await this.findTrades({ from: R.from, sort: R.sort }); } catch (e) { R.error = e.message || 'Trade search failed.'; }
+    try { R.data = await this.findTrades({ from: R.from, sort: R.sort, mode: R.mode, good: R.good }); } catch (e) { R.error = e.message || 'Trade search failed.'; }
     R.loading = false; R.at = Date.now();
     if (this.isOpen()) this.renderRoutes();
   }
@@ -323,6 +373,7 @@ export class WorldMarket {
     const head = `<div class="mkControls">
         <div class="mkTools">
           <label class="mkSortSel">From <select id="mkFrom"><option value="all"${R.from === 'all' ? ' selected' : ''}>Anywhere (best start)</option>${hs.map(({ h, d }) => `<option value="${esc(h.id)}"${R.from === h.id ? ' selected' : ''}>${esc(short(h.name))}${y?.docked === h.id ? ' (docked)' : s ? ` · ${fmtKm(d / 1000)}` : ''}</option>`).join('')}</select></label>
+          <div class="mkSeg mkModeSeg" role="group" aria-label="Trades or requests"><button data-mk="rmode" data-v="trades" class="${R.mode !== 'requests' ? 'on' : ''}">Trades</button><button data-mk="rmode" data-v="requests" class="${R.mode === 'requests' ? 'on' : ''}">${ic('bell')}Requests${R.good ? ` · ${esc(this.gname(R.good))}` : ''}</button></div>
           <div class="mkSeg" role="group" aria-label="Sort trades"><button data-mk="rsort" data-v="tkm" class="${R.sort === 'tkm' ? 'on' : ''}">per t·km</button><button data-mk="rsort" data-v="hour" class="${R.sort === 'hour' ? 'on' : ''}">per hour</button><button data-mk="rsort" data-v="net" class="${R.sort === 'net' ? 'on' : ''}">total</button></div>
           <button class="mkAct" data-mk="rrefresh">${ic('rewind')}<span>Refresh</span></button>
         </div>
@@ -343,11 +394,17 @@ export class WorldMarket {
     return `limited by your hold (${fmtT(t.qty)})`;
   }
   tradeCard(t, i) {
-    const gname = this.snap?.goods?.find((g) => g.id === t.good)?.name || t.good;
+    const gname = this.gname(t.good);
+    if (t.mode === 'request') {   // world economy §9.4 requests mode
+      return `<article class="card mkTrade"><div class="mkTradeTop"><span class="mkGood">${ic(gIcon(t.good))}</span><div><b>${esc(gname)}</b>: ${esc(short(t.fromName))} → ${esc(short(t.toName))} ${reasonChip(t.why)}<small>fills ${esc(t.fills)} · buy ${fmt(t.buy)} → locked ${fmt(t.unit)} cr/t · ${esc(t.role || '')}</small></div>
+        <div class="mkNet"><b>+${fmt(t.net)} cr</b><small>${fmt(t.perHour)} cr/h · ${fmt1(t.perTkm)} cr/t·km</small></div></div>
+        <div class="mkFacts"><span>${ic('route')}${t.distEst ? '≈ ' : ''}${fmtKm(t.distKm)} · ${nm(t.distKm)} nm</span><span>${ic('clock')}${fmtH(t.hours)} at service speed · ${deadlineText(t.marginH)} to spare</span></div>
+        <div class="mkTradeActs"><button class="primary" data-mk="plan" data-i="${i}">${ic('route')}<span>Plan this run</span></button></div></article>`;
+    }
     const c = t.costs, avg = t.buy !== t.buyFirst ? ` (the first tonne ${fmt(t.buyFirst)})` : '';
     const lines = [['Goods', `${fmtT(t.qty)} at ${fmt(t.buy)} cr/t${avg}`, c.goods], ['Fuel', `${fmt1(t.fuelT)} t`, c.fuel], ['Wages', fmtH(t.hours), c.wages], ['Wear', 'hull', c.wear], ['Port dues', short(t.toName), c.dues], ['Pilotage', c.pilotage ? 'compulsory' : 'none', c.pilotage], ['Berth', '1 day', c.berth]];
     return `<article class="card mkTrade">
-      <div class="mkTradeTop"><span class="mkGood">${ic(GOOD_ICON[t.good] || 'crate')}</span><div><b>${esc(gname)}</b>: ${esc(short(t.fromName))} → ${esc(short(t.toName))}<small>${fmtT(t.qty)} · ${esc(this.limitText(t))}${Number.isFinite(t.fromDistKm) && t.from !== this.you()?.docked ? ` · start ${fmtKm(t.fromDistKm)} from you` : ''}</small></div>
+      <div class="mkTradeTop"><span class="mkGood">${ic(gIcon(t.good))}</span><div><b>${esc(gname)}</b>: ${esc(short(t.fromName))} → ${esc(short(t.toName))} ${t.role ? `<span class="ecWhy">${esc(t.role)}</span>` : ''}${reasonChip(t.why)}<small>${fmtT(t.qty)} · ${esc(this.limitText(t))}${Number.isFinite(t.fromDistKm) && t.from !== this.you()?.docked ? ` · start ${fmtKm(t.fromDistKm)} from you` : ''}</small></div>
         <div class="mkNet"><b>+${fmt(t.net)} cr</b><small>${fmt(t.perHour)} cr/h · ${fmt1(t.perTkm)} cr/t·km</small></div></div>
       <div class="mkFacts"><span>${ic('coins')}buy <b>${fmt(t.buy)}</b> → sell <b>${fmt(t.sellArrive)}</b> cr/t <small>(now ${fmt(t.sellNow)})</small></span><span>${ic('route')}${t.distEst ? '≈ ' : ''}${fmtKm(t.distKm)} · ${nm(t.distKm)} nm</span><span>${ic('clock')}${fmtH(t.hours)} at service speed</span></div>
       ${t.bunker > 0 ? `<p class="mkHint warn">${ic('warning')}Beyond your range: about ${t.bunker} bunkering stop${t.bunker > 1 ? 's' : ''} on the way (the fuel is already costed).</p>` : ''}
@@ -362,13 +419,13 @@ export class WorldMarket {
   }
   async planTrade(t) {
     const a = this.app, y = this.you();
-    const plan = { good: t.good, from: t.from, fromName: t.fromName, to: t.to, toName: t.toName, qty: t.qty, buy: t.buy, sellArrive: t.sellArrive, net: t.net, createdAt: Date.now() };
+    const plan = { good: t.good, from: t.from, fromName: t.fromName, to: t.to, toName: t.toName, qty: t.qty, buy: t.buy, sellArrive: t.sellArrive ?? t.unit, net: t.net, reqId: t.reqId || null, createdAt: Date.now() };
     a.tradePlan = plan; store.set('mkPlan', plan);
     const atA = y?.docked === t.from;
     const destId = atA ? t.to : t.from;
     const dest = this.byId?.get(destId) || a.world?.harbors?.find((h) => h.id === destId);
-    const gname = (this.snap?.goods?.find((g) => g.id === t.good)?.name || t.good).toLowerCase();
-    const head = `Plan: buy ${fmt(t.qty)} t ${gname} at ${short(t.fromName)} (${fmt(t.buy)} cr/t), sell at ${short(t.toName)} ≈ ${fmt(t.sellArrive)} cr/t — net ≈ ${fmt(roundNet(t.net))} cr.`;
+    const gname = this.gname(t.good).toLowerCase();
+    const head = `Plan: buy ${fmt(t.qty)} t ${gname} at ${short(t.fromName)} (${fmt(t.buy)} cr/t), ${t.reqId ? `deliver to ${short(t.toName)}'s request at ${fmt(t.unit)} cr/t` : `sell at ${short(t.toName)} ≈ ${fmt(t.sellArrive)} cr/t`} — net ≈ ${fmt(roundNet(t.net))} cr.`;
     this.close();
     if (!dest) { a.hud?.event?.({ kind: 'info', text: head }); return; }
     const to = dest.anchor || dest;
@@ -402,13 +459,16 @@ export class WorldMarket {
     const d = el.dataset;
     switch (d.mk) {
       case 'close': return this.close();
-      case 'good': this.good = d.good; if (d.good !== 'all') this.layerGood = d.good; store.set('mkGood', this.good); return this.renderPrices();
+      case 'good': this.good = d.good; if (d.good !== 'all') { this.layerGood = d.good; this.cat = catalogueOf(d.good)?.cat || this.cat; this.loadGood(d.good).then(() => { this.renderRows(); if (this.layerOn()) this.chart()?.requestDraw?.(); }); } store.set('mkGood', this.good); return this.renderPrices();
       case 'region': this.region = d.v; store.set('mkRegion', this.region); return this.renderRows();
       case 'dir': this.sort.dir = -this.sort.dir; store.set('mkSort', this.sort); return this.renderPrices();
       case 'sort': if (this.sort.key === d.k) this.sort.dir = -this.sort.dir; else this.sort = { key: d.k, dir: d.k === 'price' || d.k === 'stock' ? -1 : 1 }; store.set('mkSort', this.sort); return this.renderPrices();
       case 'chart': { const h = this.byId?.get(d.h); return this.openMap(d.good, h); }
       case 'tradesFrom': this.routes.from = d.h; this.routes.data = null; this.showTab('routes'); return;
       case 'rsort': this.routes.sort = d.v; return this.loadRoutes();
+      case 'rmode': this.routes.mode = d.v; if (d.v === 'trades') this.routes.good = null; this.routes.data = null; return this.loadRoutes();
+      case 'cat': if (d.cat === 'all') { this.good = 'all'; } else { this.cat = d.cat; const first = CATALOGUE.find((r) => r.cat === d.cat); this.good = catalogueOf(this.good)?.cat === d.cat ? this.good : first.id; this.layerGood = this.good; this.loadGood(this.good).then(() => this.renderRows()); } store.set('mkGood', this.good); return this.renderPrices();
+      case 'ecl': this.econLayers[d.k] = !this.econLayers[d.k]; store.set('ecLayers', this.econLayers); this.syncLegend(); return this.chart()?.requestDraw?.();
       case 'rrefresh': return this.loadRoutes();
       case 'plan': { const t = this.routes.data?.trades?.[+d.i]; if (t) this.planTrade(t); return; }
       case 'unplan': return this.clearPlan();
@@ -422,8 +482,28 @@ export class WorldMarket {
   tradesFrom(id) { this.routes.from = id; this.routes.data = null; this.open('routes'); }
 
   // ---------------------------------------------------------------------------------------------- chart layer
+  /** World economy §14.2: the legend for the econ overlay (makers, scarce, requests, price heat), toggles per layer. */
+  syncEconLegend(body) {
+    let lg = $('ecLegend');
+    if (!lg) {
+      lg = document.createElement('div'); lg.id = 'ecLegend'; lg.className = 'glass';
+      lg.addEventListener('change', (e) => { if (e.target.id === 'ecLegendGood') { this.layerGood = e.target.value; this.loadGood(this.layerGood).then(() => { this.syncLegend(); this.chart()?.requestDraw?.(); }); } });
+      lg.addEventListener('click', (e) => { const b = e.target.closest('[data-mk]'); if (!b) return; if (b.dataset.mk === 'layerOff') this.setLayer(false); else if (b.dataset.mk === 'ecl') { this.econLayers[b.dataset.k] = !this.econLayers[b.dataset.k]; store.set('ecLayers', this.econLayers); this.syncLegend(); this.chart()?.requestDraw?.(); } });
+      body.appendChild(lg);
+    }
+    lg.classList.remove('hidden');
+    const L = this.econLayers, name = this.gname(this.layerGood);
+    const opts = CATS.map((c) => `<optgroup label="${esc(c.name)}">${CATALOGUE.filter((r) => r.cat === c.id).map((r) => `<option value="${r.id}"${r.id === this.layerGood ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</optgroup>`).join('');
+    const tog = (k, sw, label) => `<button type="button" class="ecLgTog${L[k] ? ' on' : ''}" data-mk="ecl" data-k="${k}" aria-pressed="${L[k] ? 'true' : 'false'}"><span class="sw ${sw}">${sw === 'bell' ? ic('bell') : ''}</span>${label}</button>`;
+    lg.innerHTML = `<div class="mkLgTop"><select id="ecLegendGood" aria-label="Good">${opts}</select><button class="iconBtn" data-mk="layerOff" aria-label="Hide the market layer" title="Hide">${ic('close')}</button></div>
+      <div class="mkLgMed">Market: ${esc(name.toLowerCase())} — makers, scarce, requests</div>
+      <div class="ecLgRow">${tog('makers', 'tri', 'Made')}${tog('scarce', 'dot', 'Scarce')}${tog('requests', 'bell', 'Requests')}${tog('heat', 'heat', 'Price')}</div>`;
+    $('mkLegend')?.classList.add('hidden');
+  }
   syncLegend() {
     const body = document.querySelector('#chartWrap .chartBody'); if (!body) return;
+    if (this.layerOn() && catalogueOf(this.layerGood)) { $('chartMarketBtn')?.classList.add('on'); return this.syncEconLegend(body); }
+    $('ecLegend')?.classList.add('hidden');
     let lg = $('mkLegend');
     const on = this.layerOn();
     $('chartMarketBtn')?.classList.toggle('on', on);
@@ -443,7 +523,51 @@ export class WorldMarket {
       <div class="mkLgMed">${esc(name)} · median ${fmt(med)} cr/t</div>
       <div class="mkLgBar"><i></i></div><div class="mkLgEnds"><span>cheap — buy</span><span>dear — sell</span></div>`;
   }
+  /** chart.js `econ` layer (§14.2): green triangles where the good is made (size = tier), orange → red circles where it
+   *  is scarce (s / n), bell markers with the request premium, and the price heat (vs the median) on the rest. */
+  drawEconLayer(chart, ctx) {
+    const g = this.layerGood, d = this.goodData.get(g);
+    if (!d) { if (!this._ecLoading) { this._ecLoading = true; this.loadGood(g).then(() => { this._ecLoading = false; this.syncLegend(); chart.requestDraw?.(); }); } return; }
+    if (!$('ecLegend') || $('ecLegend').classList.contains('hidden') || $('ecLegendGood')?.value !== g) this.syncLegend();
+    if (!this.byId) { this.refresh(); return; }
+    const L = this.econLayers, med = median([...d.rows.values()].map((x) => x.buy));
+    ctx.save(); ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    for (const [id, x] of d.rows) {
+      const h = this.byId.get(id); if (!h) continue;
+      const p = chart.project(h.lat, h.lon);
+      if (p.x < -24 || p.y < -24 || p.x > chart.W + 24 || p.y > chart.H + 24) continue;
+      const ratio = x.target > 0 ? x.stock / x.target : 1;
+      if (x.role === 'P' && L.makers) {
+        const r = x.tier === 1 ? 11 : x.tier === 2 ? 8.5 : 6.5;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + r * 0.95, p.y + r * 0.7); ctx.lineTo(p.x - r * 0.95, p.y + r * 0.7); ctx.closePath();
+        ctx.fillStyle = '#4fd18b'; ctx.globalAlpha = 0.95; ctx.fill(); ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(4,12,20,0.9)'; ctx.stroke();
+      } else if (ratio < 0.6 && L.scarce) {
+        const r = (SIZE_R[h.size] || 6) + 2, f = Math.max(0, Math.min(1, (0.6 - ratio) / 0.5));
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgb(${Math.round(255)},${Math.round(159 - 92 * f)},${Math.round(67 + 40 * f)})`; ctx.globalAlpha = 0.92; ctx.fill(); ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(4,12,20,0.85)'; ctx.stroke();
+      } else if (L.heat && med > 0) {
+        const r = Math.max(3, (SIZE_R[h.size] || 6) - 2);
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fillStyle = heatColor(x.buy / med); ctx.globalAlpha = 0.75; ctx.fill(); ctx.globalAlpha = 1;
+      }
+      const q = d.reqs.get(id);
+      if (q && L.requests) {
+        const bx = p.x + 8, by = p.y - 16;
+        ctx.fillStyle = 'rgba(4,12,20,0.82)'; ctx.font = 'bold 11px sans-serif';
+        const t = chart.zoom >= 4 ? premiumText(q.premium) : '', tw = t ? ctx.measureText(t).width + 4 : 0;   // labels from zoom 4: they pile up over Europe below
+        ctx.fillRect(bx - 2, by - 9, tw + 18, 18);
+        ctx.beginPath(); ctx.fillStyle = '#f2b134'; ctx.arc(bx + 7, by - 1, 5, Math.PI, 0); ctx.lineTo(bx + 13, by + 4); ctx.lineTo(bx + 1, by + 4); ctx.closePath(); ctx.fill();
+        ctx.fillRect(bx + 5.5, by + 4, 3, 2);
+        if (t) { ctx.fillStyle = '#ffd27a'; ctx.fillText(t, bx + 16, by); }
+      }
+      if (chart.zoom >= 6 && (x.role === 'P' || ratio < 0.6)) {
+        const t = fmt(x.buy); ctx.font = 'bold 11px sans-serif'; const tw = ctx.measureText(t).width;
+        ctx.fillStyle = 'rgba(4,12,20,0.72)'; ctx.fillRect(p.x + 12, p.y + 4, tw + 6, 15); ctx.fillStyle = '#ffffff'; ctx.fillText(t, p.x + 15, p.y + 11.5);
+      }
+    }
+    ctx.restore();
+  }
   drawLayer(chart, ctx) {
+    if (catalogueOf(this.layerGood) && chart.layers?.econ) return;   // the econ overlay draws this good (world economy §14.2)
     if (!this.snap) { this.refresh(); return; }
     if (!$('mkLegend') || $('mkLegend').classList.contains('hidden') || $('mkLegendGood')?.value !== this.layerGood) this.syncLegend();
     const g = this.layerGood, med = median(this.snap.harbors.map((h) => h.goods[g]?.buy));
