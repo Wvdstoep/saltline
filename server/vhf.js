@@ -420,7 +420,7 @@ export function createRadio(game, ww, opts = {}) {
       }
       emit('tx', { from: p.id, ch, phrase, args, text, to: target?.id || null, at: t });
       // 2. responders
-      if (phrase === 'mayday' && (!target || target.st?.kind === 'cg') && (ch === CH_DISTRESS)) { distressFlow(p, target?.st || nearestCg(posOf(p)), args.nature); return { ok: true, to: target?.id || null }; }
+      if (phrase === 'mayday' && (!target || target.st?.kind === 'cg') && (ch === CH_DISTRESS)) { game.hostiles?.onDistress?.(p); distressFlow(p, target?.st || nearestCg(posOf(p)), args.nature); return { ok: true, to: target?.id || null }; }
       if (phrase === 'panpan' && !target && ch === CH_DISTRESS) { const cg = nearestCg(posOf(p)); if (qFromPlayer(p, ch, cg.pos, cg.h) > 0) reply(cg, ch, p, 'op_cg_ack', {}); return { ok: true, to: null }; }
       if (!target || target.kind !== 'station' || !phrase) return { ok: true, to: target?.id || null };
       const st = target.st;
@@ -445,7 +445,7 @@ export function createRadio(game, ww, opts = {}) {
         const qq = q === p ? 1 : qFromPlayer(p, CH_DSC, posOf(q), antennaOf(q));
         if (qq > 0) deliver(q, { t: 'vhf', ch: CH_DSC, from: { id: p.id, name: p.name, kind: 'player' }, to: null, phrase: 'dsc_alert', args, text: null, q: r2(qq), at: t, dsc: kind, self: q === p || undefined });
       }
-      if (kind === 'distress') distressFlow(p, cg, nature);
+      if (kind === 'distress') { game.hostiles?.onDistress?.(p); distressFlow(p, cg, nature); }
       else reply(cg, CH_DISTRESS, p, 'op_cg_ack', {});
       return { ok: true, cg: cg.id };
     },

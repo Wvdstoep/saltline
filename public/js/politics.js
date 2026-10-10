@@ -185,6 +185,7 @@ export class PoliticsUi {
       ds, nowS: this.now(), title: a.title, toName: a.toName, contract: !!a.contract, refunded: (a.job?.pol?.tier || 0) > 0 || !!a.job?.pol?.refundPremium,
       clearance, policy: a.showPolicy === false ? null : this.compliance?.riskPolicy || 'avoid', policyText, phone: this.phone(),
       ecaCostCr: V.ecaCostFor(report, v.cls, speedKn, v.cond), coverAreas: V.coverAreas(ds, report, v.cls, v.cond),
+      hostileBlock: this.app.hostile?.riskBlock(report.lines) || '',   // hostile AI ships: what risk mode means on this route, and the switch
     });
     this.mountSheet('polRiskWrap', html);
     void you;
@@ -290,6 +291,7 @@ export class PoliticsUi {
       case 'reflag': this.net('pol_reflag', { vesselId: d.vid || null, registry: d.reg }); return this.closeModal();
       case 'closeModal': return this.closeModal();
       case 'closeRisk': return this.closeRisk();
+      case 'riskMode': { this.app.hostile?.toggle(); setTimeout(() => { if (this.risk) this.showRiskCheck(this.risk); }, 700); return; }   // hostile AI ships: accept / drop the risk from the risk check
       case 'cover': for (const id of String(d.areas || '').split(',').filter(Boolean)) this.net('pol_cover', { areaId: id }); el.disabled = true; el.textContent = 'War cover requested'; return;
       case 'go': { const r = this.risk; this.closeRisk(); r?.onGo?.(); return; }
       case 'planAround': {

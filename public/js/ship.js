@@ -95,6 +95,12 @@ export const EXTRA_CLASSES = {
   lifeboat: { id: 'lifeboat', length: 17, beam: 5.5, draft: 1.4, freeboard: 1.8, hullColor: 0xf26b1d, maxKn: 25 },
   helicopter: { id: 'helicopter', length: 16, beam: 3, draft: 0.2, freeboard: 1, hullColor: 0xd62828, maxKn: 150 },
   derelict: { id: 'derelict', length: 70, beam: 12, draft: 4.5, freeboard: 3.5, hullColor: 0x3a3a3a, maxKn: 0 },
+  // hostile AI ships (docs/HOSTILE-AI-CONTRACT.md): pirate skiff, naval patrol craft / corvette / frigate (made-up, no real units)
+  skiff: { id: 'skiff', length: 9, beam: 2.4, draft: 0.4, freeboard: 0.85, hullColor: 0x5b6b73, maxKn: 35 },
+  patrol: { id: 'patrol', length: 24, beam: 5.5, draft: 1.5, freeboard: 1.8, hullColor: 0x7d868d, maxKn: 34 },
+  corvette: { id: 'corvette', length: 70, beam: 10, draft: 3.2, freeboard: 4, hullColor: 0x6f787f, maxKn: 26 },
+  rib: { id: 'rib', length: 7.5, beam: 2.4, draft: 0.4, freeboard: 0.8, hullColor: 0x6d7780, maxKn: 32 },
+  frigate: { id: 'frigate', length: 110, beam: 14, draft: 4.6, freeboard: 5, hullColor: 0x6a737a, maxKn: 28 },
 };
 const SAIL_CLASSES = new Set(['sloop', 'ketch', 'catamaran', 'schooner']);
 
@@ -444,6 +450,41 @@ function superstructureBlock(ctx, x, z, w, d, decks, deckH = 2.9, withBridge = t
   return deckY + h;
 }
 
+/** Hostile navy hulls (patrol 24 m, corvette 70 m, frigate 110 m): one parametric builder, sized by the class. */
+function warship(ctx) {
+  const { L, B, deckY, box, win, mast, pb, funnel } = ctx;
+  const big = L >= 60, huge = L >= 100;
+  const sup = makeWearMaterial(0x848d94, { roughness: 0.7, metalness: 0.15 }); ctx.mats.push(sup);
+  merchantHull(ctx, big ? 0.33 : 0.4, 0.8);
+  const sz = -L / 2 + L * (big ? 0.5 : 0.46), sw = B * 0.64, sd = L * (big ? 0.36 : 0.3), h1 = big ? 4 : 2.6;
+  box(sw, h1, sd, sup, 0, deckY + h1 / 2, sz);
+  box(sw * 0.82, big ? 3 : 2.2, sd * 0.5, sup, 0, deckY + h1 + (big ? 1.5 : 1.1), sz - sd * 0.12);
+  const wy = deckY + h1 + (big ? 1.6 : 1.2);
+  win(sw * 0.8, 0.8, 0, wy, sz - sd * 0.12 - sd * 0.25 - 0.02); win(sd * 0.4, 0.7, -sw * 0.41 - 0.02, wy, sz - sd * 0.12, Math.PI / 2); win(sd * 0.4, 0.7, sw * 0.41 + 0.02, wy, sz - sd * 0.12, Math.PI / 2);
+  // bow gun: turret and barrel
+  const gz = -L / 2 + L * (big ? 0.2 : 0.2), gy = deckY + (big ? 0.5 : 0.35);
+  pb.cyl(B * 0.2, 0.9, P.grey, 0, gy, gz, B * 0.17, 10);
+  // the gun turns: a real child group (userData.gun) that hostile.js aims at its target and flashes when it fires
+  const gun = new THREE.Group(); gun.position.set(0, gy + (big ? 1.0 : 0.8), gz);
+  const tur = new THREE.Mesh(new THREE.BoxGeometry(B * 0.3, big ? 1.1 : 0.8, B * 0.38), P.grey);
+  const blen = big ? 5 : 2.6, bar = new THREE.Mesh(new THREE.CylinderGeometry(big ? 0.12 : 0.08, big ? 0.12 : 0.08, blen, 6), P.dark);
+  bar.rotation.x = Math.PI / 2; bar.position.set(0, 0.05, -blen / 2 - B * 0.15);
+  gun.add(tur, bar); ctx.g.add(gun); ctx.g.userData.gun = gun; ctx.g.userData.gunLen = blen + B * 0.15;
+  // mast, radar and a few antennas
+  const my = deckY + h1 + (big ? 3 : 2.2);
+  mast(0, my, sz - sd * 0.1, big ? 9 : 5, 0.16, false);
+  box(big ? 3.4 : 1.6, 0.22, 0.4, P.steel, 0, my + (big ? 8.6 : 4.8), sz - sd * 0.1); box(big ? 1.4 : 0.8, 0.25, 0.25, P.dark, 0, my + (big ? 6.2 : 3.4), sz - sd * 0.1);
+  if (big) {
+    funnel(0, deckY + h1, sz + sd * 0.42, B * 0.2, 3.2, P.grey, B * 0.15);
+    pb.geo(new THREE.SphereGeometry(B * 0.1, 8, 6), P.white, 0, deckY + 0.4 + 1.1, -L / 2 + L * 0.3);     // close-in gun dome
+    if (huge) box(B * 0.78, 0.15, L * 0.16, P.steel, 0, deckY + 0.1, L / 2 - L * 0.1);                     // helideck
+  } else {
+    pb.geo(new THREE.CapsuleGeometry(0.9, 4.5, 3, 8), P.rubber, 0, deckY + 0.9, L / 2 - L * 0.17, Math.PI / 2, 0, 0);   // RIB aft
+  }
+  ctx.crewSpots.push([B * 0.3, deckY, -L / 2 + L * 0.3]);
+  ctx.lights = { x: sw * 0.43 + 0.3, y: deckY + h1 + 1, z: sz, mastY: my + (big ? 9 : 5), mastZ: sz - sd * 0.1, fore: big ? { y: deckY + 4, z: -L / 2 + L * 0.12 } : null, stern: { y: deckY + 1.5, z: L / 2 - 0.8 } };
+  return my + (big ? 10 : 6);
+}
 const BUILDERS = {
   coaster(ctx) {
     const { L, B, deckY, box, cyl, mast, funnel, lifeboatPod } = ctx;
@@ -775,6 +816,30 @@ const BUILDERS = {
     ctx.lights = { x: sw * 0.43 + 0.3, y: deckY + 5.2, z: sz - 1, mastY: deckY + 10.4, mastZ: sz, fore: null, stern: { y: deckY + 1.5, z: L / 2 - 0.8 } };
     return deckY + 12;
   },
+  // pirate skiff: open fibreglass skiff, two outboards, a hook ladder on the rail, three men; runs without navigation lights
+  skiff(ctx) {
+    const { L, B, deckY, box, rod, pb } = ctx;
+    ctx.lightsOff = true;
+    merchantHull(ctx, 0.5, 0.7, { rail: false });
+    box(B * 0.84, 0.1, 0.4, P.wood, 0, deckY + 0.4, -L * 0.12); box(B * 0.84, 0.1, 0.4, P.wood, 0, deckY + 0.4, L * 0.1);
+    for (const s of [-1, 1]) {
+      box(0.4, 0.9, 0.6, P.dark, s * 0.6, deckY + 0.3, L / 2 + 0.2); pb.cyl(0.06, 0.8, P.steel, s * 0.6, -0.25, L / 2 + 0.4, 0.06, 6);
+      pb.cyl(0.2, 0.5, P.red, s * 0.7, deckY + 0.25, L * 0.3, 0.2, 8);        // fuel drums
+    }
+    // hook ladder on the starboard rail: two side ropes, rungs, hooks at the top
+    for (const z of [-0.35, 0.35]) rod(B / 2 + 0.05, deckY + 0.7, z, B / 2 + 0.55, deckY + 4.2, z, 0.025, P.wood);
+    for (let k = 0; k < 6; k++) { const f = k / 5; box(0.03, 0.03, 0.7, P.wood, B / 2 + 0.1 + 0.45 * f, deckY + 1.0 + 3.1 * f, 0); }
+    const man = (x, z, ry) => {
+      pb.geo(new THREE.CapsuleGeometry(0.2, 0.45, 2, 8), P.overall, x, deckY + 0.95, z);
+      pb.sphere(0.13, P.skin, x, deckY + 1.55, z, 8);
+      pb.rod(x + 0.15, deckY + 0.95, z, x + 0.15 + Math.sin(ry) * 0.5, deckY + 1.1, z - Math.cos(ry) * 0.5, 0.02, P.black);   // rifle
+    };
+    man(-0.3, -L * 0.12, 0.3); man(0.35, L * 0.02, -0.4); man(0, L * 0.3, 0);
+    return deckY + 3.4;
+  },
+  // naval patrol craft / corvette / frigate: grey hull, bow gun, mast with radar, RIB (patrol) or funnel and helideck (big hulls)
+  patrol: warship, corvette: warship, frigate: warship,
+  rib(ctx) { return BUILDERS.skiff(ctx); },   // the navy's rigid boarding boat: the skiff hull in grey
   lifeboat(ctx) {
     const { L, B, deckY, box, win, mast, pb } = ctx;
     merchantHull(ctx, 0.42, 0.75);

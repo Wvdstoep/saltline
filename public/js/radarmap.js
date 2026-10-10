@@ -134,7 +134,7 @@ export function gridFits(g, lat, lon, rangeM) {
 }
 
 // ------------------------------------------------------------------------------------------------ labels
-const RANK = { wp: 0, berth: 0, job: 1, rescue: 1, ship: 2, cutter: 2, harbor: 3, platform: 4, ai: 5, ais: 5 };
+const RANK = { hostile: 0, wp: 0, berth: 0, job: 1, rescue: 1, ship: 2, cutter: 2, harbor: 3, platform: 4, ai: 5, ais: 5 };
 const ESSENTIAL = new Set(['wp', 'berth', 'job']);
 /**
  * Choose and place labels. items: { text, x, y, w, h, ax, ay, kind, d } (x/y = where the caller wanted the label

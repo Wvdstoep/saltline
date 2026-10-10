@@ -1,0 +1,18 @@
+/* Hostile AI ships (pirates, navy): risk chip, warning banner, markers. docs/HOSTILE-AI-CONTRACT.md */
+.hxChip { position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line-2); font-weight: 650; font-size: 13px; white-space: nowrap; flex: none; cursor: pointer; color: inherit; }
+.hxChip.on { border-color: rgba(255, 90, 70, 0.75); background: rgba(160, 30, 30, 0.35); color: #ffd6d0; }
+.hxChip.alert { animation: hxPulse 0.9s ease-in-out infinite; }
+@keyframes hxPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 60, 60, 0.0); } 50% { box-shadow: 0 0 18px 4px rgba(255, 60, 60, 0.6); } }
+#hostileBanner { position: fixed; top: 66px; left: 50%; transform: translateX(-50%); z-index: 31; background: rgba(120, 18, 18, 0.93); border: 2px solid #ff4a3d; border-radius: 12px; padding: 6px 14px 8px; text-align: center; box-shadow: 0 0 40px rgba(255, 60, 60, 0.45); max-width: min(640px, calc(100vw - 32px)); animation: hxPulse 1.2s ease-in-out infinite; }
+#hostileBanner.navy { background: rgba(60, 40, 18, 0.93); border-color: #ff9f43; box-shadow: 0 0 36px rgba(255, 150, 60, 0.4); }
+#hostileBanner.hidden { display: none; }
+#hostileBanner .hxTitle { font-size: 16px; font-weight: 800; letter-spacing: 0.06em; }
+#hostileBanner .hxSub { font-size: 13px; color: #ffd6d6; margin-top: 2px; }
+#hostileBanner .hxBtns { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 8px; }
+#hostileBanner .hxBtns button { min-height: 32px; padding: 0 12px; font-size: 13px; }
+#hostileBanner .hxBtns button.danger { border-color: #ff6b6b; }
+#hostileBanner .hxBtns button:disabled { opacity: 0.45; cursor: default; }
+body.touch #hostileBanner { top: 60px; }
+.hxRisk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; padding: 8px 10px; border: 1px solid rgba(255, 150, 70, 0.55); border-radius: 8px; background: rgba(255, 140, 60, 0.08); font-size: 13px; }
+.hxRisk.on { border-color: rgba(255, 70, 60, 0.7); background: rgba(255, 60, 60, 0.12); }
+.hxRisk .hxRiskT { flex: 1 1 240px; }

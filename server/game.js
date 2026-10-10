@@ -37,6 +37,7 @@ import { Yard } from './yard.js';                               // SHIPYARD (doc
 import { compactOrder as compactOrderView, healHarborYard } from '../shared/ships/index.js';   // SHIPYARD §7.3 / §8
 import { Politics } from './politics.js';                       // world politics (docs/WORLD-POLITICS-CONTRACT.md)
 import { diplomaticJobs } from './politicsjobs.js';
+import { Hostiles, healRisk } from './hostile.js';             // hostile AI ships: pirates and navy (docs/HOSTILE-AI-CONTRACT.md)
 import { quayQuery, quayDock, quayDockNearest, quayTugs, quayAssistDone, quayUndock, quayGate, quayMigrate, quayPublic, quayHarbourInfo } from './quaygame.js'; // DOCK ANYWHERE
 import { ACTION_SERVICE } from '../shared/quayrules.js';
 import { allSubPatches } from './bigports.js';                  // V7 step 0: big ports tiled with harbour patches
@@ -167,6 +168,7 @@ export class Game {
     this.yard = new Yard(this);                     // SHIPYARD: orders, stock, second-hand market (before loadState)
     // World politics (docs/WORLD-POLITICS-CONTRACT.md): rules per harbour, sanctions, war risk, flags. Tests pass a fixture.
     this.politics = opts.politics === false ? null : new Politics(this, { dir: opts.politicsDir, dataset: opts.politicsDataset, harbors: opts.politicsHarbors, log: this.log });
+    this.hostiles = opts.hostiles === false ? null : new Hostiles(this, opts.hostileOpts || {});   // opt-in risk mode: nothing spawns unless p.risk.on
     if (this.politics?.ds.trade && !opts.politicsDataset) setTradeProfile((cc, g) => this.politics.tradeProfile(cc, g));   // only once shared/politics/trade.json exists
     this.econ = opts.econ === false ? null : new WorldEcon(this, opts.econOpts || {});   // world economy: roles, flows, requests (before loadState)
     this.loadState();
@@ -258,6 +260,7 @@ export class Game {
       p.assist = null;
       if (h) { if (b) this.moorAt(p, h, b); else this.setDocked(p, h.id, null); }
     }
+    p.risk = healRisk(p.risk);                           // hostile AI risk mode: default OFF, old saves have none
     this.politics?.migrate(p);                         // office.pol, vessel flag/built/psc/held, cargo origin (never throws)
     this.politics?.reconcile(p);                       // §4.17 wind-down / frustration when the dataset changed
   }
@@ -501,6 +504,8 @@ export class Game {
       ...(this.radio ? { radio: this.radio.youFields(p) } : {}),   // VHF {on, ch, dual, power, powerEff, inland, lang, vol, dmg}
       ...(this.mh && p.ship ? { mhNear: this.mh.near(p.ship.lat, p.ship.lon, 3).slice(0, 3).map((h) => ({ id: h.id, name: h.name, tier: h.tier, vhf: h.vhf })) } : {}),
       pol: this.politics ? this.politics.youView(p) : null,
+      ...(this.hostiles ? this.hostiles.youView(p) : {}),   // risk {on,today,max,cooldown}, hostile (banner), escort
+
       convoy: p.convoyId && this.convoys.get(p.convoyId) ? { id: p.convoyId, members: this.convoys.get(p.convoyId).members.map((id) => ({ id, name: this.byId.get(id)?.name })) } : null,
     };
   }
@@ -723,6 +728,7 @@ export class Game {
         const r = this.politics.onAction(p, m);
         if (r !== null) { this.sendYou(p); if (p.docked) this.sendHarbor(p); this.fleet.dirty?.(p); return; }
       }
+      if (this.hostiles && (a === 'risk_set' || (typeof a === 'string' && a.startsWith('hostile_')))) { if (this.hostiles.onAction(p, m) !== null) return; }
       switch (a) {
         case 'quay_query': return quayQuery(this, p);
         case 'quay_dock': if (this.ww && p.lockStay && this.ww.makeFast(p.lockStay.lockId, p.id)) { this.event(p, 'info', 'Made fast in the lock chamber.'); return this.sendYou(p); } return quayDock(this, p, m);   // in a lock: Moor = make fast
@@ -1498,7 +1504,7 @@ export class Game {
     const { harbor } = this.nearestHarbor(p.ship.lat, p.ship.lon);
     p.ship.cls = 'coaster'; p.cond = 40; p.flooding = 0; p.fuel = 20; p.cargo = []; p.jobs = []; p.money = 500; p.wanted = 0; p.kits = 0;
     p.hail = null; p.towing = null; p.voyage = null; p.serviceDue = this.simTime + SERVICE_INTERVAL_S / 3; this.dropWarp(p, 'In harbour.', false); this.setDocked(p, harbor.id, null);
-    this.convoyLeave(p, true);
+    this.convoyLeave(p, true); this.hostiles?.noteRespawn(p);
     this.event(p, 'law', `${why} You start over at ${harbor.name} with a rust-bucket coaster and 500 cr.`);
     this.sendYou(p); this.sendHarbor(p);
   }
@@ -1620,6 +1626,7 @@ export class Game {
       for (const p of this.byId.values()) if (p.online && p.ship) this.mh.ensureNear(p.ship.lat, p.ship.lon, 25).catch(() => {});
     }
     this.updateCutters(dt);
+    if (this.hostiles) this.hostiles.tick(dt);        // pirates and navy for skippers who accepted the risk
     // Job boards regen lazily on dock; markets drift every minute; wrecks expire.
     if (Date.now() - this.lastEcon > 60000) this.driftMarkets();
     const before = this.wrecks.length;
@@ -1724,7 +1731,7 @@ export class Game {
     const r = (this.wind.dir + 180) * Math.PI / 180; // dir = where the wind comes FROM
     this.wind.u = Math.sin(r) * this.wind.spd; this.wind.v = Math.cos(r) * this.wind.spd;
   }
-  sink(p, reason = null, text = null) {
+  sink(p, reason = null, text = null, news = null) {
     if (p.isActor) return this.fleet.sinkVessel(p.vessel);   // world politics: a captained ship lost to a war incident (crew evacuated)
     const s = p.ship;
     this.dropWarp(p, 'Abandon ship.', false);
@@ -1733,11 +1740,11 @@ export class Game {
       this.wrecks.push({ id: 'w' + shortId(), lat: s.lat, lon: s.lon, cargo: p.cargo, owner: p.name, cls: s.cls, simTime: this.simTime, time: Date.now() });
       this.broadcast({ t: 'wrecks', wrecks: this.wrecks });
     }
-    this.broadcast({ t: 'chat', from: 'Shipping news', id: 'sys', text: `${p.name}'s ${SHIP_CLASSES[s.cls].name} went down at ${s.lat.toFixed(2)}, ${s.lon.toFixed(2)}.`, time: Date.now() });
+    this.broadcast({ t: 'chat', from: 'Shipping news', id: 'sys', text: news || `${p.name}'s ${SHIP_CLASSES[s.cls].name} went down at ${s.lat.toFixed(2)}, ${s.lon.toFixed(2)}.`, time: Date.now() });
     const lostJobs = p.jobs.length;
     p.cargo = []; p.jobs = []; p.fishing = false; p.hail = null; p.towing = null; p.voyage = null; this.convoyLeave(p, true);
     s.spd = 0; s.throttle = 0; s.rudder = 0;
-    this.event(p, 'warn', reason === 'war_loss' && text ? text : `Your ship sank${lostJobs ? ` with ${lostJobs} contract(s)` : ''}. You are in the life raft.`);
+    this.event(p, 'warn', (reason === 'war_loss' || reason === 'hostile') && text ? text : `Your ship sank${lostJobs ? ` with ${lostJobs} contract(s)` : ''}. You are in the life raft.`);
     this.startRescue(p);
     this.sendYou(p);
   }
@@ -2025,6 +2032,7 @@ export class Game {
   warpConditions(p) {
     if (!p.online) return 'you are offline.';
     if (p.hail) return 'the coast guard is hailing you.';
+    if (this.hostiles?.attackerOf(p.id)) return 'hostile ships are close.';
     if (p.rescue || p.flooding >= 1) return 'you are in the life raft.';
     if (p.docked || p.assist) return null; // moored or under tugs: fuel, flooding, storm and other skippers do not matter
     if (p.lockStay) return 'you are in a lock chamber.';                  // BRIDGES & LOCKS
@@ -2238,6 +2246,7 @@ export class Game {
       if (x.refuse) return this.event(p, 'warn', x.text);
       if (x.incidents.some((i) => i.outcome === 'loss')) return;
     }
+    if (this.hostiles?.riskOf(p).on) this.hostiles.expressCheck(p, [[arr.lat, arr.lon]], Math.max(6, C.maxKn * 0.8));   // risk mode: piracy / naval search along the way (never sunk, hull stays ≥ 1 %)
     p.money -= cost; p.fuel = Math.max(0, p.fuel - fuelNeeded);
     p.cond = Math.max(Math.min(1, p.cond), p.cond - wearPerSimHour(0.8, this.wind.spd, C.wearMul) * hours);   // an express passage never takes the hull below 1 %
     const s = p.ship;
@@ -2560,6 +2569,7 @@ export class Game {
   finishRescue(p, r) {
     const harbor = harborById(r.from), a = this.harborAnchor(harbor);
     p.rescue = null; this.dropWarp(p, 'In harbour.', false); this.setDocked(p, harbor.id, null);
+    this.hostiles?.noteRespawn(p);                       // anti-grief: no hostile spawns for a while after a respawn
     p.ship.lat = a.lat; p.ship.lon = a.lon; p.lastValid = { lat: a.lat, lon: a.lon }; p.voyage = null;
     if (p.money >= 2000) {
       p.money -= 2000; p.ship.cls = 'coaster'; p.cond = 70; p.flooding = 0; p.fuel = 30; p.serviceDue = this.simTime + SERVICE_INTERVAL_S / 2;
@@ -2573,7 +2583,7 @@ export class Game {
   snapshot() {
     const players = [];
     for (const p of this.byId.values()) if (p.online || (p.voyage && !p.docked) || p.assist) players.push(this.publicState(p)); // an assist runs on when its skipper drops out: others keep seeing her and her tugs
-    return { t: 'snap', time: Date.now(), simTime: Math.round(this.simTime), wind: { dir: Math.round(this.wind.dir), spd: Math.round(this.wind.spd * 10) / 10, u: round3(this.wind.u), v: round3(this.wind.v) }, players, cutters: this.cutters.map(cutterPublic), storms: this.stormsPublic(), rescues: this.rescuesPublic() };
+    return { t: 'snap', time: Date.now(), simTime: Math.round(this.simTime), wind: { dir: Math.round(this.wind.dir), spd: Math.round(this.wind.spd * 10) / 10, u: round3(this.wind.u), v: round3(this.wind.v) }, players, cutters: this.cutters.map(cutterPublic), storms: this.stormsPublic(), rescues: this.rescuesPublic(), ...(this.hostiles?.encs.length ? { hostiles: this.hostiles.publicList() } : {}) };
   }
   // The common part is serialised once; each socket gets it plus the AI ships within SIM.AI_RANGE_U of that player.
   broadcastSnapshot() {

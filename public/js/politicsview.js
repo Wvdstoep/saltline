@@ -259,6 +259,7 @@ export function riskCheckHTML(report, o = {}) {
   return `<section class="polRisk${o.phone ? ' polPhone' : ''}" role="dialog" aria-label="Voyage risk check">
     <header class="polRiskH"><div><h3>${ic('radar')}Voyage risk check${o.title ? ` — ${esc(o.title)}` : ''}</h3><small class="muted">dataset ${esc(report?.version || '—')} · valid as of ${esc(F.fmtDate(report?.validAsOf))}</small></div>${btn('closeRisk', ic('close'), { cls: 'iconBtn ghost', title: 'Close' })}</header>
     <ul class="polRows">${li}</ul>
+    ${o.hostileBlock || ''}
     <p class="polFoot">${esc(DISCLAIMER)}</p>
     <footer class="polRiskF">${btn('planAround', `${ic('route')}Plan around listed areas`, { dis: !hasAreas, title: hasAreas ? 'Re-plan with the listed areas as areas to avoid' : 'No listed area on this route' })}${cover > 0 ? btn('cover', `${ic('lifebuoy')}Buy war cover now · ${esc(F.fmtCr(cover))}`, { data: { areas: (o.coverAreas || []).map((a) => a.id).join(',') } }) : ''}${btn('go', `${ic('play')}Go`, { cls: 'primary', dis: !!(o.contract && blocked), title: o.contract && blocked ? 'A blocker stops this contract' : blocked ? 'The destination port will refuse entry' : '' })}</footer>
   </section>`;
