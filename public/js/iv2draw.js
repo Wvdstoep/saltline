@@ -274,7 +274,7 @@ FAC.extinguisher = (G, F, it, p) => { cyl(G, F, 'paint_red', 0, 0.75, 0.05, 0.08
 FAC.hatch = (G, F, it, p) => { const { w, d, h } = p; box(G, F, 'paint_grey', 0, h / 2, 0, w, h, d, { faces: 'tsew' }); };
 FAC.lamp_box = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'paint_grey'), 0, h / 2, 0, w, h, d, { faces: 'tsewb' }); box(G, F, 'light', 0, h / 2, d / 2 + 0.005, w * 0.7, h * 0.6, 0.01, { faces: 's' }); };
 FAC.chest = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'paint_orange'), 0, h / 2, 0, w, h, d, { noBottom: true }); box(G, F, 'paint_white', 0, h * 0.6, d / 2 + 0.005, w * 0.7, h * 0.3, 0.01, { faces: 's' }); };
-FAC.plant = (G, F, it, p) => { const { w, h } = p; cyl(G, F, T0(it, 1, 'paint_white'), 0, 0.22, 0, w * 0.32, 0.44, 8, { rt: w * 0.38 }); box(G, F, 'leaf', 0, h * 0.62, 0, w * 0.9, h * 0.6, w * 0.9, { faces: 'tsewn' }); box(G, F, 'leaf', 0, h * 0.7, 0, w * 0.7, h * 0.5, w * 1.0, { faces: 'tsewn', rx: 0.5 }); };
+FAC.plant = (G, F, it, p, lod) => { const { w, h } = p; cyl(G, F, T0(it, 1, 'paint_white'), 0, 0.22, 0, w * 0.32, 0.44, 8, { rt: w * 0.38 }); cyl(G, F, 'leaf', 0, 0.44 + (h - 0.44) * 0.35, 0, w * 0.5, (h - 0.44) * 0.7, lod ? 6 : 9, { rt: w * 0.34 }); cyl(G, F, 'leaf', 0, 0.44 + (h - 0.44) * 0.72, 0, w * 0.38, (h - 0.44) * 0.45, lod ? 6 : 9, { rt: w * 0.1 }); };
 FAC.visor = (G, F, it, p) => box(G, F, 'rubber_black', 0, 0, 0, p.w, p.h, 0.02, { faces: 'sn', rx: 0.25 });
 FAC.wiper = (G, F, it, p) => { box(G, F, 'rubber_black', 0, 0.45, 0, 0.03, 0.9, 0.03, { faces: 'sewn' }); };
 FAC.artwork = (G, F, it, p) => { const { w, h } = p; box(G, F, T0(it, 0, 'art'), 0, 0, 0, w, h, 0.03, { faces: 'sewtb' }); };
@@ -295,6 +295,144 @@ FAC.stage = (G, F, it, p) => { const { w, d, h } = p; box(G, F, 'veneer_dark', 0
 FAC.bar = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, h / 2, 0, w, h, d, { noBottom: true }); box(G, F, T0(it, 1, 'stone'), 0, h + 0.02, 0, w + 0.06, 0.04, d + 0.1, { faces: 'tsewn' }); };
 FAC.slots = (G, F, it, p) => { const { w, d, h } = p; const n = Math.max(1, Math.round(w / 0.7)); for (let i = 0; i < n; i++) { const sx = -w / 2 + (w * (i + 0.5)) / n; box(G, F, 'console_body', sx, h / 2, 0, w / n - 0.06, h, d, { noBottom: true }); box(G, F, 'screen_ecdis', sx, h * 0.65, d / 2 + 0.005, w / n - 0.2, 0.4, 0.01, { faces: 's' }); } };
 FAC.play = (G, F, it, p) => { const { w, d, h } = p; box(G, F, 'paint_yellow', 0, h / 2, 0, w, h, d, { faces: 'tsew' }); box(G, F, 'paint_blue', 0, h + 0.2, 0, w * 0.5, 0.4, d * 0.5, { faces: 'tsew' }); };
+// ---- cruise ship furniture (docs/CRUISE-CONTRACT.md §4): composite sets keep the triangle count per guest low
+/** A child frame at local (lx, lz) of F, turned by `rot` (so its local +z points the way a guest faces). */
+const subF = (F, lx, lz, rot) => { const w = W(F, lx, 0, lz); return frameOf(w[0], F.y, w[2], Math.atan2(F.s, F.c) + rot); };
+/** A chair at local (lx, lz) facing the point (fx, fz). */
+function chairAt(G, F, lx, lz, tile, fx = 0, fz = 0, lod = 0) {
+  const C = subF(F, lx, lz, Math.atan2(fx - lx, fz - lz));
+  box(G, C, tile, 0, 0.45, 0, 0.42, 0.07, 0.42, { faces: 'tsew' });
+  box(G, C, tile, 0, 0.74, -0.2, 0.42, 0.5, 0.05, { faces: 'tsnew' });
+  if (lod === 0) cyl(G, C, 'metal_brushed', 0, 0.21, 0, 0.03, 0.42, 4, { caps: false });
+}
+FAC.dining_set = (G, F, it, p, lod) => {
+  const { w, d } = p, t0 = T0(it, 0, 'wood_furn'), t1 = T0(it, 1, 'fabric_red'), n = it.spots ? it.spots.length : 4;
+  const tw = Math.max(0.7, Math.min(w, d) - 1.2), long = w > d * 1.5;
+  if (long) { box(G, F, t0, 0, 0.74, 0, w - 0.1, 0.05, d - 0.1, { faces: 'tbsewn' }); box(G, F, 'metal_brushed', 0, 0.36, 0, 0.1, 0.72, d * 0.6, { faces: 'sewn' }); }
+  else { cyl(G, F, t0, 0, 0.74, 0, tw / 2, 0.05, 12); cyl(G, F, 'metal_brushed', 0, 0.36, 0, 0.05, 0.72, 6, { caps: false }); }
+  for (const sp of it.spots || []) chairAt(G, F, sp[1] * 1.0, sp[2] * 1.0, t1, 0, 0, lod);
+  if (lod === 0 && n >= 4 && !long) box(G, F, 'paint_white', 0, 0.78, 0, 0.18, 0.04, 0.18, { faces: 'tsewn' });   // napkins
+};
+FAC.booth = (G, F, it, p, lod) => {
+  const { w, d } = p;
+  box(G, F, T0(it, 0, 'fabric_red'), 0, 0.22, -d / 2 + 0.3, w, 0.44, 0.6, { faces: 'tsew' });
+  box(G, F, T0(it, 0, 'fabric_red'), 0, 0.75, -d / 2 + 0.06, w, 0.8, 0.12, { faces: 'tsew' });
+  box(G, F, T0(it, 1, 'wood_furn'), 0, 0.74, 0.1, w - 0.4, 0.05, 0.8, { faces: 'tbsewn' });
+  box(G, F, 'metal_brushed', 0, 0.36, 0.1, 0.1, 0.72, 0.1, { faces: 'sewn' });
+  chairAt(G, F, -0.55, 0.9, T0(it, 0, 'fabric_red'), 0, 0.1, lod); chairAt(G, F, 0.55, 0.9, T0(it, 0, 'fabric_red'), 0, 0.1, lod);
+};
+FAC.lounge_set = (G, F, it, p, lod) => {
+  const { w, d } = p, t = T0(it, 0, 'fabric_blue');
+  box(G, F, t, 0, 0.22, -d / 2 + 0.45, w * 0.75, 0.44, 0.9, { faces: 'tsew' }); box(G, F, t, 0, 0.62, -d / 2 + 0.1, w * 0.75, 0.55, 0.2, { faces: 'tsnew' });
+  for (const sx of [-1, 1]) { const A = subF(F, sx * (w / 2 - 0.5), 0.3, sx * Math.PI / 2 * -1 + 0.0); box(G, A, t, 0, 0.22, 0, 0.8, 0.44, 0.8, { faces: 'tsew' }); box(G, A, t, 0, 0.62, -0.32, 0.8, 0.55, 0.16, { faces: 'tsnew' }); }
+  box(G, F, T0(it, 1, 'wood_furn'), 0, 0.4, 0.2, 1.0, 0.05, 0.7, { faces: 'tbsewn' }); if (lod === 0) box(G, F, 'metal_brushed', 0, 0.2, 0.2, 0.1, 0.4, 0.1, { faces: 'sewn' });
+};
+FAC.high_table = (G, F, it, p, lod) => {
+  cyl(G, F, T0(it, 0, 'veneer_dark'), 0, 1.02, 0, 0.4, 0.04, 10); cyl(G, F, 'metal_brushed', 0, 0.5, 0, 0.04, 1.0, 6, { caps: false });
+  if (lod === 0) { cyl(G, F, 'metal_brushed', 0, 0.02, 0, 0.3, 0.04, 8); for (const sx of [-1, 1]) { cyl(G, F, T0(it, 1, 'metal_brushed'), sx * 0.55, 0.72, 0, 0.16, 0.05, 8); cyl(G, F, 'metal_brushed', sx * 0.55, 0.36, 0, 0.025, 0.7, 5, { caps: false }); } }
+};
+FAC.stool_row = (G, F, it, p, lod) => {
+  const n = Math.max(1, Math.round(p.w / 0.85));
+  for (let i = 0; i < n; i++) { const x = -p.w / 2 + (p.w * (i + 0.5)) / n; cyl(G, F, 'leather', x, 0.72, 0, 0.18, 0.07, 8); if (lod === 0) cyl(G, F, 'metal_brushed', x, 0.36, 0, 0.03, 0.7, 5, { caps: false }); }
+};
+FAC.piano_bar = (G, F, it, p, lod) => {
+  const { w } = p, r = w / 2;
+  cyl(G, F, T0(it, 0, 'veneer_dark'), 0, 0.55, 0, r * 0.6, 1.1, 14, { caps: false }); cyl(G, F, T0(it, 1, 'stone'), 0, 1.12, 0, r * 0.62, 0.05, 14);
+  box(G, F, 'leather', 0, 0.55, 0, 1.5, 0.9, 1.2, { faces: 'tsew' });
+  if (lod === 0) for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; cyl(G, F, 'leather', Math.sin(a) * r * 0.82, 0.7, Math.cos(a) * r * 0.82, 0.17, 0.06, 8); }
+};
+FAC.dance_floor = (G, F, it, p, lod) => {
+  const n = lod ? 2 : 6, cw = p.w / n, cd = p.d / n;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) box(G, F, (i + j) % 2 ? 'light' : 'rubber_black', -p.w / 2 + cw * (i + 0.5), 0.015, -p.d / 2 + cd * (j + 0.5), cw, 0.03, cd, { faces: 't' });
+};
+FAC.piano = (G, F, it, p) => { const { w, d } = p; box(G, F, 'leather', 0, 0.7, 0, w, 0.12, d, { faces: 'tbsewn' }); for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * w * 0.38, 0.33, 0, 0.04, 0.66, 5, { caps: false }); box(G, F, 'paint_white', 0, 0.78, d / 2 - 0.2, w * 0.7, 0.04, 0.3, { faces: 't' }); };
+FAC.roulette = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 1, 'veneer_dark'), 0, 0.4, 0, w, 0.8, d, { noBottom: true }); box(G, F, 'felt', 0.35, 0.86, 0.2, w * 0.6, 0.04, d * 0.6, { faces: 't' }); cyl(G, F, 'veneer_dark', -w * 0.32, 0.88, -0.05, 0.38, 0.06, 12); if (lod === 0) cyl(G, F, 'metal_brushed', -w * 0.32, 0.93, -0.05, 0.15, 0.04, 8); };
+FAC.blackjack = (G, F, it, p, lod) => { const { w, d, h } = p; box(G, F, T0(it, 1, 'veneer_dark'), 0, h / 2 - 0.02, 0, w, h - 0.04, d, { noBottom: true }); box(G, F, 'felt', 0, h + 0.005, 0.05, w - 0.15, 0.03, d - 0.2, { faces: 't' }); if (lod === 0) for (const sx of [-0.8, 0, 0.8]) box(G, F, 'paint_white', sx, h + 0.03, 0.3, 0.1, 0.02, 0.14, { faces: 't' }); };
+FAC.cage = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, 0.5, 0, w, 1.0, d, { noBottom: true }); box(G, F, 'metal_brushed', 0, 1.25, d / 2 - 0.05, w, 0.5, 0.04, { faces: 'sn' }); box(G, F, 'metal_brushed', 0, h - 0.02, 0, w, 0.04, d, { faces: 'tb' }); };
+FAC.seat_row = (G, F, it, p, lod) => {
+  const { w, d } = p, n = Math.max(1, Math.floor(w / 0.55)), pw = w / n, t = T0(it, 0, 'fabric_red');
+  for (let i = 0; i < n; i++) {
+    const x = -w / 2 + pw * (i + 0.5);
+    box(G, F, t, x, 0.4, 0.05, pw - 0.04, 0.12, d * 0.55, { faces: 'tsew' });
+    box(G, F, t, x, 0.72, -d / 2 + 0.1, pw - 0.04, 0.62, 0.1, { faces: 'tsnew', rx: -0.15 });
+    if (lod === 0 && i % 2 === 0) box(G, F, 'rubber_black', x + pw / 2, 0.55, 0.05, 0.04, 0.08, d * 0.55, { faces: 'tsew' });
+  }
+  box(G, F, 'rubber_black', 0, 0.2, -d / 2 + 0.18, w, 0.4, 0.06, { faces: 's' });
+};
+FAC.balcony_deck = (G, F, it, p, lod) => {
+  const { w, d } = p;
+  box(G, F, 'veneer_dark', 0, 0, 0, w, 0.5, d, { faces: 'tbsew' });
+  box(G, F, 'glass_tile', 0, 0.55, d / 2 - 0.03, w, 0.9, 0.04, { faces: 'sn' });
+  if (lod === 0) { const rows = 3; for (let r = 0; r < rows; r++) FAC.seat_row(G, subF(F, 0, -d / 2 + 1.0 + r * 1.9, 0), { tiles: ['fabric_red'] }, { w: w - 2, d: 0.95 }, 1); }
+};
+FAC.light_rig = (G, F, it, p, lod) => { const { w } = p; box(G, F, 'metal_brushed', 0, 0, 0, w, 0.12, 0.12, { faces: 'tbsewn' }); const n = lod ? 3 : Math.floor(w / 1.4); for (let i = 0; i < n; i++) box(G, F, 'light', -w / 2 + (w * (i + 0.5)) / n, -0.2, 0, 0.3, 0.28, 0.3, { faces: 'tsewn' }); };
+FAC.screen_wall = (G, F, it, p) => { const { w, h } = p; box(G, F, 'rubber_black', 0, h / 2, 0, w + 0.3, h + 0.3, 0.15, { faces: 'tbsewn' }); box(G, F, 'light', 0, h / 2, 0.08, w, h, 0.01, { faces: 's' }); };
+FAC.case = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, 0.3, 0, w, 0.6, d, { noBottom: true }); box(G, F, 'glass_tile', 0, 0.82, 0, w - 0.06, 0.4, d - 0.06, { faces: 'tsew' }); box(G, F, 'leather', 0, 0.62, 0, w - 0.12, 0.03, d - 0.12, { faces: 't' }); };
+FAC.street_lamp = (G, F, it, p, lod) => { const { h } = p; cyl(G, F, 'metal_brushed', 0, h / 2, 0, 0.05, h, 6, { caps: false }); cyl(G, F, 'metal_brushed', 0, 0.06, 0, 0.17, 0.12, 8); box(G, F, 'light', 0, h - 0.2, 0, 0.3, 0.4, 0.3, { faces: 'tsewn' }); if (lod === 0) box(G, F, 'metal_brushed', 0, h + 0.02, 0, 0.36, 0.05, 0.36, { faces: 'tsewn' }); };
+FAC.bench_pax = (G, F, it, p) => { const { w, d } = p; box(G, F, 'wood_furn', 0, 0.44, 0, w, 0.06, d * 0.7, { faces: 'tsew' }); box(G, F, 'wood_furn', 0, 0.75, -d / 2 + 0.05, w, 0.5, 0.06, { faces: 'tsnew' }); for (const sx of [-1, 1]) box(G, F, 'metal_brushed', sx * (w / 2 - 0.1), 0.22, 0, 0.06, 0.44, d * 0.7, { faces: 'sew' }); };
+FAC.kiosk = (G, F, it, p, lod) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer'), 0, 0.5, 0, w, 1.0, d, { noBottom: true }); box(G, F, T0(it, 1, 'stainless'), 0, 1.02, 0, w + 0.1, 0.05, d + 0.1, { faces: 'tbsewn' }); for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) cyl(G, F, 'metal_brushed', sx * (w / 2 - 0.05), (1 + h) / 2, sz * (d / 2 - 0.05), 0.03, h - 1, 5, { caps: false }); box(G, F, T0(it, 0, 'veneer'), 0, h - 0.08, 0, w + 0.2, 0.16, d + 0.2, { faces: 'tbsewn' }); if (lod === 0) box(G, F, 'light', 0, h - 0.18, d / 2 + 0.08, w * 0.7, 0.14, 0.02, { faces: 's' }); };
+FAC.glass_lift = (G, F, it, p, lod) => {
+  const { w, h } = p, r = w / 2 - 0.05;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) cyl(G, F, 'metal_brushed', sx * r * 0.85, h / 2, sz * r * 0.85, 0.05, h, 6, { caps: false });
+  box(G, F, 'glass_tile', 0, h / 2, 0, w - 0.3, h, w - 0.3, { faces: 'sewn', noBottom: true });
+  box(G, F, 'metal_brushed', 0, 0.1, 0, w, 0.2, w, { faces: 'tsew' }); box(G, F, 'metal_brushed', 0, h - 0.05, 0, w, 0.1, w, { faces: 'tbsew' });
+  if (lod === 0) box(G, F, 'light', 0, 1.2, 0, 1.4, 2.2, 1.4, { faces: 'tsewn' });   // the car
+};
+FAC.grand_stair = (G, F, it, p, lod) => {
+  const { w, d, h } = p, n = lod ? 4 : 11, run = (d - 0.5) / n, rise = h / n;
+  for (let i = 0; i < n; i++) box(G, F, T0(it, 0, 'stone'), 0, rise * (i + 0.5), -d / 2 + 0.25 + run * (i + 0.5), w, rise, run, { faces: 'tsewn', noBottom: true });
+  for (const sx of [-1, 1]) { box(G, F, T0(it, 1, 'veneer_dark'), sx * (w / 2 - 0.05), h / 2 + 0.55, 0, 0.1, h + 0.2, d, { faces: 'ew' }); }
+  if (lod === 0) for (const sx of [-1, 1]) rod(G, 'metal_brushed', W(F, sx * (w / 2 - 0.05), 1.0, d / 2 - 0.2), W(F, sx * (w / 2 - 0.05), h + 1.0, -d / 2 + 0.3), 0.03, 5);
+};
+FAC.chandelier = (G, F, it, p, lod) => { const { w } = p; cyl(G, F, 'metal_brushed', 0, 1.3, 0, 0.02, 2.6, 4, { caps: false }); for (const [y, r] of [[0.5, w / 2], [0.1, w / 3]]) cyl(G, F, 'light', 0, y, 0, r, 0.1, lod ? 8 : 14); if (lod === 0) for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; box(G, F, 'light', Math.sin(a) * w * 0.4, 0.3, Math.cos(a) * w * 0.4, 0.1, 0.3, 0.1, { faces: 'tsewn' }); } };
+FAC.balcony_front = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, 0.2, 0, w, 0.4, d, { faces: 'tbsew' }); box(G, F, T0(it, 1, 'glass_tile'), 0, 0.85, d / 2 - 0.03, w, 0.9, 0.04, { faces: 'sn' }); if (lod === 0) rod(G, 'metal_brushed', W(F, -w / 2, 1.32, d / 2 - 0.03), W(F, w / 2, 1.32, d / 2 - 0.03), 0.03, 4); };
+FAC.sculpture = (G, F, it, p) => { const { h } = p; box(G, F, 'stone', 0, 0.3, 0, 0.9, 0.6, 0.9, { faces: 'tsewn' }); cyl(G, F, T0(it, 0, 'metal_brushed'), 0, 0.6 + (h - 0.6) / 2, 0, 0.18, h - 0.6, 6, { rt: 0.5 }); cyl(G, F, T0(it, 1, 'paint_blue'), 0, h - 0.4, 0, 0.5, 0.5, 8); };
+FAC.fountain = (G, F, it, p, lod) => { const { w } = p; cyl(G, F, 'stone', 0, 0.3, 0, w / 2, 0.6, lod ? 8 : 14, { caps: false }); cyl(G, F, 'paint_lightblue', 0, 0.55, 0, w / 2 - 0.08, 0.05, lod ? 8 : 14); if (lod === 0) { cyl(G, F, 'stone', 0, 0.8, 0, 0.35, 0.5, 8); cyl(G, F, 'paint_lightblue', 0, 1.0, 0, 0.5, 0.04, 8); } };
+FAC.palm = (G, F, it, p, lod) => { const { h } = p; cyl(G, F, 'paint_white', 0, 0.2, 0, 0.4, 0.4, 8); cyl(G, F, 'wood_furn', 0, h * 0.45, 0, 0.07, h * 0.7, 5, { caps: false }); for (let k = 0; k < (lod ? 3 : 6); k++) { const a = (k / 6) * Math.PI * 2; box(G, subF(F, 0, 0, a), 'leaf', 0, h - 0.4, 0.6, 0.16, 0.05, 1.3, { faces: 'tb', rx: 0.5 }); } };
+FAC.post_rope = (G, F, it, p) => { const { w } = p; for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * (w / 2 - 0.05), 0.5, 0, 0.03, 1.0, 5); rod(G, 'fabric_red', W(F, -w / 2 + 0.05, 0.85, 0), W(F, w / 2 - 0.05, 0.85, 0), 0.02, 4); };
+FAC.plinth = (G, F, it, p) => { const { w, h } = p; box(G, F, T0(it, 0, 'stone'), 0, h / 2, 0, w, h, w, { noBottom: true }); cyl(G, F, T0(it, 1, 'metal_brushed'), 0, h + 0.2, 0, 0.14, 0.4, 6); };
+FAC.sauna = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer'), 0, h / 2, 0, w, h, d, { faces: 'tsewn' }); box(G, F, 'glass_tile', 0, 1.0, d / 2 + 0.01, 0.7, 1.9, 0.02, { faces: 's' }); box(G, F, 'light', 0, h - 0.05, 0, w - 0.3, 0.03, d - 0.3, { faces: 'b' }); };
+FAC.pool = (G, F, it, p, lod) => {
+  const { w, d, h } = p, c = T0(it, 0, 'paint_white');
+  for (const [cx, cz, bw, bd] of [[0, -d / 2 + 0.15, w, 0.3], [0, d / 2 - 0.15, w, 0.3], [-w / 2 + 0.15, 0, 0.3, d - 0.6], [w / 2 - 0.15, 0, 0.3, d - 0.6]]) box(G, F, c, cx, (h - 0.1) / 2, cz, bw, h - 0.1, bd, { faces: 'tsewn' });
+  box(G, F, T0(it, 1, 'paint_lightblue'), 0, h - 0.16, 0, w - 0.5, 0.04, d - 0.5, { faces: 't' });
+  if (lod === 0) box(G, F, 'paint_blue', 0, h - 0.17, 0, w - 0.5, 0.02, 0.12, { faces: 't' });   // lane line
+  if (lod === 0) for (const sx of [-1, 1]) { rod(G, 'metal_brushed', W(F, sx * (w / 2 - 0.5), h, -d / 2 + 0.3), W(F, sx * (w / 2 - 0.5), h + 0.9, -d / 2 + 0.3), 0.025, 4); }
+};
+FAC.hot_tub = (G, F, it, p, lod) => { const { w, h } = p; cyl(G, F, T0(it, 0, 'paint_white'), 0, h / 2, 0, w / 2, h, lod ? 8 : 14, { caps: false }); cyl(G, F, T0(it, 1, 'paint_lightblue'), 0, h - 0.12, 0, w / 2 - 0.15, 0.04, lod ? 8 : 14); if (lod === 0) cyl(G, F, 'stone', 0, h + 0.02, 0, w / 2 + 0.05, 0.05, 14, { caps: false }); };
+FAC.lounger_pair = (G, F, it, p, lod) => { for (const sx of [-0.55, 0.55]) FAC.lounger(G, subF(F, sx, 0, 0), it, { w: 0.65, d: 1.9, h: 0.4 }); if (lod === 0) cyl(G, F, 'paint_white', 0, 0.2, 0.2, 0.22, 0.4, 8); };
+FAC.parasol = (G, F, it, p, lod) => { const { w, h } = p; cyl(G, F, 'metal_brushed', 0, h / 2, 0, 0.025, h, 4, { caps: false }); cyl(G, F, T0(it, 0, 'paint_white'), 0, h - 0.12, 0, w / 2, 0.22, lod ? 6 : 10, { rt: 0.05 }); };
+FAC.pool_bar = (G, F, it, p, lod) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer'), 0, 0.55, -d / 2 + 0.5, w, 1.1, 0.9, { noBottom: true }); box(G, F, T0(it, 1, 'stone'), 0, 1.12, -d / 2 + 0.5, w + 0.05, 0.05, 1.0, { faces: 'tbsewn' }); box(G, F, 'paint_white', 0, h - 0.06, -d / 2 + 0.7, w + 0.5, 0.12, d - 0.2, { faces: 'tbsewn' }); for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * (w / 2), h / 2, d / 2 - 0.2, 0.04, h, 5, { caps: false }); if (lod === 0) for (const sx of [-1.4, 0, 1.4]) { cyl(G, F, 'leather', sx, 0.72, 0.3, 0.17, 0.07, 8); cyl(G, F, 'metal_brushed', sx, 0.36, 0.3, 0.03, 0.7, 5, { caps: false }); } };
+FAC.slide_tower = (G, F, it, p, lod) => {
+  const { w, d, h } = p;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) cyl(G, F, T0(it, 1, 'paint_yellow'), sx * (w / 2 - 0.2), h / 2, sz * (d / 2 - 0.2), 0.1, h, 6, { caps: false });
+  const n = lod ? 3 : 7; for (let k = 0; k < n; k++) { const y = 1.2 + (k * (h - 1.5)) / n; box(G, F, 'metal_brushed', 0, y, 0, w - 0.3, 0.05, d - 0.3, { faces: 'tb' }); }
+  box(G, F, T0(it, 0, 'paint_red'), 0, h - 0.5, 0, w, 0.2, d, { faces: 'tbsewn' });
+  box(G, F, T0(it, 0, 'paint_red'), 0, h + 0.3, 0, w - 0.1, 0.8, 0.06, { faces: 'sn' });
+  rod(G, 'metal_brushed', W(F, -w / 2 + 0.3, 0.1, d / 2), W(F, -w / 2 + 0.3, h - 0.5, -d / 2 + 0.4), 0.05, 4);   // stair stringer
+};
+FAC.slide_run = (G, F, it, p, lod) => {
+  const { w, d, h } = p, n = lod ? 4 : 10, pts = [];
+  for (let k = 0; k <= n; k++) { const t = k / n; pts.push(W(F, Math.sin(t * Math.PI * 1.5) * 0.9 * (1 - t * 0.4), h - 0.3 - (h - 1.2) * (1 - Math.pow(1 - t, 1.6)) * 1.0, -d / 2 + 1.0 + t * (d - 2.0))); }
+  for (let k = 0; k < n; k++) rod(G, k % 2 ? T0(it, 0, 'paint_yellow') : T0(it, 1, 'paint_blue'), pts[k], pts[k + 1], 0.42, lod ? 5 : 7);
+  void w;
+};
+FAC.court = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'paint_blue'), 0, 0.015, 0, w, 0.03, d, { faces: 't' }); box(G, F, T0(it, 1, 'paint_white'), 0, 0.032, 0, w - 0.6, 0.004, 0.08, { faces: 't' }); if (lod === 0) { box(G, F, T0(it, 1, 'paint_white'), 0, 0.032, 0, 0.08, 0.004, d - 0.6, { faces: 't' }); for (const sx of [-1, 1]) box(G, F, T0(it, 1, 'paint_white'), sx * (w / 2 - 0.3), 0.032, 0, 0.06, 0.004, d - 0.6, { faces: 't' }); } };
+FAC.hoop = (G, F, it, p) => { const { h } = p; cyl(G, F, 'metal_brushed', 0, h / 2, -0.3, 0.06, h, 6, { caps: false }); box(G, F, 'paint_white', 0, h - 0.4, -0.2, 1.2, 0.8, 0.05, { faces: 'sn' }); cyl(G, F, 'paint_orange', 0, h - 0.8, 0.25, 0.23, 0.04, 10); };
+FAC.green = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, 'leaf', 0, 0.04, 0, w, 0.08, d, { faces: 'tsewn' }); const n = lod ? 1 : 3; for (let k = 0; k < n; k++) { const x = -w / 2 + (w * (k + 0.5)) / n; cyl(G, F, 'paint_white', x + 0.5, 0.1, 0.3, 0.08, 0.05, 6); rod(G, 'paint_red', W(F, x + 0.5, 0.1, 0.3), W(F, x + 0.5, 0.7, 0.3), 0.01, 3); } };
+FAC.climb_wall = (G, F, it, p, lod) => { const { w, h } = p; box(G, F, T0(it, 0, 'paint_grey'), 0, h / 2, 0, w, h, 0.3, { faces: 'tsewn' }); const n = lod ? 4 : 28; for (let k = 0; k < n; k++) { const gx = ((k * 37) % 97) / 97, gy = ((k * 53) % 89) / 89; box(G, F, k % 3 ? T0(it, 1, 'paint_orange') : 'paint_yellow', -w / 2 + 0.3 + gx * (w - 0.6), 0.6 + gy * (h - 1.2), 0.2, 0.22, 0.12, 0.14, { faces: 'tsewn' }); } };
+FAC.rope_course = (G, F, it, p, lod) => {
+  const { w, d, h } = p;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, -1], [0, 1]]) cyl(G, F, 'metal_brushed', sx * (w / 2 - 0.2), h / 2, sz * (d / 2 - 0.2), 0.07, h, 6, { caps: false });
+  const n = lod ? 3 : 9;
+  for (const sz of [-1, 1]) rod(G, 'rope', W(F, -w / 2 + 0.2, h - 0.3, sz * (d / 2 - 0.2)), W(F, w / 2 - 0.2, h - 0.3, sz * (d / 2 - 0.2)), 0.025, 4);
+  for (let k = 0; k < n; k++) { const x = -w / 2 + 0.6 + (k * (w - 1.2)) / (n - 1); box(G, F, 'wood_furn', x, h - 0.45 - Math.sin(k) * 0.2, 0, 0.5, 0.05, 0.5, { faces: 'tb' }); }
+};
+FAC.rink = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'tile_wet'), 0, 0.03, 0, w, 0.06, d, { faces: 't' }); box(G, F, T0(it, 1, 'paint_lightblue'), 0, 0.065, 0, w - 0.4, 0.004, d - 0.4, { faces: 't' }); for (const [cx, cz, bw, bd] of [[0, -d / 2 + 0.05, w, 0.1], [0, d / 2 - 0.05, w, 0.1], [-w / 2 + 0.05, 0, 0.1, d], [w / 2 - 0.05, 0, 0.1, d]]) box(G, F, 'paint_white', cx, 0.55, cz, bw, 1.1, bd, { faces: 'tsewn' }); if (lod === 0) cyl(G, F, 'paint_red', 0, 0.07, 0, 1.4, 0.004, 14); };
+FAC.dome = (G, F, it, p, lod) => { const { w, h } = p, n = lod ? 6 : 10; for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; rod(G, 'metal_brushed', W(F, Math.sin(a) * w / 2, 0.05, Math.cos(a) * w / 2), W(F, 0, h, 0), 0.04, 4); } cyl(G, F, 'metal_brushed', 0, 0.03, 0, w / 2, 0.06, n, { caps: false }); };
+FAC.zip = (G, F, it, p) => { const { w, h } = p; rod(G, 'metal_brushed', W(F, -w / 2, h, 0), W(F, w / 2, 1.8, 0), 0.015, 3); for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * (w / 2 - 0.1), h / 2, 0, 0.08, h, 5, { caps: false }); };
+FAC.buffet_line = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'stainless'), 0, 0.45, 0, w, 0.9, d - 0.2, { noBottom: true }); box(G, F, T0(it, 1, 'veneer'), 0, 0.93, 0, w + 0.05, 0.05, d - 0.15, { faces: 'tbsewn' }); const n = Math.floor(w / 0.8); for (let k = 0; k < n; k++) { const x = -w / 2 + 0.5 + k * ((w - 1) / Math.max(1, n - 1)); box(G, F, 'metal_brushed', x, 1.0, 0, 0.5, 0.08, 0.5, { faces: 'tsewn' }); if (lod === 0) box(G, F, 'light', x, 1.5, 0, 0.5, 0.04, 0.5, { faces: 'b' }); } if (lod === 0) rod(G, 'metal_brushed', W(F, -w / 2, 1.5, 0), W(F, w / 2, 1.5, 0), 0.02, 4); };
+FAC.desk_set = (G, F, it, p, lod) => { FAC.desk(G, subF(F, 0, -0.3, 0), { tiles: it.tiles }, { w: 1.4, d: 0.7, h: 0.76 }, lod); chairAt(G, F, 0, 0.5, 'fabric_grey', 0, 0, lod); };
 FAC.pelorus = (G, F, it, p) => { cyl(G, F, 'metal_brushed', 0, 0.6, 0, 0.06, 1.2, 6, { caps: false }); cyl(G, F, 'paint_white', 0, 1.25, 0, 0.18, 0.1, 10); };
 FAC.chain_block = (G, F, it, p) => { rod(G, 'paint_yellow', W(F, 0, 0, 0), W(F, 0, -0.8, 0), 0.02, 4); box(G, F, 'paint_yellow', 0, -0.4, 0, 0.2, 0.25, 0.15, { faces: 'tsew' }); };
 /** Slow-speed two-stroke main engine (v1 prop me2s) with the cylinder count and turbochargers of meDetail (§4.6). */

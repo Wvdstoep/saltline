@@ -1,4 +1,4 @@
-// Ship catalogue (docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §2, Appendix A): 16 types, 76 models. Pure data + the §2.4
+// Ship catalogue (docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §2, Appendix A): 16 types, 80 models. Pure data + the §2.4
 // derivation of the game fields. Plain ESM; imports only optrules.js, so shared/constants.js may import it (H1) without a cycle.
 //
 // Every model carries two blocks:
@@ -23,6 +23,8 @@ export const DERIVE = {
   CARGO_TYPE_MUL: { general: 1, container: 1.8, bulk: 1, tanker: 1.1, gas: 1.8, roro: 1.9 },
   CARGO_MODEL_MUL: { mpp160: 1.4, reefer150: 1.6, livestock135: 1.6, chem13k: 1.35, lng174k: 2.6 / 1.8, lngbv7500: 2.6 / 1.8 },
   TURN_MUL: { tug: 2.0, workboat: 1.6, offshore: 1.3 },
+  CRUISE_DIV: 6.5,            // cruise price = reference newbuild USD / 6.5 (docs/CRUISE-CONTRACT.md §2): a 2 bn mega ship is 8 × the 38.5 M ulcv24k
+  CRUISE_WAGE: 3.5,           // cr per crew member per hour under way (hotel staff included; provisions are netted off the charter fee)
   FUEL_K: 0.616,              // 0.56 (burn at 80 % throttle) × 1.1 reserve
   CB_HULL: 0.97, RHO: 1.025,
 };
@@ -162,14 +164,22 @@ const SRC = [
   ['ropax200', 'ferry', 'ferry', 'Cruise ferry / ro-pax 200 m', 'Cruise ferry', 'Cruise ferry', 200, 31, 6.8, 7000, 50000, '1,800 pax, 2,800 lane m', 24, 22, 32000, '4x MS diesel (LNG DF)', 185, 80, 120, 210, { Cb: 0.6 }, 3000,
     { pax: 1800, lanes: 2800, lm: 2800, bm: 22, b: 'ferry', depth: 15.1, eq: ['bowDoor', 'sternDoor'], hand: ['pax', 'roro'], color: 0xe8e8e8, desc: 'Overnight cruise ferry with cabins, restaurants and 2,800 metres of lanes.' }],
   // ---------------------------------------------------------------- cruise
-  ['expedition105', 'cruise', 'cruise', 'Polar expedition cruise ship 105 m (PC6)', 'Expedition ship', 'Expedition', 104.4, 18, 5.3, 1000, 12500, '200 guests', 15, 13, 8000, 'DE gensets + battery, azipods', 195, 100, 120, 140, { Cb: 0.62 }, 8000,
+  ['rivercruise110', 'cruise', 'cruise', 'River and coastal cruise ship 110 m', 'River cruise ship', 'River / coastal cruise', 110, 11.4, 1.7, 250, 4200, '150 guests', 13, 11, 1800, 'DE gensets, 2 azimuth thrusters', 200, 40, 48, 38, { Cb: 0.62 }, 3000,
+    { pax: 150, bm: 14, b: 'expedition', depth: 3.6, air: 9.5, eq: [], hand: ['pax'], color: 0xf1f1ea, desc: 'Low-slung river and coastal cruise ship: 150 guests, panoramic lounge, sun deck with a folding wheelhouse.' }],
+  ['boutique125', 'cruise', 'cruise', 'Boutique yacht cruiser 125 m', 'Yacht cruiser', 'Boutique cruise', 125, 19, 4.8, 1400, 11500, '280 guests', 17, 15, 9000, 'DE gensets, 2 azipods', 195, 150, 200, 330, { Cb: 0.6 }, 6000,
+    { pax: 280, bm: 24, b: 'expedition', depth: 8.6, eq: ['tender'], hand: ['pax'], color: 0xfafaf5, desc: 'All-suite yacht cruiser for 280 guests: marina platform, small ports and quiet anchorages.' }],
+  ['expedition105', 'cruise', 'cruise', 'Polar expedition cruise ship 105 m (PC6)', 'Expedition ship', 'Expedition', 104.4, 18, 5.3, 1000, 12500, '200 guests', 15, 13, 8000, 'DE gensets + battery, azipods', 195, 100, 120, 200, { Cb: 0.62 }, 8000,
     { pax: 200, bm: 24, b: 'expedition', depth: 11.8, ice: 'pc6', eq: ['tender', 'helideck'], hand: ['pax'], color: 0x1d3557, desc: 'Ice-strengthened small cruise ship with Zodiacs for Antarctica and the Arctic.' }],
-  ['cruise230', 'cruise', 'cruise', 'Mid-size cruise ship 230 m', 'Cruise ship', 'Mid-size cruise', 230, 28, 7, 6000, 55000, '1,250 guests', 21, 19, 25000, 'DE gensets, pods', 195, 520, 600, 450, { Cb: 0.66 }, 8000,
+  ['cruise230', 'cruise', 'cruise', 'Mid-size cruise ship 230 m', 'Cruise ship', 'Mid-size cruise', 230, 28, 7, 6000, 55000, '1,250 guests', 21, 19, 25000, 'DE gensets, pods', 195, 520, 600, 520, { Cb: 0.66 }, 8000,
     { pax: 1250, bm: 30, b: 'cruise', depth: 15.6, eq: ['tender'], hand: ['pax'], color: 0xf4f4f4, desc: 'Premium mid-size cruise ship that fits the smaller cruise ports.' }],
-  ['cruise330', 'cruise', 'cruise', 'Large cruise ship 330 m (LNG)', 'Large cruise ship', 'Large cruise', 330, 42, 8.8, 11000, 180000, '4,000 guests', 22, 19, 62000, 'DE LNG DF gensets, pods', 185, 1300, 1500, 1200, { Cb: 0.66 }, 8000,
+  ['cruise285', 'cruise', 'cruise', 'Premium cruise ship 285 m', 'Premium cruise ship', 'Premium cruise', 285, 36, 8.1, 8500, 125000, '2,900 guests', 22, 19, 45000, 'DE gensets, 2 pods', 190, 900, 1050, 800, { Cb: 0.66 }, 8000,
+    { pax: 2900, bm: 32, b: 'cruise', depth: 17.8, eq: ['tender'], hand: ['pax'], color: 0xf4f4f4, desc: 'Premium resort ship for 2,900 guests: two atria, a main theatre and a full spa deck.' }],
+  ['cruise330', 'cruise', 'cruise', 'Large cruise ship 330 m (LNG)', 'Large cruise ship', 'Large cruise', 330, 42, 8.8, 11000, 180000, '4,000 guests', 22, 19, 62000, 'DE LNG DF gensets, pods', 185, 1300, 1500, 1000, { Cb: 0.66 }, 8000,
     { pax: 4000, bm: 33, b: 'cruise', depth: 19.6, eq: ['tender'], hand: ['pax'], color: 0xf4f4f4, desc: 'LNG-powered resort ship for 4,000 guests.' }],
   ['cruise362', 'cruise', 'cruise', 'Mega cruise ship 362 m', 'Mega cruise ship', 'Mega cruise', 362, 47, 9.3, 15000, 236000, '6,700 guests', 22, 20, 97000, 'DE gensets, 3 pods', 195, 2100, 2300, 1500, { Cb: 0.66 }, 8000,
     { pax: 6700, bm: 36, b: 'cruise', depth: 22.5, eq: ['tender'], hand: ['pax'], color: 0xf4f4f4, desc: 'A floating city of the Oasis class: parks, theatres and 6,700 guests.' }],
+  ['cruise370', 'cruise', 'cruise', 'World\'s largest cruise ship 370 m (LNG)', 'Largest cruise ship', 'Mega cruise', 370, 48.5, 9.5, 16000, 250000, '7,600 guests', 22, 20, 100000, 'DE LNG DF gensets, 3 pods', 185, 2250, 2400, 2000, { Cb: 0.66 }, 8000,
+    { pax: 7600, bm: 40, b: 'cruise', depth: 23.0, eq: ['tender'], hand: ['pax'], color: 0xf4f4f4, desc: 'The biggest ship afloat: 250,000 GT, 7,600 guests, eight neighbourhoods and a water park.' }],
   // ---------------------------------------------------------------- special
   ['research75', 'special', 'special', 'Oceanographic research vessel 75 m', 'Research ship', 'Research', 75, 18, 5.6, 2000, 5000, '30 scientists, labs, A-frame', 14, 12, 6000, 'DE gensets, DP2, ice 1A', 190, 18, 22, 90, { Cb: 0.6 }, 12000,
     { pax: 30, cap: 500, bm: 24, b: 'research', depth: 8.0, ice: 'i1a', eq: ['aframe', 'survey', 'dp2', 'moonpool'], hand: ['pax', 'deck'], color: 0xf4f4f4, desc: 'Floating laboratory with an A-frame, CTD hangar and multibeam echo sounder.' }],
@@ -236,12 +246,15 @@ export function roundPrice(p) { return p > 1e7 ? Math.round(p / 1e5) * 1e5 : p >
 export function cargoPrice(cap, mul) { return 130 * cap * Math.pow(cap / 35000, -0.15) * mul; }
 /** §2.4 passenger price: 1,750 × pax × (pax / 400)^−0.1 × mul. */
 export function paxPrice(pax, mul) { return 1750 * pax * Math.pow(pax / 400, -0.1) * mul; }
+/** Cruise ships are priced from their reference newbuild cost (real ships cost 1–2 bn): usd m × 1e6 / CRUISE_DIV. */
+export function cruisePrice(usdM) { return usdM * 1e6 / DERIVE.CRUISE_DIV; }
 export function workPrice(usd, fishing = false) { return 0.157 * Math.pow(usd, 0.9) * (fishing ? 0.6 : 1); }
 export function yachtPrice(usd) { return 2.14 * Math.pow(usd, 0.83); }
 export function displacementOf(L, B, T, Cb) { return rnd(DERIVE.CB_HULL * L * B * T * Cb * DERIVE.RHO); }
 export function crewCostOf(type, crewOpt, gt) {
   const f = Math.pow(1 + gt / 40000, 0.8);
-  if (type === 'ferry' || type === 'cruise') return Math.round(6 * Math.min(crewOpt, 40) * f + 1.5 * Math.max(0, crewOpt - 40));
+  if (type === 'cruise') return Math.round(DERIVE.CRUISE_WAGE * crewOpt * Math.sqrt(1 + gt / 150000));
+  if (type === 'ferry') return Math.round(6 * Math.min(crewOpt, 40) * f + 1.5 * Math.max(0, crewOpt - 40));
   if (type === 'motor_yacht') return Math.round(5 * Math.max(0, crewOpt - 1) * f);
   return Math.round(6 * crewOpt * f);
 }
@@ -270,8 +283,8 @@ function defaultEngine(eng) { return eng.kind === 'de' ? 'de' : eng.fuel === 'ln
 // Wave-2 stats (V5-WAVE2 §3.6 columns). Game rule heuristics from the reference data; shipstats keeps its own legacy table.
 const HULL = { bulk: 0.78, tanker: 0.8, gas: 0.8, container: 0.75, general: 0.75, roro: 0.72, ferry: 0.7, cruise: 0.7, offshore: 0.9, tug: 0.9, workboat: 0.8, pilot: 0.85, fishing: 0.85, special: 0.9, motor_yacht: 0.6, sail_yacht: 0.7 };
 const TOUGH = new Set(['offshore', 'tug', 'pilot', 'fishing', 'special']);
-function statsOf(id, type, L, eng, crewOpt, legacy, ice) {
-  const airDraft = L < 30 ? rnd(L * 0.3 + 2) : rnd(Math.min(75, 12 + L * 0.17));
+function statsOf(id, type, L, eng, crewOpt, legacy, ice, air) {
+  const airDraft = air ?? (L < 30 ? rnd(L * 0.3 + 2) : rnd(Math.min(75, 12 + L * 0.17)));
   let maxHs = L < 12 ? 1.5 : L < 20 ? 3 : L < 40 ? 4.5 : L < 80 ? 6 : L < 150 ? 7 : 8;
   if (TOUGH.has(type)) maxHs = Math.min(10, maxHs + 1);
   const thrusters = ['offshore', 'special', 'cruise', 'ferry'].includes(type) ? 'bow+stern'
@@ -303,8 +316,8 @@ function build(row) {
       cap = rnd(0.9 * dwt);
       price = cargoPrice(cap, DERIVE.CARGO_TYPE_MUL[type] * (DERIVE.CARGO_MODEL_MUL[id] || 1));
     } else if (type === 'ferry' || type === 'cruise') {
-      const tm = type === 'cruise' ? (id === 'expedition105' ? 8 : 4) : (id === 'hsc112' ? 1.6 : 1);
-      price = paxPrice(x.pax, tm);
+      const tm = type === 'cruise' ? 0 : (id === 'hsc112' ? 1.6 : 1);
+      price = type === 'cruise' ? cruisePrice(usdM) : paxPrice(x.pax, tm);
       cap = x.cap ?? rnd(x.lanes ? x.lanes * 2.5 : dwt * 0.5);
       if (x.lanes) price += 0.5 * cargoPrice(cap, DERIVE.CARGO_TYPE_MUL.roro);
     } else if (type === 'motor_yacht') { price = yachtPrice(usdM * 1e6); cap = x.cap; }
@@ -337,7 +350,7 @@ function build(row) {
     stats: null, options: null, defaults, builders: [x.b], minPort: minPortOf(L), tags: [], hidden: false, verify: true,
     basis: x.basis ?? null,
   };
-  m.stats = statsOf(id, type, L, eng, crewOpt, !!leg, ice);
+  m.stats = statsOf(id, type, L, eng, crewOpt, !!leg, ice, x.air);
   m.airDraft = m.stats.airDraft;
   m.options = modelOptions(m);
   if (defaults.gear === 'geared') m.tags.push('geared');

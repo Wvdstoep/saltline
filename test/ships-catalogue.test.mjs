@@ -1,8 +1,8 @@
-// docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §9 test 1: the 76-model catalogue.
+// docs/SHIPYARD-SHIPS-INTERIORS-CONTRACT.md §9 test 1: the 80-model catalogue.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SHIP_CLASSES } from '../shared/constants.js';
-import { MODELS, MODEL_IDS, LEGACY_ROWS, LEGACY_IDS, SAIL_IDS, TYPES, cargoPrice, paxPrice, workPrice, yachtPrice, roundPrice, admiralty, DERIVE } from '../shared/ships/catalogue.js';
+import { MODELS, MODEL_IDS, cruisePrice, LEGACY_ROWS, LEGACY_IDS, SAIL_IDS, TYPES, cargoPrice, paxPrice, workPrice, yachtPrice, roundPrice, admiralty, DERIVE } from '../shared/ships/catalogue.js';
 import { YARDS, YARD_IDS, CAP_TAGS, YARD_COUNTRIES } from '../shared/ships/yards.js';
 import { legacyRows } from '../shared/ships/rows.js';
 import { HARBORS, harborById } from '../server/harbors.js';
@@ -12,13 +12,13 @@ const GAME_KEYS = ['id', 'cat', 'name', 'length', 'beam', 'draft', 'maxKn', 'tur
 const NEW = Object.values(MODELS).filter((m) => m.era === 'eco');
 const MERCHANT = new Set(['general', 'container', 'bulk', 'tanker', 'gas', 'roro', 'ferry', 'cruise']);
 
-test('76 models in 16 types, with the type table of §2.1', () => {
-  assert.equal(MODEL_IDS.length, 76);
+test('80 models in 16 types, with the type table of §2.1', () => {
+  assert.equal(MODEL_IDS.length, 80);
   assert.equal(TYPES.length, 16);
   const count = {};
   for (const m of Object.values(MODELS)) count[m.type] = (count[m.type] || 0) + 1;
-  assert.deepEqual(count, { workboat: 2, tug: 4, pilot: 2, fishing: 6, offshore: 5, general: 6, container: 8, bulk: 7, tanker: 8, gas: 4, roro: 2, ferry: 4, cruise: 4, special: 3, motor_yacht: 7, sail_yacht: 4 });
-  assert.equal(NEW.length, 59);
+  assert.deepEqual(count, { workboat: 2, tug: 4, pilot: 2, fishing: 6, offshore: 5, general: 6, container: 8, bulk: 7, tanker: 8, gas: 4, roro: 2, ferry: 4, cruise: 8, special: 3, motor_yacht: 7, sail_yacht: 4 });
+  assert.equal(NEW.length, 63);
 });
 
 test('the 17 legacy rows deep-equal today\'s SHIP_CLASSES; every existing id is a model id', () => {
@@ -36,7 +36,7 @@ test('the 17 legacy rows deep-equal today\'s SHIP_CLASSES; every existing id is 
 test('new rows: burn = kW × sfoc / 1e6 and the contract\'s expected game numbers', () => {
   for (const m of NEW) assert.ok(Math.abs(m.burn - m.kW * m.sfoc / 1e6) <= 0.001, m.id);
   assert.equal(MODELS.ultramax64.burn, 1.419); assert.equal(MODELS.vlcc300.burn, 4.05); assert.equal(MODELS.lng174k.burn, 4.29);
-  const price = { ultramax64: 6950000, mr50: 6200000, vlcc300: 28400000, ulcv24k: 38500000, tug24: 256000, cruise330: 22200000, ropax200: 3810000, giga100: 23300000 };
+  const price = { ultramax64: 6950000, mr50: 6200000, vlcc300: 28400000, ulcv24k: 38500000, tug24: 256000, cruise330: 153800000, cruise362: 230800000, cruise370: 307700000, cruise230: 80000000, expedition105: 30800000, ropax200: 3810000, giga100: 23300000 };
   for (const [id, p] of Object.entries(price)) assert.equal(MODELS[id].price, p, id);
   assert.equal(MODELS.ultramax64.turnRate, 3.0); assert.equal(MODELS.ultramax64.crewCost, 221); assert.equal(MODELS.ultramax64.fuelCap, 1165);
   assert.equal(MODELS.ultramax64.capacity, 57600); assert.equal(MODELS.ultramax64.displacement, 72439);
@@ -51,7 +51,7 @@ test('price formulas of §2.4, recomputed independently', () => {
     let p;
     if (DERIVE.CARGO_TYPE_MUL[m.type] !== undefined) p = cargoPrice(Math.round(0.9 * m.dwt), DERIVE.CARGO_TYPE_MUL[m.type] * (DERIVE.CARGO_MODEL_MUL[m.id] || 1));
     else if (m.type === 'ferry' || m.type === 'cruise') {
-      p = paxPrice(m.pax, m.type === 'cruise' ? (m.id === 'expedition105' ? 8 : 4) : m.id === 'hsc112' ? 1.6 : 1);
+      p = m.type === 'cruise' ? cruisePrice(m.usdM) : paxPrice(m.pax, m.id === 'hsc112' ? 1.6 : 1);
       if (m.units.lm && m.id === 'ropax200') p += 0.5 * cargoPrice(m.units.lm * 2.5, 1.9);
     } else if (m.type === 'motor_yacht') p = yachtPrice(m.usdM * 1e6);
     else p = workPrice(m.usdM * 1e6, m.type === 'fishing');
@@ -69,12 +69,12 @@ test('size rules: Panamax beams, Neo-Panamax limits, L/B, Admiralty coefficient,
   for (const m of NEW) {
     if (!MERCHANT.has(m.type) || m.id === 'hsc112') continue;           // catamaran: not a monohull
     const lb = m.length / m.beam;
-    // exception: the real 294 × 32.2 m Panamax container class has L/B 9.13 (old-lock beam, long hull)
-    assert.ok(lb >= 3.5 && lb <= (m.id === 'panamax4500' ? 9.2 : 9), `${m.id} L/B ${lb.toFixed(2)}`);
+    // exceptions: the real 294 × 32.2 m Panamax container class has L/B 9.13 (old-lock beam, long hull); the river cruise ship is lock-width limited (L/B 9.65)
+    assert.ok(lb >= 3.5 && lb <= (m.id === 'panamax4500' ? 9.2 : m.id === 'rivercruise110' ? 10 : 9), `${m.id} L/B ${lb.toFixed(2)}`);
   }
   // Admiralty coefficient 300–1,000 for cargo/ferry/cruise ≥ 100 m. Exceptions (documented): the fast catamaran, and the
   // diesel-electric ships whose installed kW also feeds hotel / cargo plant (Appendix A Cadm 141–243).
-  const ADM_EXCEPT = new Set(['hsc112', 'expedition105', 'cruise362', 'lngbv7500']);
+  const ADM_EXCEPT = new Set(['hsc112', 'expedition105', 'cruise362', 'lngbv7500', 'rivercruise110', 'boutique125', 'cruise370']);
   for (const m of NEW) {
     if (!MERCHANT.has(m.type) || m.length < 100 || ADM_EXCEPT.has(m.id)) continue;
     const c = admiralty(m.displacement, m.maxKn, m.kW);

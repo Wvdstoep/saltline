@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { MODELS } from '../../shared/ships/index.js';
 import { loftHull, hullForm, bayStacks, lodDistances } from './shipgeom.js';
 import { hashStr, rng } from './models.js';
+import { cruiseProfile } from '../../shared/ships/cruiseprofile.js';
 
 const HAS_DOM = typeof document !== 'undefined' && typeof document.createElement === 'function';
 const clamp = (lo, hi, v) => Math.max(lo, Math.min(hi, v));
@@ -489,6 +490,8 @@ function buildHouse(ctx) {
     } else if (ferry && n > 2) {
       if (i >= n - 2) z1 -= (i - (n - 3)) * ga.L * 0.05;
     }
+    if (cruise && t.use === 'lido') { buildLido(ctx, t, z0, z1, w, n); continue; }
+    if (cruise && ga.deck.boats.some((b) => b.deck === t.id && b.kind === 'davit')) { const rb = Math.min(9, clamp(6, 9, ga.L * 0.05) * 0.19); w = Math.min(w, 2 * (hbDeck(ctx, (z0 + z1) / 2) - 2 * rb - 0.5)); }   // the house of the boat deck stands back from the hull: the boats hang in the recess   // the open pool deck (docs/CRUISE-CONTRACT.md §5)
     if (lod === 2) continue;
     const band = BANDS[USE_BAND[t.use] || 'cabins'];
     const endBand = cruise || yacht || ferry ? BANDS.glass : band;
@@ -507,8 +510,68 @@ function buildHouse(ctx) {
   }
   buildBridge(ctx);
   // pool and lido (cruise)
-  if (ga.deck.pool && lod < 2) { const p = ga.deck.pool; P.box('paint', ga.B * 0.32, 0.4, p.z1 - p.z0, 0, p.y + 0.15, (p.z0 + p.z1) / 2, COL.pool); P.box('paint', ga.B * 0.5, 0.2, p.z1 - p.z0 + 8, 0, p.y + 0.02, (p.z0 + p.z1) / 2, COL.teak); }
+  if (ga.deck.pool && lod < 2 && !cruise) { const p = ga.deck.pool; P.box('paint', ga.B * 0.32, 0.4, p.z1 - p.z0, 0, p.y + 0.15, (p.z0 + p.z1) / 2, COL.pool); P.box('paint', ga.B * 0.5, 0.2, p.z1 - p.z0 + 8, 0, p.y + 0.02, (p.z0 + p.z1) / 2, COL.teak); }
   if (ga.deck.flybridge && lod < 2) { const f = ga.deck.flybridge; const w = ga.B * 0.6; P.box('paint', w, 1.0, (f.z1 - f.z0) * 0.6, 0, f.y + 0.5, f.z0 + (f.z1 - f.z0) * 0.35, COL.white); P.box('paint', w * 1.05, 0.12, (f.z1 - f.z0) * 0.8, 0, f.y + 2.4, f.z0 + (f.z1 - f.z0) * 0.45, COL.white); for (const s of [-1, 1]) P.rod('metal', s * w * 0.45, f.y + 1, f.z0 + (f.z1 - f.z0) * 0.8, s * w * 0.45, f.y + 2.4, f.z0 + (f.z1 - f.z0) * 0.8, 0.05, COL.light, 5); }
+}
+/**
+ * The open lido (pool) deck of a cruise ship: a teak slab with glass windscreens, the pool and hot tubs, rows of loungers (as many as
+ * the guest list suggests), the pool bar, slides and the class's sports kit (court, mini-golf, climbing wall, rope course, aqua
+ * theatre), a lounge on the sun deck aft and a crow's nest forward. Detail at LOD0 only; ~6k triangles on the biggest ships.
+ */
+function buildLido(ctx, t, z0, z1, w, nTiers) {
+  const { ga, P, lod } = ctx, B = ga.B, prof = cruiseProfile(ga.model), pool = ga.deck.pool;
+  const ex = new Set(prof?.extras || []), guests = prof?.guests || 800;
+  const y = t.y, top = y + 0.3, white = ctx.primer ? COL.primer : COL.white;
+  tierSolid(ctx, z0, z1, w, y - 0.1, 0.4, BANDS.blank, BANDS.blank, 0, 'paint', ctx.primer ? COL.primer : 0xb7966a);
+  if (lod === 2) { P.box('house', w * 0.5, 3, Math.max(4, (z1 - z0) * 0.25), 0, top + 1.5, z1 - (z1 - z0) * 0.2); return; }
+  const hwAt = (z) => Math.min(w / 2, hbDeck(ctx, clamp(-ctx.L / 2, ctx.L / 2, z)) - 0.35);
+  for (const s of [-1, 1]) for (let z = z0 + 2; z < z1 - 2; z += 18) { const zb = Math.min(z1 - 2, z + 18); P.box('glass', 0.05, 1.25, zb - z - 0.3, s * (hwAt((z + zb) / 2) - 0.1), top + 0.65, (z + zb) / 2); }
+  const pz = pool ? (pool.z0 + pool.z1) / 2 : (z0 + z1) / 2, plen = Math.min(34, pool ? pool.z1 - pool.z0 : 20), pw = Math.min(B * 0.3, 13);
+  // pool, coaming, two hot tubs
+  P.box('paint', pw + 1.2, 0.8, plen + 1.2, 0, top + 0.25, pz, COL.white);
+  P.box('paint', pw, 0.8, plen, 0, top + 0.27, pz, COL.pool);
+  if (guests > 900) for (const s of [-1, 1]) { const hx = s * (pw / 2 + 4.2); P.cyl('paint', 1.7, 0.9, hx, top + 0.45, pz - plen / 2 + 2, COL.white, 1.7, 14); P.cyl('paint', 1.45, 0.1, hx, top + 0.92, pz - plen / 2 + 2, COL.pool, 1.45, 14); }
+  // loungers in rows either side of the pool (blue towels on every third)
+  let left = clamp(guests / 24, 16, 300);
+  const reach = Math.min(w / 2 - 1.2, pw / 2 + 11);
+  for (let z = pz - plen / 2 - 8; z < pz + plen / 2 + 12 && left > 0; z += 1.15) {
+    for (const s of [-1, 1]) for (let x = pw / 2 + 1.6; x < reach && left > 0; x += 1.5) {
+      if (x > pw / 2 + 2.6 && x < pw / 2 + 5.8 && Math.abs(z - (pz - plen / 2 + 2)) < 2.8) continue;   // hot tub
+      P.box('paint', 0.7, 0.34, 1.9, s * x, top + 0.17, z, left % 3 ? white : COL.blue); left--;
+    }
+  }
+  // pool bar: a roofed pavilion at the aft end, and the forward windbreak
+  const bz = pz + plen / 2 + 5;
+  P.box('paint', 7, 1.1, 2.6, 0, top + 0.55, bz, 0x6d4a2c); P.box('paint', 8, 0.25, 4.2, 0, top + 3.3, bz - 0.6, white);
+  for (const sx of [-3.4, 3.4]) P.rod('metal', sx, top, bz - 2.4, sx, top + 3.3, bz - 2.4, 0.1, COL.light, 5);
+  // slides: a tower with three spiral tubes beside the pool
+  if ((prof?.venues.slide || ex.has('water_park')) && hwAt(pz - plen / 2 - 6) > 7) {
+    const sz = pz - plen / 2 - 6, sx = Math.min(pw / 2 + 6.5, hwAt(sz) - 5.2), H = 11;   // the spiral (radius up to 4 m + the tube) stays inside the hull's beam
+    P.cyl('paint', 1.4, H, sx, top + H / 2, sz, COL.white, 1.4, 10);
+    P.box('paint', 3.2, 0.3, 3.2, sx, top + H, sz, COL.white);
+    const tubes = [COL.red, COL.yellow, COL.blue];
+    for (let k = 0; k < 3; k++) {
+      let prev = null;
+      for (let i = 0; i <= 18; i++) {
+        const a = (i / 18) * Math.PI * 3.2 + k * 2.1, r = 2.6 + (i / 18) * 1.4, q = [sx + Math.cos(a) * r, top + H - 0.6 - (i / 18) * (H - 1.4) - k * 0.15, sz + Math.sin(a) * r];
+        if (prev) P.rod('paint', prev[0], prev[1], prev[2], q[0], q[1], q[2], 0.5, tubes[k], 6);
+        prev = q;
+      }
+    }
+  }
+  // the class's sports kit forward of the pool: court, mini-golf, rope course, climbing wall at the funnel, aqua theatre aft
+  let fz = pz - plen / 2 - 22;
+  if (ex.has('sports_court') && fz - 20 > z0 + 4) { P.box('paint', 11, 0.12, 20, 0, top + 0.06, fz - 10, COL.blue); for (const dz of [-9.5, 9.5]) for (const sx of [-1.4, 1.4]) P.rod('metal', sx, top, fz - 10 + dz, sx, top + 3, fz - 10 + dz, 0.08, COL.light, 5); fz -= 24; }
+  if (ex.has('mini_golf') && fz - 14 > z0 + 4) { P.box('paint', 9, 0.14, 14, 0, top + 0.07, fz - 7, COL.green); for (let i = 0; i < 4; i++) P.cyl('paint', 0.6, 0.35, (i % 2 ? 2.5 : -2.5), top + 0.3, fz - 2 - i * 3, COL.white, 0.6, 8); fz -= 17; }
+  if (ex.has('rope_course') && fz - 14 > z0 + 4) { for (const [px, qz] of [[-5, 0], [5, 0], [-5, -12], [5, -12]]) P.rod('metal', px, top, fz + qz - 2, px, top + 9, fz + qz - 2, 0.15, COL.light, 6); for (const sx of [-5, 5]) P.beam('metal', sx, top + 9, fz - 2, sx, top + 9, fz - 14, 0.2, 0.2, COL.red); }
+  const fun = ga.funnel;
+  if (ex.has('climbing_wall') && fun && fun.z - 18 > pz + plen) { P.box('paint', 7, 9, 1.1, 0, top + 4.5, fun.z - 14, COL.grey); for (let i = 0; i < 8; i++) P.box('paint', 0.5, 0.4, 0.3, ((i * 37) % 7) - 3, top + 1 + (i % 4) * 2, fun.z - 14.7, i % 2 ? COL.orange : COL.yellow); }
+  if (ex.has('aqua_theatre') && z1 - 16 > pz + plen + 8) { P.cyl('paint', 7.5, 0.7, 0, top + 0.35, z1 - 10, COL.pool, 7.5, 18); P.cyl('paint', 8.2, 0.4, 0, top + 0.2, z1 - 10, COL.white, 8.2, 18); for (const a of [0.5, 1.2, 1.9, 2.6]) P.box('paint', 5, 0.3, 1.2, Math.cos(a * 2) * 0.2, top + 1.2 + a, z1 - 19 - a * 1.4, COL.white); }
+  // sun-deck lounge aft of the pool (under the funnel) and a crow's nest forward
+  const lw = Math.min(w * 0.5, 22);
+  if (fun && fun.z - 8 > pz + plen / 2 + 22) tierSolid(ctx, pz + plen / 2 + 20, fun.z - 8, lw, t.y + t.h, 2.7, BANDS.glass, BANDS.glass, 0);
+  if (guests > 1500 && z1 - z0 > 120) tierSolid(ctx, z0 + 6, z0 + 24, Math.min(w * 0.45, 18), t.y + t.h, 2.7, BANDS.glass, BANDS.glass, 0);
+  void nTiers;
 }
 /**
  * One superstructure tier as a solid that follows the deck outline (so a forward house never hangs over the bow flare):
@@ -603,7 +666,7 @@ function buildBridge(ctx) {
 // ------------------------------------------------------------------------------------------------ funnel
 function supportY(ctx, z) {
   const h = ctx.ga.house; let y = ctx.hf.deckAt(z);
-  if (h) for (const t of h.tiers) { const z0 = t.z0 ?? h.z0, z1 = t.z1 ?? h.z1; if (z >= z0 - 0.5 && z <= z1 + 0.5) y = Math.max(y, t.y + t.h); }
+  if (h) for (const t of h.tiers) { const z0 = t.z0 ?? h.z0, z1 = t.z1 ?? h.z1; if (z >= z0 - 0.5 && z <= z1 + 0.5) y = Math.max(y, t.use === 'lido' && ctx.ga.gen === 'cruise' ? t.y + 0.3 : t.y + t.h); }
   return y;
 }
 function buildFunnel(ctx) {
@@ -885,7 +948,9 @@ function boat(ctx, b) {
     const len = b.kind === 'rescue' ? 5 : b.big ? clamp(9, 16, ga.L * 0.045) : b.kind === 'tender' ? clamp(4, 10, ga.L * 0.08) : clamp(6, 9, ga.L * 0.05);
     const r = Math.min(b.big ? 1.8 : 9, len * (b.kind === 'rescue' ? 0.2 : 0.19)), col = b.kind === 'tender' ? (ga.gen === 'motor_yacht' ? 0xf2f2ee : 0xf2f2ee) : orange;
     if (b.garage) return;   // yacht tender garage: closed hatch only
-    const x = Math.sign(b.x || 0) * Math.min(Math.abs(b.x), ga.B / 2 - r * 1.1 - 0.15), z = clamp(-ga.L / 2 + len, ga.L / 2 - len / 2 - 0.3, b.z);
+    const out = ga.gen === 'cruise' && b.kind !== 'rescue' && b.x;   // cruise lifeboats and tenders hang in their davits at the hull's side, in the recess of the boat deck's house (buildHouse)
+    const z = clamp(-ga.L / 2 + len, ga.L / 2 - len / 2 - 0.3, b.z);
+    const x = Math.sign(b.x || 0) * (out ? Math.min(ga.B / 2, hbDeck(ctx, z)) - r - 0.1 : Math.min(Math.abs(b.x), ga.B / 2 - r * 1.1 - 0.15));
     P.capsule('paint', r, len - 2 * r, x, b.y, z, col, Math.PI / 2);
     if (b.kind !== 'rescue') P.box('paint', r * 1.4, r * 0.7, len * 0.6, x, b.y + r * 0.9, z, col);
     if (lod === 0 && b.kind !== 'tender' && x) for (const dz of [-len * 0.35, len * 0.35]) P.beam('metal', x - Math.sign(x) * 1.0, b.y - r, z + dz, x, b.y + r * 2.2, z + dz, 0.25, 0.25, COL.light);

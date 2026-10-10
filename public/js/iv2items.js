@@ -4,9 +4,13 @@
 // under 0.4 m have none); `shape` picks the renderer's geometry factory (public/js/iv2draw.js) when the id has no own.
 // Dimensions are Game rule ≈ typical marine outfitting.
 
-const I = (w, d, h, wall, front, shape, tiles, extra = {}) => Object.freeze({ w, d, h, wall, clear: Object.freeze({ front, side: extra.side ?? 0 }), solid: extra.solid ?? (h < 0.4 ? 'low' : true), tris: Object.freeze(extra.tris || [120, 12]), tiles: Object.freeze(tiles), shape, ...(extra.hot ? { hot: Object.freeze(extra.hot) } : {}), ...(extra.light ? { light: Object.freeze(extra.light) } : {}), ...(extra.emit ? { emit: Object.freeze(extra.emit) } : {}), ...(extra.sys ? { sys: Object.freeze(extra.sys) } : {}), ...(extra.over ? { over: true } : {}), ...(extra.mount ? { mount: extra.mount } : {}) });
+import { kindOfItem } from '../../shared/ships/cruisesat.js';
+const I = (w, d, h, wall, front, shape, tiles, extra = {}) => Object.freeze({ w, d, h, wall, clear: Object.freeze({ front, side: extra.side ?? 0 }), solid: extra.solid ?? (h < 0.4 ? 'low' : true), tris: Object.freeze(extra.tris || [120, 12]), tiles: Object.freeze(tiles), shape, ...(extra.hot ? { hot: Object.freeze(extra.hot) } : {}), ...(extra.light ? { light: Object.freeze(extra.light) } : {}), ...(extra.emit ? { emit: Object.freeze(extra.emit) } : {}), ...(extra.sys ? { sys: Object.freeze(extra.sys) } : {}), ...(extra.over ? { over: true } : {}), ...(extra.mount ? { mount: extra.mount } : {}), ...(extra.spots ? { spots: Object.freeze(extra.spots.map((q) => Object.freeze(q))) } : {}) });
 
-export const ITEMS = Object.freeze({
+// Crowd spots (public/js/iv2crowd.js): [kind, x, z, yaw] in the item frame (x along the width, z out of the wall, yaw 0 = facing +z).
+// kinds: sit, stand, bar (stands at a counter), lie, dance, swim, play (performer), work (staff behind a counter / at a station)
+const RING = (n, r, kind = 'sit', a0 = 0) => Array.from({ length: n }, (_, k) => { const a = a0 + (k / n) * Math.PI * 2, x = Math.sin(a) * r, z = Math.cos(a) * r; return [kind, Math.round(x * 100) / 100, Math.round(z * 100) / 100, Math.round(Math.atan2(-x, -z) * 100) / 100]; });
+const RAW = Object.freeze({
   // ---------------------------------------------------------------- berths & seating
   bunk: I(2.0, 0.9, 0.62, 'back', 0.7, 'bunk', ['wood_furn', 'bedding', 'fabric_blue'], { tris: [260, 12], hot: { kind: 'bunk', label: 'Rest in the bunk' } }),
   bunk2: I(2.0, 0.9, 1.75, 'back', 0.7, 'bunk2', ['wood_furn', 'bedding', 'fabric_blue'], { tris: [420, 12], hot: { kind: 'bunk', label: 'Rest in the bunk' } }),
@@ -180,7 +184,128 @@ export const ITEMS = Object.freeze({
   deck_sign: I(0.6, 0.03, 0.3, 'back', 0, 'artwork', ['sign_deck'], { tris: [12, 2], solid: false, mount: 1.75 }),
   first_aid_box: I(0.4, 0.15, 0.35, 'back', 0, 'sign_box', ['paint_green_sign'], { tris: [12, 2], solid: false, mount: 1.3 }),
   eyewash: I(0.3, 0.2, 0.4, 'back', 0, 'sign_box', ['paint_green_sign'], { tris: [12, 2], solid: false, mount: 1.2 }),
+  // ---------------------------------------------------------------- cruise ships (docs/CRUISE-CONTRACT.md §4)
+  // staterooms
+  bed_queen: I(2.0, 1.7, 0.62, 'back', 0.7, 'bed', ['veneer', 'bedding', 'fabric_grey'], { tris: [320, 12], hot: { kind: 'bunk', label: 'Rest in your stateroom' }, spots: [['lie', 0, 0.1, 0]] }),
+  bed_twin_pair: I(2.0, 2.0, 0.55, 'back', 0.7, 'bed', ['veneer', 'bedding', 'fabric_blue'], { tris: [300, 12], hot: { kind: 'bunk', label: 'Rest in your stateroom' } }),
+  sofa_bed: I(1.9, 0.85, 0.85, 'back', 0.6, 'sofa', ['fabric_grey', 'wood_furn'], { tris: [160, 12], spots: [['sit', -0.4, 0.45, 0], ['sit', 0.4, 0.45, 0]] }),
+  vanity: I(1.2, 0.5, 0.78, 'back', 0.8, 'desk', ['veneer', 'screen_off'], { tris: [150, 12] }),
+  minibar: I(0.6, 0.5, 0.8, 'back', 0.5, 'counter', ['veneer', 'stainless'], { tris: [60, 12] }),
+  balcony_set: I(1.2, 0.8, 0.8, null, 0.3, 'table_round', ['paint_white', 'metal_brushed'], { tris: [80, 12], spots: [['sit', 0, 0.55, 3.14], ['sit', 0, -0.55, 0]] }),
+  // dining
+  dining_set4: I(2.3, 2.3, 0.95, null, 0.3, 'dining_set', ['wood_furn', 'fabric_red'], { tris: [200, 12], spots: RING(4, 0.72) }),
+  dining_set2: I(1.7, 1.7, 0.95, null, 0.3, 'dining_set', ['wood_furn', 'fabric_blue'], { tris: [130, 12], spots: RING(2, 0.62, 'sit', 0) }),
+  dining_set6: I(2.8, 2.8, 0.95, null, 0.3, 'dining_set', ['veneer', 'fabric_red'], { tris: [280, 12], spots: RING(6, 0.95) }),
+  booth4: I(2.4, 1.9, 1.15, 'back', 0.5, 'booth', ['fabric_red', 'wood_furn'], { tris: [180, 12], spots: [['sit', -0.55, 0.0, 3.14], ['sit', 0.55, 0.0, 3.14], ['sit', -0.55, 0.9, 0], ['sit', 0.55, 0.9, 0]] }),
+  buffet_line: I(6.0, 1.3, 1.05, null, 1.0, 'buffet_line', ['stainless', 'veneer'], { tris: [260, 12], spots: [['work', -2, -0.9, 0], ['work', 1, -0.9, 0], ['stand', -2.5, 1.0, 3.14], ['stand', -1.5, 1.0, 3.14], ['stand', -0.5, 1.0, 3.14], ['stand', 0.5, 1.0, 3.14], ['stand', 1.5, 1.0, 3.14], ['stand', 2.5, 1.0, 3.14]] }),
+  salad_bar: I(3.0, 1.0, 1.0, null, 0.9, 'buffet_line', ['stainless', 'veneer'], { tris: [160, 12], spots: [['stand', -1, 0.9, 3.14], ['stand', 0.4, 0.9, 3.14], ['stand', 1.2, 0.9, 3.14]] }),
+  host_stand: I(0.8, 0.6, 1.1, null, 0.8, 'panel_small', ['veneer_dark', 'screen_ecdis'], { tris: [40, 8], spots: [['work', 0, 0.6, 3.14]] }),
+  // bars, lounges, clubs, casino
+  bar_island: I(5.0, 2.4, 1.1, null, 1.1, 'bar', ['veneer_dark', 'stone'], { tris: [200, 12], spots: [['work', -1.5, 0, 0], ['work', 1.5, 0, 0], ...[-2, -1, 0, 1, 2].map((x) => ['bar', x, 1.6, 3.14]), ...[-2, -1, 0, 1, 2].map((x) => ['bar', x, -1.6, 0])] }),
+  bar_stools: I(4.0, 0.5, 0.78, null, 0.1, 'stool_row', ['metal_brushed', 'leather'], { tris: [160, 12], spots: [-1.5, -0.5, 0.5, 1.5].map((x) => ['sit', x, 0, 0]) }),
+  high_table: I(1.5, 1.5, 1.05, null, 0.3, 'high_table', ['veneer_dark', 'metal_brushed'], { tris: [150, 12], spots: [['stand', 0.55, 0.0, -1.57], ['stand', -0.55, 0.0, 1.57]] }),
+  lounge_set: I(3.0, 2.6, 0.85, null, 0.4, 'lounge_set', ['fabric_blue', 'wood_furn'], { tris: [240, 12], spots: [['sit', -0.7, -0.9, 0], ['sit', 0.7, -0.9, 0], ['sit', -1.3, 0.2, 1.57], ['sit', 1.3, 0.2, -1.57], ['sit', 0, 1.0, 3.14]] }),
+  piano_bar: I(3.6, 3.6, 1.1, null, 1.1, 'piano_bar', ['veneer_dark', 'stone'], { tris: [320, 12], spots: [['play', 0, 0, 0], ...RING(6, 1.9, 'bar')] }),
+  dance_floor: I(6.0, 6.0, 0.03, null, 0, 'dance_floor', ['light', 'rubber_black'], { tris: [60, 4], solid: 'low', spots: [['dance', -1.5, -1.5, 0.4], ['dance', 1.5, -1.0, 2.2], ['dance', -1, 1.5, 4.0], ['dance', 1.5, 1.6, 1.2], ['dance', 0, 0, 3.0], ['dance', -2.2, 0.3, 5.2]] }),
+  dj_booth: I(2.6, 1.1, 1.15, 'back', 1.0, 'console', ['console', 'screen_ams', 'rubber_black'], { tris: [260, 12], spots: [['play', 0, 0.8, 0]] }),
+  band_stage: I(7.0, 3.5, 0.45, 'back', 1.2, 'stage', ['veneer_dark', 'fabric_red'], { tris: [100, 12], spots: [['play', -2, 0.2, 0], ['play', 0, 0.2, 0], ['play', 2, 0.3, 0]] }),
+  piano: I(1.6, 1.4, 1.0, null, 0.9, 'piano', ['leather', 'metal_brushed'], { tris: [90, 12], spots: [['play', 0, 0.9, 3.14]] }),
+  roulette: I(2.6, 1.6, 0.9, null, 0.9, 'roulette', ['felt', 'veneer_dark'], { tris: [120, 12], spots: [['work', 0, -0.2, 0], ['stand', -0.9, 1.0, 3.14], ['stand', 0.2, 1.0, 3.14], ['stand', 1.0, 0.9, 3.14]] }),
+  blackjack: I(2.4, 1.5, 0.9, null, 0.9, 'blackjack', ['felt', 'veneer_dark'], { tris: [110, 12], spots: [['work', 0, -0.3, 0], ['sit', -0.8, 0.95, 3.14], ['sit', 0, 1.05, 3.14], ['sit', 0.8, 0.95, 3.14]] }),
+  poker_table: I(2.4, 1.6, 0.8, null, 0.9, 'blackjack', ['felt', 'veneer_dark'], { tris: [110, 12], spots: [['work', 0, -0.4, 0], ['sit', -0.9, 0.7, 3.14], ['sit', 0.9, 0.7, 3.14], ['sit', -1.2, -0.3, 1.57], ['sit', 1.2, -0.3, -1.57]] }),
+  baccarat_table: I(2.6, 1.6, 0.85, null, 0.9, 'blackjack', ['felt', 'veneer_dark'], { tris: [110, 12], spots: [['work', 0, -0.3, 0], ['sit', -0.9, 0.95, 3.14], ['sit', 0, 1.05, 3.14], ['sit', 0.9, 0.95, 3.14]] }),
+  slot_island: I(3.2, 1.8, 1.6, null, 1.0, 'slots', ['console', 'screen_ecdis'], { tris: [260, 12], spots: [-1.1, 0, 1.1].map((x) => ['sit', x, 1.15, 3.14]).concat([-1.1, 0, 1.1].map((x) => ['sit', x, -1.15, 0])) }),
+  cashier_cage: I(3.4, 0.9, 1.5, 'back', 1.0, 'cage', ['veneer_dark', 'metal_brushed'], { tris: [100, 12], spots: [['work', 0, -0.1, 0], ['stand', 0.2, 1.1, 3.14]] }),
+  // theatre and cinema (rows are as wide as `w`: seats every 0.55 m)
+  theatre_row: I(6.6, 0.95, 0.95, null, 0.1, 'seat_row', ['fabric_red', 'rubber_black'], { tris: [160, 12] }),
+  cinema_row: I(5.5, 1.3, 1.05, null, 0.1, 'seat_row', ['fabric_blue', 'rubber_black'], { tris: [160, 12] }),
+  theatre_balcony: I(26, 8, 0.5, null, 0, 'balcony_deck', ['fabric_red', 'veneer_dark'], { tris: [220, 12], solid: false, over: true, mount: 3.2 }),
+  stage_rig: I(20, 1.0, 0.3, null, 0, 'light_rig', ['metal_brushed', 'light'], { tris: [160, 8], solid: false, over: true, mount: 5.2 }),
+  cinema_screen: I(9, 0.3, 4.2, 'back', 0, 'screen_wall', ['screen_off', 'rubber_black'], { tris: [30, 4], solid: false }),
+  // shops, street, atrium
+  shop_wall: I(2.4, 0.5, 2.2, 'back', 0.8, 'shelves', ['laminate', 'veneer'], { tris: [200, 12] }),
+  display_case: I(1.4, 0.6, 1.05, null, 0.7, 'case', ['veneer_dark', 'glass_tile'], { tris: [100, 12] }),
+  display_table: I(1.6, 1.0, 0.85, null, 0.8, 'table', ['veneer', 'cardboard'], { tris: [80, 12] }),
+  street_lamp: I(0.35, 0.35, 3.2, null, 0.2, 'street_lamp', ['metal_brushed', 'light'], { tris: [70, 8], light: { kind: 'panel', y: 3.0, lm: 500 } }),
+  bench_pax: I(1.8, 0.6, 0.85, null, 0.5, 'bench_pax', ['wood_furn', 'metal_brushed'], { tris: [90, 12], spots: [['sit', -0.5, 0.1, 0], ['sit', 0.5, 0.1, 0]] }),
+  kiosk: I(2.2, 1.6, 2.4, null, 0.8, 'kiosk', ['veneer', 'stainless'], { tris: [200, 12], spots: [['work', 0, 0, 3.14], ['stand', 0, 1.3, 3.14]] }),
+  hanging_sign: I(2.2, 0.1, 0.6, 'back', 0, 'artwork', ['sign_deck'], { tris: [12, 2], solid: false, mount: 2.7 }),
+  glass_lift: I(2.4, 2.4, 9.8, null, 1.0, 'glass_lift', ['metal_brushed', 'glass_tile'], { tris: [220, 12], spots: [['stand', 0, 1.6, 3.14]] }),
+  grand_stair: I(5.0, 6.0, 3.3, null, 0.6, 'grand_stair', ['stone', 'veneer_dark'], { tris: [420, 12], solid: true }),
+  chandelier: I(3.0, 3.0, 2.6, null, 0, 'chandelier', ['metal_brushed', 'light'], { tris: [200, 8], solid: false, over: true, mount: 3.0, light: { kind: 'panel', y: 6.5, lm: 900 } }),
+  atrium_balcony: I(10, 1.1, 1.0, null, 0, 'balcony_front', ['veneer_dark', 'glass_tile'], { tris: [60, 4], solid: false, over: true, mount: 3.3 }),
+  sculpture: I(1.8, 1.8, 4.5, null, 0.8, 'sculpture', ['metal_brushed', 'paint_blue'], { tris: [120, 12] }),
+  fountain: I(3.0, 3.0, 1.0, null, 0.8, 'fountain', ['stone', 'paint_lightblue'], { tris: [180, 12] }),
+  palm: I(1.2, 1.2, 3.4, null, 0.4, 'palm', ['leaf', 'paint_white'], { tris: [100, 8] }),
+  info_screen: I(1.8, 0.15, 1.1, 'back', 0, 'tv', ['screen_ecdis', 'rubber_black'], { tris: [24, 4], solid: false, mount: 1.4 }),
+  queue_posts: I(3.0, 0.3, 1.0, null, 0.3, 'post_rope', ['metal_brushed', 'fabric_red'], { tris: [60, 8], solid: 'low', spots: [['stand', -1, 0.8, 3.14], ['stand', 0, 0.8, 3.14], ['stand', 1, 0.8, 3.14]] }),
+  reception_long: I(6.0, 1.0, 1.1, null, 1.0, 'bar', ['veneer_dark', 'stone'], { tris: [160, 12], spots: [['work', -2, -0.7, 0], ['work', 0, -0.7, 0], ['work', 2, -0.7, 0], ['stand', -2, 0.9, 3.14], ['stand', 0.3, 0.9, 3.14]] }),
+  // games, library, kids, art
+  card_set: I(1.9, 1.9, 0.78, null, 0.3, 'dining_set', ['felt', 'fabric_blue'], { tris: [190, 12], spots: RING(4, 0.7) }),
+  billiard: I(2.9, 1.6, 0.85, null, 1.0, 'blackjack', ['felt', 'veneer_dark'], { tris: [120, 12], spots: [['stand', -1.0, 1.1, 3.14], ['stand', 1.0, -1.1, 0]] }),
+  arcade_row: I(3.0, 0.9, 1.8, 'back', 0.9, 'slots', ['console', 'screen_radar'], { tris: [220, 12], spots: [-1, 0, 1].map((x) => ['stand', x, 0.8, 3.14]) }),
+  air_hockey: I(2.2, 1.1, 0.85, null, 0.9, 'table', ['paint_blue', 'rubber_black'], { tris: [60, 12], spots: [['stand', 0, 0.9, 3.14], ['stand', 0, -0.9, 0]] }),
+  reading_table: I(2.2, 1.1, 0.76, null, 0.7, 'dining_set', ['veneer', 'fabric_blue'], { tris: [200, 12], spots: RING(4, 0.75) }),
+  kids_table: I(1.6, 1.1, 0.5, null, 0.4, 'dining_set', ['paint_yellow', 'paint_blue'], { tris: [150, 12], spots: RING(4, 0.55) }),
+  ball_pit: I(2.6, 2.6, 0.5, null, 0.5, 'play', ['paint_blue', 'paint_red'], { tris: [80, 8], spots: [['sit', 0.4, 0.4, 0.5], ['sit', -0.6, 0.1, 2.5]] }),
+  art_plinth: I(0.7, 0.7, 1.15, null, 0.6, 'plinth', ['stone', 'metal_brushed'], { tris: [40, 8] }),
+  art_big: I(2.6, 0.06, 1.7, 'back', 0, 'artwork', ['art'], { tris: [12, 2], solid: false, mount: 0.9 }),
+  // spa and fitness
+  sauna: I(2.4, 2.4, 2.3, null, 0.8, 'sauna', ['veneer', 'paint_brown'], { tris: [120, 12] }),
+  thermal_pool: I(3.6, 3.0, 0.6, null, 0.8, 'pool', ['tile_wet', 'paint_lightblue'], { tris: [100, 12], spots: [['swim', -0.6, 0, 0], ['swim', 0.7, 0.4, 2]] }),
+  relax_lounger: I(0.8, 1.9, 0.45, null, 0.4, 'lounger', ['paint_white', 'fabric_grey'], { tris: [60, 8], spots: [['lie', 0, 0, 0]] }),
+  yoga_mat: I(2.0, 1.2, 0.03, null, 0, 'mat', ['fabric_blue'], { tris: [12, 2], solid: 'low', spots: [['lie', 0, 0, 0.4]] }),
+  rack_dumbbell: I(2.0, 0.6, 1.0, 'back', 0.7, 'shelves', ['rubber_black', 'metal_brushed'], { tris: [120, 12] }),
+  // crew and service
+  galley_line: I(4.0, 1.0, 0.95, null, 1.0, 'counter', ['stainless'], { tris: [100, 12], spots: [['work', -1.2, 0.9, 3.14], ['work', 1.2, 0.9, 3.14]] }),
+  prep_table: I(2.4, 1.0, 0.92, null, 0.9, 'counter', ['stainless', 'metal_brushed'], { tris: [80, 12], spots: [['work', -0.6, 0.8, 3.14], ['work', 0.6, -0.8, 0]] }),
+  kitchen_island: I(5.0, 2.2, 0.92, null, 1.0, 'counter', ['stainless', 'metal_brushed'], { tris: [160, 12], spots: [['work', -1.5, 1.4, 3.14], ['work', 1.5, -1.4, 0], ['work', 0, 1.4, 3.14]] }),
+  oven_bank: I(3.0, 1.0, 2.0, 'back', 1.0, 'oven', ['stainless', 'screen_off'], { tris: [200, 12], emit: { kind: 'galley_hood', level: 0.6 } }),
+  dish_conveyor: I(3.4, 1.0, 1.9, 'back', 1.0, 'dishwasher', ['stainless'], { tris: [160, 12], emit: { kind: 'galley_hood', level: 0.5 }, spots: [['work', 0, 0.9, 3.14]] }),
+  pallet_stack: I(1.2, 1.0, 1.5, null, 0.7, 'crates', ['cardboard', 'wood_furn'], { tris: [80, 12] }),
+  trolley: I(0.7, 1.1, 1.2, null, 0.5, 'shelves', ['metal_brushed', 'fabric_grey'], { tris: [80, 12] }),
+  bin_big: I(1.0, 0.8, 1.2, 'back', 0.6, 'drums', ['paint_green', 'paint_grey'], { tris: [60, 12] }),
+  compactor: I(2.2, 1.4, 1.8, 'back', 0.9, 'machine', ['paint_grey', 'paint_yellow'], { tris: [100, 12] }),
+  laundry_press: I(2.6, 1.2, 1.4, 'back', 0.9, 'machine', ['paint_white', 'metal_brushed'], { tris: [120, 12], spots: [['work', 0, 1.0, 3.14]] }),
+  crew_table: I(2.4, 1.0, 0.76, null, 0.6, 'dining_set', ['laminate_cream', 'metal_brushed'], { tris: [210, 12], spots: [['sit', -0.8, 0.7, 3.14], ['sit', 0.8, 0.7, 3.14], ['sit', -0.8, -0.7, 0], ['sit', 0.8, -0.7, 0]] }),
+  // open decks: pools, loungers, slides, sports
+  pool_water: I(12, 6, 0.5, null, 0.6, 'pool', ['paint_white', 'paint_lightblue'], { tris: [90, 10], spots: [['swim', -3, 0, 0.5], ['swim', 0.5, 1.2, 2.0], ['swim', 3, -1, 4.0], ['swim', -1, -1.4, 1.0], ['swim', 4, 1, 3.0]] }),
+  hot_tub: I(2.8, 2.8, 0.9, null, 0.7, 'hot_tub', ['paint_white', 'paint_lightblue'], { tris: [140, 10], spots: [['swim', 0.6, 0, 1.2], ['swim', -0.6, 0.4, 4.0], ['swim', 0, -0.7, 2.5]] }),
+  lounger_pair: I(2.2, 2.0, 0.45, null, 0.3, 'lounger_pair', ['paint_white', 'fabric_blue'], { tris: [130, 10], spots: [['lie', -0.55, 0, 0], ['lie', 0.55, 0, 0]] }),
+  parasol: I(2.6, 2.6, 2.5, null, 0, 'parasol', ['paint_white', 'metal_brushed'], { tris: [60, 8], solid: false, over: true, mount: 0 }),
+  pool_bar: I(4.4, 2.2, 2.6, 'back', 1.0, 'pool_bar', ['veneer', 'stone'], { tris: [200, 12], spots: [['work', 0, -0.4, 0], ['bar', -1.4, 1.1, 3.14], ['bar', 0, 1.1, 3.14], ['bar', 1.4, 1.1, 3.14]] }),
+  slide_tower: I(3.6, 3.6, 8.5, null, 1.0, 'slide_tower', ['paint_red', 'paint_yellow'], { tris: [260, 12], spots: [['stand', 0, 2.1, 3.14], ['stand', 0.6, 2.4, 3.14]] }),
+  slide_run: I(3.0, 14, 8.0, null, 0, 'slide_run', ['paint_yellow', 'paint_blue'], { tris: [200, 8], solid: false, over: true, mount: 0 }),
+  sports_court: I(15, 8, 0.03, null, 0, 'court', ['paint_blue', 'paint_white'], { tris: [60, 4], solid: 'low', spots: [['dance', -3, -1, 0.3], ['dance', 3, 1, 3.0], ['dance', 0, 2, 1.5], ['dance', -4, 2, 4.4]] }),
+  hoop: I(1.0, 0.8, 3.4, 'back', 0, 'hoop', ['metal_brushed', 'paint_orange'], { tris: [50, 6], solid: 'low' }),
+  mini_golf: I(6.0, 2.4, 0.08, null, 0, 'green', ['leaf', 'paint_white'], { tris: [60, 6], solid: 'low', spots: [['stand', -1.5, 0.3, 1.2], ['stand', 1.5, -0.2, 4.2]] }),
+  climb_wall: I(7.0, 0.8, 9.0, 'back', 1.0, 'climb_wall', ['paint_grey', 'paint_orange'], { tris: [150, 12], spots: [['stand', -1, 1.2, 3.14], ['stand', 1.5, 1.4, 3.14]] }),
+  rope_course: I(10, 6, 4.4, null, 0.5, 'rope_course', ['metal_brushed', 'rope'], { tris: [220, 10], solid: false, over: true }),
+  rope_post: I(0.4, 0.4, 4.4, null, 0.2, 'post', ['metal_brushed'], { tris: [16, 4] }),
+  rink_ice: I(24, 14, 0.06, null, 0, 'rink', ['tile_wet', 'paint_lightblue'], { tris: [90, 6], solid: false, spots: [['dance', -6, -2, 0.5], ['dance', 4, 3, 2.5], ['dance', -2, 4, 4.2], ['dance', 8, -3, 1.0], ['dance', 0, 0, 3.0]] }),
+  movie_screen: I(7.5, 0.4, 4.0, 'back', 0, 'screen_wall', ['screen_off', 'rubber_black'], { tris: [30, 4], solid: false }),
+  sun_dome: I(8.0, 8.0, 3.2, null, 0, 'dome', ['glass_tile', 'metal_brushed'], { tris: [160, 8], solid: false, over: true }),
+  surf_pool: I(10, 5, 0.8, null, 0.5, 'pool', ['paint_white', 'paint_lightblue'], { tris: [90, 10], spots: [['swim', 0, 0, 0.5], ['swim', 2.5, 1, 2.0]] }),
+  zip_cable: I(30, 0.2, 6.0, null, 0, 'zip', ['metal_brushed', 'rope'], { tris: [40, 4], solid: false, over: true, mount: 0 }),
+  desk_set: I(1.6, 1.5, 1.0, 'back', 0.3, 'desk_set', ['laminate_grey', 'screen_ecdis'], { tris: [260, 12], spots: [['sit', 0, 0.55, 3.14]] }),
+  jog_stripe: I(30, 1.6, 0.02, null, 0, 'mat', ['paint_red'], { tris: [12, 2], solid: 'low' }),
 });
+
+
+// Cruise venues the captain can use (docs/CRUISE-CONTRACT.md §7): these items carry a hotspot `v:<kind>` (shared/ships/cruisesat.js ITEM_KIND), which
+// iv2Interact opens as a small panel (public/js/iv2games.js, loaded on first use). Items placed in the hundreds (display cases, dining sets, loungers)
+// carry none; the kits give a few loungers one.
+const HOT_LABEL = { roulette: 'Play roulette', blackjack: 'Play blackjack', poker: 'Play poker', slots: 'Play the slot machine', baccarat: 'Play baccarat', bar: 'Order a drink', dine: 'Dine here', buffet: 'Visit the buffet', show: 'Watch a show',
+  cinema: 'Watch a film', lounger: 'Relax on a lounger', spa: 'Spa and sauna', gym: 'Exercise', slide: 'Ride the water slide', hottub: 'Soak in the hot tub', swim: 'Swim in the pool', golf: 'Play mini-golf', climb: 'Climb the wall', rope: 'Rope course',
+  rink: 'Skate on the ice rink', arcade: 'Play arcade games', library: 'Read in the library', art: 'Look at the art', shop: 'Browse the shop', guest: 'Guest services: the guest rating', kids: "Visit the kids' club", surf: 'Surf simulator', zip: 'Zip line', court: 'Sports court', cage: 'Casino cashier' };
+const HOT_ITEMS = ['roulette', 'blackjack', 'poker_table', 'baccarat_table', 'slot_island', 'bar_island', 'piano_bar', 'pool_bar', 'host_stand', 'buffet_line', 'band_stage', 'cinema_screen', 'relax_lounger', 'sauna', 'yoga_mat', 'slide_tower', 'hot_tub', 'pool_water',
+  'mini_golf', 'climb_wall', 'rope_course', 'rink_ice', 'arcade_row', 'air_hockey', 'reading_table', 'kiosk', 'reception_long', 'ball_pit', 'surf_pool', 'zip_cable', 'sports_court', 'cashier_cage', 'art_plinth'];
+/** The hotspot of a venue kind for items the kits place sparingly (`opts.hot` of K.put). */
+export const venueHot = (kind) => ({ kind: `v:${kind}`, label: `${HOT_LABEL[kind] || kind} (E)` });
+export const ITEMS = Object.freeze(Object.fromEntries(Object.entries(RAW).map(([id, it]) => {
+  const k = HOT_ITEMS.includes(id) ? kindOfItem(id) : null;
+  return [id, k && !it.hot ? Object.freeze({ ...it, hot: Object.freeze(venueHot(k)) }) : it];
+})));
 
 /** Item ids grouped by what they are for (kits pick from these lists). */
 export const GROUPS = Object.freeze({

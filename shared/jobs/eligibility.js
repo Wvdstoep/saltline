@@ -58,7 +58,9 @@ function freeOf(v, unit) {
 export function portsOf(job) {
   const out = new Set();
   if (isRunnerJob(job)) {
-    for (const s of job.steps) if (['load', 'discharge', 'board', 'land'].includes(s.k) && typeof s.at === 'string') out.add(s.at);
+    // a cruise works every port it calls at (length, draught, cruise terminal, ice, politics apply to each call)
+    const kinds = job.type === 'cruise' ? ['load', 'discharge', 'board', 'land', 'sail', 'work'] : ['load', 'discharge', 'board', 'land'];
+    for (const s of job.steps) if (kinds.includes(s.k) && typeof s.at === 'string') out.add(s.at);
     if (!out.size && typeof job.from === 'string') out.add(job.from);
   } else {
     if (job?.from) out.add(job.from);
@@ -163,6 +165,9 @@ export function canDo(job, vessel, ctx = {}) {
     const f = facilityGap(job, cls, h, opt);
     if (f) all.push(mk('facility', { port: shortName(h), facility: f }));
   }
+
+  // 6b. a cruise ship over 250 m needs a cruise terminal at every call (smaller ships tender or use a commercial quay)
+  if (job.type === 'cruise' && L > 250) for (const h of ports) if (!tagsOf(h).has('cruise')) all.push(mk('facility', { port: shortName(h), facility: 'cruise' }));
 
   // 7. seasonal ice at every port worked
   for (const h of ports) {

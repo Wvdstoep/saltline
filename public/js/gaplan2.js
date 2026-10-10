@@ -47,7 +47,7 @@ function buildV2(gaOrId, opts) {
   let P = null, err = null;
   pending = (gp) => { P = gp; try { transform(gp, gp.ga, opts); } catch (e) { err = e; } };
   let plan;
-  try { plan = planFromGA(gaOrId, { ...opts, v: 1 }); } finally { pending = null; }
+  try { plan = planFromGA(gaOrId, { ...opts, v: 1, iv2: true }); } finally { pending = null; }
   if (err) { if (globalThis.__iv2strict) throw err; console.warn('[iv2] v2 pass failed, v1 plan used', err); return planFromGA(gaOrId, { ...opts, v: 1 }); }
   if (!plan || !P) return plan;
   return decorate(plan, P);
@@ -207,6 +207,13 @@ function bridgeKit(P, ga, br, ctx) {
     P.zone = wg.zone;
     const WK = new Placer(P, wg, ctx);
     if (wg.open) WK.freeAt('pelorus', (wg.x0 + wg.x1) / 2 + (wid === 'wing-stbd' ? 0.6 : -0.6), wg.z0 + 0.6, { maxTries: 40 });
+    else {   // an enclosed wing (cruise ships): berthing console, a chair, binoculars, lifebuoy, extinguisher
+      const cz = (wg.z0 + wg.z1) / 2;
+      WK.wall('wing_console', { w: 0.9, walls: ['n', 's'], at: 'center', avoidWindows: false, front: 0.6 });
+      WK.freeAt('wing_console', (wg.x0 + wg.x1) / 2, cz, { maxTries: 60 });
+      WK.wall('pilot_chair', { walls: ['s', 'n'], at: 'start', avoidWindows: false, front: 0.2 });
+      for (const id of ['binocular_rack', 'lifebuoy', 'fire_ext', 'lifejacket_box', 'signal_lamp', 'flag_locker']) WK.wall(id, { walls: ['e', 'w', 's', 'n'] });
+    }
   }
 }
 
@@ -235,6 +242,8 @@ function dressCirculation(P, r, ctx) {
   if (len > 5) K.wall('notice_board', { walls: long });
   if (r.space === 'stair' || r.space === 'entrance') { K.wall('fire_plan', { walls: ['n', 's', 'e', 'w'] }); K.wall('muster_board', { walls: ['n', 's', 'e', 'w'] }); }
   if (r.space === 'entrance' || r.space === 'stair') for (const d of (r.doorList || []).filter((q) => q.kind === 'ext' || q.kind === 'door' || (r.space === 'stair' && q.kind === 'open'))) { const ns = d.side === 'n' || d.side === 's'; P.prop('k2', { item: 'exit_sign', x: r2(ns ? d.at : (d.side === 'w' ? r.x0 + 0.06 : r.x1 - 0.06)), y: r2(r.y + Math.min(2.08, r.h - 0.12)), z: r2(ns ? (d.side === 'n' ? r.z0 + 0.06 : r.z1 - 0.06) : d.at), rotY: { n: 0, s: Math.PI, w: Math.PI / 2, e: -Math.PI / 2 }[d.side], w: 0.35, d: 0.05, h: 0.15, room: r.id, var: 0 }); }
+  // a landing on a neighbour deck (per-deck cruise plans) has no door in this plan: its sign hangs over the stairwell wall
+  if (r.space === 'stair' && !P.props.some((p) => p.t === 'k2' && p.item === 'exit_sign' && p.room === r.id)) P.prop('k2', { item: 'exit_sign', x: r2((r.x0 + r.x1) / 2), y: r2(r.y + Math.min(2.08, r.h - 0.12)), z: r2(r.z0 + 0.06), rotY: 0, w: 0.35, d: 0.05, h: 0.15, room: r.id, var: 0 });
 }
 
 // ------------------------------------------------------------------------------------------------ transform
@@ -251,14 +260,14 @@ function transform(P, ga, opts) {
   ctx.galleyWall = (r) => touchWall(r, ['galley', 'pantry']);
   ctx.messWall = (r) => touchWall(r, ['mess']);
   // 3. furnish: house spaces, ER enclosed rooms, the bridge, then the ER platforms
-  const furnishable = P.rooms.filter((r) => r.space && !r.open && r.walk !== false && SCALE[r.space]?.kit && !['er_platform', 'bridge', 'corridor', 'stair', 'entrance', 'cargo', 'open_deck'].includes(r.space));
+  const furnishable = P.rooms.filter((r) => r.space && (!r.open || SCALE[r.space]?.openKit) && r.walk !== false && SCALE[r.space]?.kit && !['er_platform', 'bridge', 'corridor', 'corridor_pax', 'crew_alley', 'stair', 'entrance', 'cargo', 'open_deck'].includes(r.space));
   // v1 furniture of the accommodation goes (the kits replace it); engine-room rooms keep theirs and get more
   clearRooms(P, furnishable.filter((r) => String(r.zone).startsWith('house') && !r.v2cleared));
   for (const r of furnishable) { P.zone = r.zone; try { furnishV2(P, r, ctx); } catch (e) { if (globalThis.__iv2strict) throw e; } }
   const br = ga.bridge ? P.byId(ga.bridge.room) : null;
   if (br) bridgeKit(P, ga, br, ctx);
   packEngineRoom(P, ga, params, ctx);
-  for (const r of P.rooms) if (['corridor', 'stair', 'entrance'].includes(r.space) && !r.open && r.walk !== false) dressCirculation(P, r, ctx);
+  for (const r of P.rooms) if (['corridor', 'corridor_pax', 'crew_alley', 'stair', 'entrance'].includes(r.space) && !r.open && r.walk !== false) dressCirculation(P, r, ctx);
   // 4. runs in unlined spaces, light fixtures, sound emitters
   ctx.propsByRoom = new Map(); for (const p of P.props) if (p.t === 'k2' && p.room) { let l = ctx.propsByRoom.get(p.room); if (!l) { l = []; ctx.propsByRoom.set(p.room, l); } l.push(p); }
   for (const r of P.rooms) {

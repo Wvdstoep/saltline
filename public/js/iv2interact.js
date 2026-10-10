@@ -12,13 +12,19 @@
 // Pure state machines (no DOM) except the panel, so the node tests drive them with a fake app.
 import { openEnginePanel, closeEnginePanel, panelOpen } from './iv2panel.js';
 
+// cruise venues (docs/CRUISE-CONTRACT.md §7): the panels and mini games live in iv2games.js, fetched when the first one is used
+let G = null;
+export const gamesOpen = () => !!(G && G.isOpen());
+function openVenue(I, h) { (G ? Promise.resolve(G) : import('./iv2games.js').then((m) => (G = m))).then((m) => m.openVenue(I, h)).catch((e) => { console.warn('[iv2games]', e); ev(I, 'The venue is closed.', 'warn'); }); }
+
 const CLIMB_S = 1.5;
 const MOVE = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 const ev = (I, text, kind = 'info') => I.app?.hud?.event?.({ kind, text });
 
 export function iv2Interact(I, h) {
   const app = I.app || {};
-  if (I.peek || panelOpen()) { iv2Leave(I); return true; }
+  if (I.peek || panelOpen() || gamesOpen()) { iv2Leave(I); return true; }
+  if (typeof h.kind === 'string' && h.kind.startsWith('v:')) { openVenue(I, h); return true; }
   switch (h.kind) {
     case 'telegraph': {
       const p = { x: h.x, y: h.y, z: h.z };
@@ -73,6 +79,7 @@ export function iv2Interact(I, h) {
 /** Leave a station / peek / panel (E or Esc while in one). True when something was left. */
 export function iv2Leave(I) {
   if (panelOpen()) { closeEnginePanel(); return true; }
+  if (gamesOpen()) { G.close(); return true; }
   if (I.peek) { const b = I.peek.back; I.peek = null; I.placeAt?.({ x: b.x, y: b.y, z: b.z, yaw: b.yaw }); I.pitch = b.pitch; return true; }
   return false;
 }

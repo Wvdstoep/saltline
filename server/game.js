@@ -55,6 +55,8 @@ import { airPublic, airDraftNow, ballastStep, canFold, profileOf, FOLD_TIME, reg
 import { waterLevelAt } from '../shared/waterlevel.js';
 import { WT, WT_NAVIGABLE } from '../shared/wtformat.js';
 import LEVELS_NL from './waterworks/levels-nl.json' with { type: 'json' };
+import { Casino } from './casino.js';                                                     // cruise casino (docs/CRUISE-CONTRACT.md §7)
+import { Venues, guestFor } from './venues.js';
 import { createRadio } from './vhf.js';                                                   // VHF radio (docs/BRIDGES-LOCKS-VHF-CONTRACT.md §6)
 import { createMinorHarbours, diskOverlayReader, tileDepthSampler, squaresUnder } from './minorharbours.js';
 import { mhNearBerth, mhDock } from './mhmoor.js';                                  // inland harbours: boxes / visitor berths (guidance + mooring)   // inland harbours (§7)
@@ -146,6 +148,7 @@ export class Game {
     this.rigLimits = new WeakMap();                  // sailing: per-person rig command rate limit + rig_event times (never saved)
     this.rigViews = new WeakMap();                   // sailing: the rv each online skipper last sent (never saved)
     this.fleet = new Fleet(this);                   // v6 fleet: vessels, office, captains (before loadState)
+    this.casino = new Casino(this); this.venues = new Venues(this);   // cruise ships: tables and venues the captain can use
     this.jobsx = new JobsX({                                                   // YARD lane D: runner for JOB_GEN 8 families
       now: () => this.simTime, harborById,
       harborName: (id) => harborById(id)?.name || this.mh?.get?.(id)?.name || null,   // minor harbours ('mh:…') too
@@ -158,6 +161,7 @@ export class Game {
       heelDeg: (a) => this.rigFor?.(a)?.heel ?? 0,
       offHire: (a) => (a.cond ?? 100) < 30,
       damage: (a, pts) => { a.cond = Math.max(0, (a.cond ?? 100) - pts); },
+      guest: (a) => guestFor(this, a),                // cruise pay: the guest rating of the ship (shared/ships/cruisesat.js)
     });
     setGen8(jobtimeHooks(() => ({ harborById, simTime: this.simTime })));
     this.yard = new Yard(this);                     // SHIPYARD: orders, stock, second-hand market (before loadState)
@@ -489,7 +493,7 @@ export class Game {
       ...(this.ww ? this.wwYou(p) : {}),             // BRIDGES & LOCKS: air, water, lockStay, nextObjects
       berth: p.berth || null, assist: p.assist ? { harbor: p.assist.harbor, berthId: p.assist.berthId, berthName: p.assist.berthName, until: p.assist.until, from: p.assist.from, to: p.assist.to, ...assistExtra(this, p) } : null,
       nearBerth: this.nearBerthFor(p), serviceDue: p.serviceDue, serviceMul: round2(serviceWearMul(p.serviceDue, this.simTime)),
-      stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
+      guest: guestFor(this, p), stats: p.stats, capacity: shipCapacity(p.ship.cls), pax: SHIP_CLASSES[p.ship.cls].pax,
       warp: this.warpOf(p), warpLimit: this.warpLimit(p),
       shipTime: round1(p.shipTime), shipRate: this.shipRate(p), // V6 item 5: the ship's clock (s) and how fast it runs now
       warpRun: p.warpRun ? { shipStart: round1(p.warpRun.shipStart), worldStart: round1(p.warpRun.worldStart) } : null,
@@ -791,6 +795,8 @@ export class Game {
         case 'convoy_invite': return this.convoyInvite(p, m.targetId);
         case 'convoy_accept': return this.convoyAccept(p, m.convoyId);
         case 'convoy_leave': return this.convoyLeave(p);
+        case 'casino': return this.casino.onAction(p, m);
+        case 'venue': return this.venues.onAction(p, m);
         case 'vhf_set': case 'vhf_tx': case 'dsc': return this.radio ? this.radio.onAction(p, m) : this.event(p, 'warn', `Unknown action ${a}`);   // VHF (§8.2)
         case 'rename': p.name = cleanName(m.name) || p.name; this.sendYou(p); this.broadcast({ t: 'rename', id: p.id, name: p.name }); return;
         case 'debug_sea': {   // SALTLINE_DEBUG=1 only: force this skipper's reported sea state to Beaufort 0..12 (null = real weather)

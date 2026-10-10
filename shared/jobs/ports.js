@@ -22,7 +22,10 @@ export const TAG_SEEDS = {
   lpg: ['ras_tanura', 'ras_laffan', 'galveston', 'fujairah', 'ulsan'],
   chem: ['rotterdam', 'antwerp', 'galveston', 'singapore', 'ulsan', 'ningbo'],
   cars: ['zeebrugge', 'bremerhaven', 'southampton', 'antwerp', 'nagoya', 'ulsan', 'baltimore', 'los_angeles'],
-  cruise: ['southampton', 'barcelona', 'civitavecchia', 'piraeus', 'miami', 'kiel', 'copenhagen', 'bergen', 'palma', 'singapore', 'sydney', 'vancouver', 'ushuaia'],
+  // cruise terminals: the seed list of the original contract plus the ports of the itineraries in shared/jobs/cruises.js
+  cruise: ['southampton', 'barcelona', 'civitavecchia', 'piraeus', 'miami', 'kiel', 'copenhagen', 'bergen', 'palma', 'singapore', 'sydney', 'vancouver', 'ushuaia',
+    'naples', 'genoa', 'marseille', 'livorno', 'valletta', 'istanbul', 'lisbon', 'santa_cruz_tenerife', 'las_palmas', 'kingston', 'san_juan', 'cartagena_co', 'panama_colon', 'galveston',
+    'seattle', 'anchorage', 'stockholm', 'helsinki', 'tallinn', 'gdansk', 'oslo', 'reykjavik', 'tromso', 'rio_de_janeiro', 'buenos_aires', 'cape_town', 'auckland', 'honolulu', 'colombo', 'dubai_jebel_ali'],
   offshore: ['aberdeen', 'stavanger', 'bergen', 'esbjerg', 'den_helder', 'galveston', 'new_orleans', 'kemaman', 'rio_de_janeiro', 'dampier'],
   windfarm: ['esbjerg', 'eemshaven', 'ostend', 'lowestoft', 'immingham', 'cuxhaven', 'vlissingen'],
   fishing: ['peterhead', 'lerwick', 'tromso', 'hammerfest', 'vigo', 'dutch_harbor', 'kodiak', 'nouadhibou', 'mar_del_plata', 'chimbote', 'torshavn', 'reykjavik', 'las_palmas', 'manta', 'petropavlovsk', 'harlingen', 'hirtshals', 'lowestoft'],

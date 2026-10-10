@@ -12,6 +12,7 @@
 import { generalArrangement, hullHalf, deckHalf, outlineHalf, fitHalf, demihullAt, RULES, stairRun } from '../../shared/ships/ga.js';
 import { IV2_READY } from '../../shared/ships/gaspace.js';   // IV2 HV1
 import { planV2 } from './gaplan2.js';                         // IV2 HV1
+import { cruiseDeckPlan } from './gacruise.js';                // cruise decks of interiors v2 (docs/CRUISE-CONTRACT.md §4)
 
 export const R = 0.25;          // walker radius (shipplan.js R)
 export const STEP = 0.32;       // shipplan.js STEP
@@ -1590,6 +1591,7 @@ function paxFurnish(P, r, kind) {
 function planPax(P, ga, opts = {}) {
   const X = ga.pax, L = ga.L, B = ga.B, decks = X.decks;
   const cruise = ga.type === 'cruise', hsc = ga.model === 'hsc112', de = X.doubleEnded;
+  const cruiseV2 = cruise && !!opts.iv2 && globalThis.__iv2 !== false;   // the cruise deck programme of interiors v2
   P.style = 'ship';
   const bridgeDeck = decks[X.bridgeDeck - 1];
   const cur = opts.deck ? decks.find((d) => d.id === opts.deck) || bridgeDeck : bridgeDeck;
@@ -1648,7 +1650,7 @@ function planPax(P, ga, opts = {}) {
       else if (d.use === 'public' || d.use === 'lido') w = Math.max(towerW(d), Math.min(2 * hw - 1, 12));
       tw.set(t.id, mkTower(d, t, r2(Math.min(2 * hw, w))));
     }
-    const plan = paxDeckPlan(P, ga, d, blocks, tw, ts, half, { cruise, hsc, de });
+    const plan = cruiseV2 ? cruiseDeckPlan(P, ga, d, tw) : paxDeckPlan(P, ga, d, blocks, tw, ts, half, { cruise, hsc, de });
     rooms.push(...plan);
     deckRooms.set(d.id, rooms);
     if (d.id === bridgeDeck.id) paxBridge(P, ga, d, half);

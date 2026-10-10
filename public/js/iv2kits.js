@@ -13,6 +13,7 @@
 import { ITEMS } from './iv2items.js';
 import { SCALE } from '../../shared/ships/gaspace.js';
 import { SYS_COLOR } from '../../shared/ships/gamach.js';
+import { CRUISE_KITS } from './iv2cruisekits.js';   // cruise ships (docs/CRUISE-CONTRACT.md §4)
 
 export const R = 0.25;
 const C = 0.1;                 // grid cell (m)
@@ -776,6 +777,7 @@ const KIT_FNS = {
   steering_gear: steeringKit, ecr: ecrKit, purifier_room: purifierKit, workshop: workshopKit, spares: workshopKit, machinery_room: machineryRoomKit,
   store: storeKit, ac_room: (K) => plantRoomKit(K, 'ac_room'), fan_room: (K) => plantRoomKit(K, 'fan_room'), co2_room: (K) => plantRoomKit(K, 'co2_room'), bosun_store: (K) => plantRoomKit(K, 'bosun_store'),
 };
+Object.assign(KIT_FNS, CRUISE_KITS);
 /** KITS (§9.2): kit id → { space: [kinds], band, emptyR, place }. */
 export const KITS = Object.freeze(Object.fromEntries(Object.entries(KIT_FNS).map(([k, f]) => [k, Object.freeze({ space: Object.keys(SCALE).filter((s) => SCALE[s].kit === k), place: f })])));
 
@@ -872,7 +874,7 @@ export function roomLights(P, room, ctx = {}) {
     return out;
   }
   const unlined = !s.lined || s.unlined;
-  const per = sp === 'mess' || sp === 'galley' || sp === 'recreation' || sp === 'lounge_crew' ? 6 : sp === 'er_platform' || sp === 'er_walkway' ? 16 : unlined ? 9 : sp === 'bridge' ? 12 : 8;
+  const per = s.acoustic === 'public' ? (sp === 'atrium' ? 40 : 22) : sp === 'mess' || sp === 'galley' || sp === 'recreation' || sp === 'lounge_crew' ? 6 : sp === 'er_platform' || sp === 'er_walkway' ? 16 : unlined ? 9 : sp === 'bridge' ? 12 : 8;
   const n = Math.max(1, Math.round(A / per));
   const cols = Math.max(1, Math.round(Math.sqrt(n * W / Math.max(D, 0.1)))), rows = Math.max(1, Math.ceil(n / cols));
   for (let a = 0; a < cols; a++) for (let b = 0; b < rows; b++) {

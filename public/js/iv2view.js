@@ -10,6 +10,7 @@ import { buildPlan } from './shipplan.js';
 import { WalkMap } from './walker.js';
 import { SHIP_CLASSES } from '/shared/constants.js';
 import { buildZoned, visibleZones } from './gaprops.js';
+import { CruiseCrowd, wantsCrowd } from './iv2crowd.js';
 
 const Q = new URLSearchParams(location.search);
 const model = Q.get('model') || 'ultramax64', shotName = Q.get('shot') || 'bridge', light = Q.get('light') || 'day';
@@ -81,6 +82,24 @@ const SHOTS = {
   fcsle_mooring: () => { const r = find((q) => q.zone === 'fwd' && q.open); return r ? { x: 0, y: r.y + 1.7, z: r.z1 - 1, tx: 0, ty: r.y, tz: r.z0, room: r } : null; },
   poop_mooring: () => { const r = rooms.filter((q) => q.open && q.zone === 'deck').sort((a, b) => b.z1 - a.z1)[0]; return r ? { x: 0, y: r.y + 1.7, z: r.z0 + 1, tx: 0, ty: r.y, tz: r.z1, room: r } : null; },
   laundry: () => fromDoor(bySpace('laundry')),
+  // ---- cruise ships (docs/CRUISE-CONTRACT.md §4): ?model=cruise362&deck=d4&shot=atrium
+  atrium: () => { const r = bySpace('atrium'); if (!r) return null; return { x: (r.x0 + r.x1) / 2 + 3, y: r.y + 1.7, z: r.z1 - 2.2, tx: (r.x0 + r.x1) / 2 - 1, ty: r.y + 3.0, tz: r.z0 + 3, room: r }; },
+  theatre: () => { const r = bySpace('theatre'); if (!r) return null; const a = (r.x1 - r.x0 >= 20 ? 4.5 : 0); return { x: (r.x0 + r.x1) / 2 + a, y: r.y + 1.75, z: r.z0 + (r.z1 - r.z0) * 0.55, tx: (r.x0 + r.x1) / 2, ty: r.y + 1.4, tz: r.z0, room: r }; },
+  street: () => { const r = find((q) => q.space === 'promenade' && q.walk !== false); if (!r) return null; const al = r.z1 - r.z0 > r.x1 - r.x0; return al ? { x: (r.x0 + r.x1) / 2, y: r.y + 1.7, z: r.z1 - 1.0, tx: (r.x0 + r.x1) / 2, ty: r.y + 1.6, tz: r.z0, room: r } : { x: r.x1 - 1.0, y: r.y + 1.7, z: (r.z0 + r.z1) / 2, tx: r.x0, ty: r.y + 1.6, tz: (r.z0 + r.z1) / 2, room: r }; },
+  restaurant: () => { const r = find((q) => q.space === 'restaurant' && q.walk !== false); return r ? fromDoor(r) : null; },
+  buffet: () => { const r = bySpace('buffet'); return r ? fromDoor(r) : null; },
+  casino: () => { const r = bySpace('casino'); return r ? fromDoor(r) : null; },
+  club: () => { const r = bySpace('nightclub'); return r ? fromDoor(r) : null; },
+  bar: () => { const r = bySpace('bar'); return r ? fromDoor(r) : null; },
+  shop: () => { const r = bySpace('shop'); return r ? fromDoor(r) : null; },
+  kids: () => { const r = bySpace('kids'); return r ? fromDoor(r) : null; },
+  spa: () => { const r = bySpace('spa'); return r ? fromDoor(r) : null; },
+  galley_pax: () => { const r = bySpace('galley_pax'); return r ? fromDoor(r) : null; },
+  crew_mess: () => { const r = bySpace('crew_mess'); return r ? fromDoor(r) : null; },
+  cabin_pax: () => { const r = find((q) => /^cabin_cruise/.test(q.space || '')); return r ? fromDoor(r) : null; },
+  cabin_corridor: () => { const r = find((q) => q.space === 'corridor_pax' && q.walk !== false); if (!r) return null; const al = r.x1 - r.x0 > r.z1 - r.z0; return al ? { x: r.x1 - 1, y: r.y + 1.65, z: (r.z0 + r.z1) / 2, tx: r.x0, ty: r.y + 1.4, tz: (r.z0 + r.z1) / 2, room: r } : { x: (r.x0 + r.x1) / 2, y: r.y + 1.65, z: r.z1 - 1, tx: (r.x0 + r.x1) / 2, ty: r.y + 1.4, tz: r.z0, room: r }; },
+  pool: () => { const r = find((q) => q.space === 'pool_deck' || q.space === 'water_deck'); if (!r) return null; return { x: r.x0 + 3, y: r.y + 1.7, z: r.z1 - 3, tx: (r.x0 + r.x1) / 2, ty: r.y + 1.0, tz: (r.z0 + r.z1) / 2 - 3, room: r }; },
+  sports: () => { const r = find((q) => q.space === 'sports_deck' || q.space === 'sun_deck'); if (!r) return null; return { x: r.x0 + 3, y: r.y + 1.7, z: r.z1 - 3, tx: (r.x0 + r.x1) / 2, ty: r.y + 1.5, tz: (r.z0 + r.z1) / 2, room: r }; },
   lobby: () => { const r = bySpace('cabin_lobby'); return r ? fromDoor(r) : null; },
 };
 let s = null;
@@ -97,6 +116,13 @@ if (groups) {
   for (const [id, g] of groups) g.visible = vis.has(id);
 }
 if (I.v2) { for (let i = 0; i < 30; i++) I.v2.frame(I, 0.2); }
+// cruise ships: the people (?crowd=0 hides them; ?t= is the ship's hour)
+if (wantsCrowd(plan) && Q.get('crowd') !== '0') {
+  app.shipTimeNow = () => hour * 3600; I.group = root; I.curRoom = here;
+  const crowd = new CruiseCrowd(I, plan, root, { phone });
+  for (let i = 0; i < 40; i++) crowd.frame(I, 0.25);
+  I.crowd = crowd;
+}
 // stats for scripted captures
 const stats = { tris: 0, calls: 0, room: here?.id || null, space: here?.space || null, zone: here?.zone || null, plan: { v: plan.v || 1, rooms: plan.rooms.length } };
 scene.traverseVisible((o) => { if (o.isMesh) { stats.calls++; const g = o.geometry; stats.tris += (o.isInstancedMesh ? o.count : 1) * (g.index ? g.index.count : g.attributes.position.count) / 3; } });

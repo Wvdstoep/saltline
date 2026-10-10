@@ -24,6 +24,7 @@
 //   ga.roro        car decks { decks:[{ y, h }], ramps:[…], casing }
 import { MODELS } from './catalogue.js';
 import { parseVariant } from './options.js';
+import { cruiseProfile } from './cruiseprofile.js';
 
 export const GA_VERSION = 1;
 export const GA_GENS = ['aft_house_dry', 'aft_house_tanker', 'lng', 'container', 'roro_pctc', 'ferry', 'cruise', 'offshore', 'tug', 'fishing', 'small_fast', 'motor_yacht', 'special'];
@@ -1155,13 +1156,14 @@ function paxDecks(ga, m, o) {
 
 GEN.cruise = (mk, m) => {
   const ga = mk(), L = ga.L, B = ga.B;
-  const n = Math.min(18, Math.round(3 + 0.042 * L));
-  const crewN = n >= 12 ? 3 : 2, pubN = n >= 15 ? 3 : n >= 10 ? 2 : 1, cabN = n - crewN - pubN - 2;
+  // the deck stack is part of the ship's programme (cruiseprofile.js): crew decks low, public decks, cabin decks, pool deck(s), sun deck(s)
+  const P = cruiseProfile(m.id), [crewN, pubN, cabN, lidoN, sunN] = P ? [P.stack.crew, P.stack.public, P.stack.cabin, P.stack.lido, P.stack.sun] : [3, 2, 6, 1, 1];
   const stack = [];
   for (let i = 0; i < crewN; i++) stack.push(['crew', 2.9, `Deck ${stack.length + 1} (crew)`]);
   for (let i = 0; i < pubN; i++) stack.push(['public', 3.3, `Deck ${stack.length + 1} (public)`]);
   for (let i = 0; i < cabN; i++) stack.push(['cabin', 2.9, `Deck ${stack.length + 1} (cabins)`]);
-  stack.push(['lido', 3.3, `Deck ${stack.length + 1} (lido & pool)`], ['sun', 2.8, `Deck ${stack.length + 2} (sun deck)`]);
+  for (let i = 0; i < lidoN; i++) stack.push(['lido', 3.3, `Deck ${stack.length + 1} (${i ? 'sports & water park' : 'lido & pool'})`]);
+  for (let i = 0; i < sunN; i++) stack.push(['sun', 2.8, `Deck ${stack.length + 1} (${i ? 'sky deck' : 'sun deck'})`]);
   const er = engineRoom(ga, m, { z1: r2(L / 2 - 0.1 * L), lenMul: 1 });
   const y0 = r2(er.floorY + Math.max(5.6, er.me.h + 1.4));
   er.top = y0; er.levels = [er.floorY];
@@ -1282,7 +1284,7 @@ function gotoSeeds(ga) {
     for (const d of ga.pax.decks) {
       if (d.use === 'public' && !g.some((q) => q.id === 'reception')) add('reception', ga.type === 'cruise' ? 'Atrium & reception' : 'Reception', { x: 0, y: d.y, z: r2(ga.pax.towers[Math.floor(ga.pax.towers.length / 2)].z1 + 3) }, `deck:${d.id}`);
       if (d.use === 'car' && !g.some((q) => q.id === 'cardeck')) add('cardeck', 'Car deck', { x: 0, y: d.y, z: 0 }, `deck:${d.id}`);
-      if (d.use === 'lido') add('lido', 'Lido & pool deck', { x: 0, y: d.y, z: 0 }, `deck:${d.id}`);
+      if (d.use === 'lido' || (d.use === 'sun' && ga.type === 'cruise' && !ga.pax.decks.some((q) => q.use === 'lido'))) add('lido', d.use === 'lido' ? 'Lido & pool deck' : 'Sun deck', { x: 0, y: d.y, z: 0 }, `deck:${d.id}`);   // a river ship's pool is on its sun deck
       if (d.use === 'cabin' && !g.some((q) => q.id === 'cabin')) add('cabin', 'Cabin deck', { x: 0, y: d.y, z: 0 }, `deck:${d.id}`);
     }
     if (ga.pax.boatDeck) { const d = ga.pax.decks.find((q) => q.id === ga.pax.boatDeck); add('boatdeck', 'Boat deck (promenade)', { x: r2(ga.B / 2 - 1.5), y: d.y, z: 0 }, `deck:${d.id}`); }

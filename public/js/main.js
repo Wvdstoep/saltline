@@ -230,6 +230,7 @@ class App {
       case 'harbor': this.politics?.onHarbor(m.harbor); this.hud.showHarbor(m.harbor); break;
       case 'quays': this.quayUi?.onQuays(m); break;                       // DOCK ANYWHERE
       case 'mh_moored': if (this.quayUi) { this.quayUi.open = false; this.quayUi.mooredOpen = true; this.quayUi.render(true); } break;   // moored in an inland harbour: the fee / services panel
+      case 'casino': case 'venue': this.games?.onMessage(m); break;     // cruise ships: table and venue answers (public/js/iv2games.js)
       case 'vhf': case 'vhf_st': this.vhf?.onMessage(m); break;          // VHF transmissions and station lists
       case 'ww_static': this.wwMesh?.setStatics(m.objects || []); this.terrain.wtiles?.setSkipIds?.(this.wwMesh?.knownIds?.() || []); break;  // bridges & locks near us (§8.2)
       case 'ww': this.wwMesh?.applyDelta(m); break;                       // span / chamber state, signals, outages
@@ -549,14 +550,14 @@ class App {
     if (!this.shelterSet && this.geoms?.entries?.size) { this.shelterSet = true; this.refreshShelter(); }
     this.ensureMuteButton();
     const s = this.ship, you = this.you, st = this.soundState, w = this.wx || {};
-    let view = 'deck', room = null;
+    let view = 'deck', room = null; st.crowd = null;
     if (ashore) view = 'ashore';
     else if (this.interior.active) {
       view = 'interior';
       const I = this.interior, r = I.roomAt?.(I.pos.x, I.pos.z, I.y), id = String(r?.id || '');
       room = id.startsWith('cabin') ? 'cabin' : id === 'engine' ? 'engine' : (id === 'bridge' || id === 'wheelhouse') ? 'bridge' : (id === 'mess' || id === 'saloon' || id === 'galley') ? 'mess' : 'passage';
       if (r?.kind && ['cabin', 'engine', 'bridge', 'mess'].includes(r.kind)) room = r.kind; // deck-plan rooms (shipplan.js) carry their kind
-      if (r?.acoustic) room = r.acoustic; st.engNear = I.v2?.engNear ?? null;   // IV2 HV6: v2 spaces carry their acoustic
+      if (r?.acoustic) room = r.acoustic; st.engNear = I.v2?.engNear ?? null; st.crowd = I.crowd?.sound() ?? null;   // IV2 HV6: v2 spaces carry their acoustic
       if (r?.open) { view = 'deck'; room = null; } // out on the open deck: wind and sea, not a room
       if (room === 'bridge') view = 'bridge';
       const moving = I.keys?.size > 0 || this.touchHelm?.stick?.active;

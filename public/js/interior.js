@@ -18,6 +18,7 @@ import { drawGAProp, GA_PROP_KINDS, buildZoned, gaInteract, gaZoneUpdate, openGo
 import { baseOf } from '/shared/ships/index.js';
 import { buildInteriorV2 } from './iv2draw.js';   // IV2 HV2 (docs/INTERIORS-V2-CONTRACT.md §9.5)
 import { iv2Interact, iv2Frame } from './iv2interact.js';   // IV2 HV3b, HV4
+import { CruiseCrowd, wantsCrowd } from './iv2crowd.js';   // cruise ships: living guests and crew (docs/CRUISE-CONTRACT.md §6)
 
 const EYE = 1.65;
 const WALK = 1.7, RUN = 3.3;
@@ -49,7 +50,7 @@ export class Interior {
   constructor(app) {
     this.app = app;
     this._active = false;
-    this.group = null; this.builtFor = null; this.builtCls = null;
+    this.group = null; this.builtFor = null; this.builtCls = null; this.crowd = null;
     this.plan = null; this.map = null; this.st = { x: 0, z: 0, y: 0 };
     this.pos = new THREE.Vector3(); this.y = 0;
     this.v = { dir: new THREE.Vector3(), eye: new THREE.Vector3(), look: new THREE.Vector3(), head: new THREE.Vector3(), want: new THREE.Vector3(), lamp: new THREE.Vector3() }; // per-frame scratch this.yaw = 0; this.pitch = 0; this.bob = 0;
@@ -305,7 +306,7 @@ export class Interior {
     dt = Math.min(0.1, dt);
     // ---- movement (walk map: sliding along walls, funnelled into doorways and onto stairs)
     let moving = false;
-    if (!this.atHelm) {
+    if (!this.atHelm && !this.modal) {   // modal: a casino table or venue panel is open (iv2games.js)
       let mx = 0, mz = 0; // local: +mz forward
       if (this.keys.has('w') || this.keys.has('arrowup')) mz += 1;
       if (this.keys.has('s') || this.keys.has('arrowdown')) mz -= 1;
@@ -330,12 +331,14 @@ export class Interior {
     const room = this.map.roomAt(this.pos.x, this.pos.z, this.y);
     if (room && room !== this.curRoom) {
       this.curRoom = room;
-      this.app.hud.setInteriorHint?.(`${room.name} — ${this.isTouch ? 'stick to walk · tap to use' : 'WASD walk · Shift runs · E use · V view · I stop walking'}`);
+      const gs = this.app.you?.guest;   // cruise ships: the guest rating on the bridge and in the guest areas (docs/CRUISE-CONTRACT.md §7)
+      this.app.hud.setInteriorHint?.(`${room.name}${gs && (room.space === 'bridge' || room.space === 'guest_services') ? ` · guests rate the ship ${gs.stars.toFixed(1)} / 5` : ''} — ${this.isTouch ? 'stick to walk · tap to use' : 'WASD walk · Shift runs · E use · V view · I stop walking'}`);
     }
     // ---- zone streaming (GA plans): the zone you stand in and its neighbours; a tower landing of a neighbour deck
     // reloads that deck's plan (cruise ships, big ro-pax)
     if (this.zoneGroups) gaZoneUpdate(this, this.isTouch || window.innerWidth < 900);
     this.v2?.frame(this, dt);   // IV2 HV3a: detail chunks, window views, light mode, wipers
+    if (this.crowd) { try { this.crowd.frame(this, dt); } catch (e) { console.warn('[interior] crowd', e); this.crowd.dispose(); this.crowd = null; } }
     // ---- hotspots
     let best = null, bd = 1e9;
     for (const h of this.hotspots) {
@@ -396,6 +399,7 @@ export class Interior {
 
   // ------------------------------------------------------------------ construction
   dispose() {
+    if (this.crowd) { this.crowd.dispose(); this.crowd = null; }
     if (this.group) { this.group.parent?.remove(this.group); (ShipMod.disposeGroup || disposeFallback)(this.group); this.group = null; }
     for (const t of this.textures) t.dispose?.();
     this.textures = [];
@@ -432,6 +436,7 @@ export class Interior {
       this.pb.build(g);
       this.pb = null;
     }
+    if (wantsCrowd(plan) && !/[?&]crowd=0\b/.test(location.search)) { try { this.crowd = new CruiseCrowd(this, plan, g, { phone: this.isTouch || window.innerWidth < 900 }); } catch (e) { console.warn('[interior] crowd failed', e); this.crowd = null; } }
     mesh.add(g);
     this.group = g; this.builtFor = mesh; this.builtCls = cls;
   }

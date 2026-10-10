@@ -12,6 +12,8 @@ import { FAMILIES, PAY, payFor, payLesson, payEcotour, regattaPrize, CAPTAIN_TYP
 import { canDo } from '../shared/jobs/eligibility.js';
 import { makeStack, freeUnits, CARGO, UNITS } from '../shared/cargo.js';
 import { rowOf, basePriceOf } from '../shared/jobs/shipview.js';
+import { CRUISE_RULES } from '../shared/jobs/cruises.js';
+import { onboardIndex } from '../shared/ships/cruiseprofile.js';
 import { generateBoard, ensureFit, generateFamilyJob, generateSalvage, weightsFor, BOARD_SIZE } from './jobsgen.js';
 
 export const RUNNER = {
@@ -76,7 +78,7 @@ export class JobsX {
     mine.pay = payFor(mine, cls);
     mine.acceptedAt = this.now(); mine.acceptedShip = a.shipTime; mine.dueShip = a.shipTime + mine.hours * 3600;
     mine.prog = { i: 0, h: 0, n: 0, base: {}, sea: false, bad: 0, over: 0, late: 0, fracs: [], skipped: [], done: [], nm: 0, mark: 0,
-      cT: 0, cBad: 0, windH: 0, safety: false, warned: {}, departed: {} };
+      cT: 0, cBad: 0, windH: 0, safety: false, warned: {}, departed: {}, cond0: Number.isFinite(a.cond) ? a.cond : 100 };
     mine.prog.base0 = { ...sailStats(a) };
     if (!Array.isArray(a.jobs)) a.jobs = [];
     a.jobs.push(mine);
@@ -200,6 +202,10 @@ export class JobsX {
           // ro-pax departures: the moment she leaves after boarding counts against the timetable
           const prev = j.steps[i - 1];
           if (prev?.depart && !p.departed[i] && !a.docked) { p.departed[i] = now; if (now > prev.depart + RUNNER.DEPART_WINDOW_S) p.late++; }
+          if (s.comfort && ev.kind === 'tick' && !a.docked) {   // cruise guests: rough seas on the way spoil the holiday
+            p.cT += ev.dt;
+            if ((this.env.seaHs ? this.env.seaHs(a) : 0) > RUNNER.COMFORT_HS_M) p.cBad += ev.dt;
+          }
           if (s.nm && !s.at) { if (ev.kind === 'tick' && !a.docked) p.nm += (spd * ev.dt) / 3600; done = p.nm >= s.nm; if (done) p.done.push(s.task || i); break; }
           if (typeof s.at === 'string') { done = a.docked === s.at; break; }
           if ((s.minKn || s.maxKn) && ev.kind === 'tick' && !a.docked) {
@@ -433,6 +439,25 @@ export class JobsX {
         if (p.safety) { cr = 0; notes.push(`refunded: safety failure (${p.safety})`); this.env.rep?.(a, -5); }
         break;
       }
+      case 'cruise': {
+        // net charter fee: the ticket as sold, the onboard spending of the venues THIS ship really has, then the penalties
+        const R = CRUISE_RULES, ticket = pay.ticket ?? null;
+        if (ticket != null) {
+          const hrs = j.cruiseH || j.hours || 0, gs = this.env.guest?.(a);   // the guest rating (shared/ships/cruisesat.js) scales ticket and onboard spending
+          const onboard = Math.round((j.pax || 0) * hrs * onboardIndex(cls) * (gs ? gs.spendMul : 1)), tk = Math.round(ticket * (gs ? gs.payMul : 1));
+          cr = tk + onboard; if (onboard > 0) notes.push(`onboard spending ${fmt(onboard)} cr`);
+          if (gs) notes.push(`guests rated the ship ${gs.stars.toFixed(1)} / 5 (fare ×${gs.payMul})`);
+        }
+        const lateK = Math.min(R.LATE_MAX, R.LATE_PER_CALL * p.late);
+        if (p.late > 0) { cr -= Math.round(cr * lateK); notes.push(`${p.late} late call${p.late > 1 ? 's' : ''} −${Math.round(lateK * 100)} %`); }
+        const rough = p.cT > 0 ? p.cBad / p.cT : 0;
+        if (rough > 0.05) { const f = Math.min(R.ROUGH_MAX, rough * R.ROUGH_MAX); cr -= Math.round(cr * f); notes.push(`rough seas: refunds −${Math.round(f * 100)} %`); }
+        const loss = Math.max(0, (p.cond0 ?? 100) - (Number.isFinite(a.cond) ? a.cond : 100)), over = Math.max(0, loss - R.DAMAGE_FREE_PCT);
+        if (over > 0) { const f = Math.min(R.DAMAGE_MAX, over * R.DAMAGE_PER_PCT); cr -= Math.round(cr * f); notes.push(`hull damage −${Math.round(f * 100)} %`); this.env.rep?.(a, -Math.min(5, Math.ceil(over / 4))); }
+        if (Number.isFinite(j.dueShip) && Number.isFinite(a.shipTime) && a.shipTime > j.dueShip) { cr -= Math.round(cr * R.OVERRUN); notes.push('the cruise overran its hours'); }
+        else if (p.late === 0 && over <= 0 && pay.bonus) { cr += Math.round(cr * R.PERFECT_BONUS); notes.push('perfect cruise bonus'); }
+        break;
+      }
       case 'daycharter': case 'guests': {
         const comfort = p.cT > 0 ? Math.max(0, 1 - p.cBad / p.cT) : 1;
         const tipMax = j.type === 'daycharter' ? PAY.DAYCHARTER_TIP_MAX : PAY.GUESTS_TIP_MAX;
@@ -456,7 +481,7 @@ export class JobsX {
     }
     const frac = p.fracs.length ? p.fracs.reduce((s, f) => s + f, 0) / p.fracs.length : 1;
     if (frac < 1) { cr = Math.round(cr * frac); notes.push(`short delivery ${Math.round(frac * 100)} %`); }
-    const late = pay.model !== 'award' && Number.isFinite(j.dueShip) && Number.isFinite(a.shipTime) && a.shipTime > j.dueShip;
+    const late = pay.model !== 'award' && j.type !== 'cruise' && Number.isFinite(j.dueShip) && Number.isFinite(a.shipTime) && a.shipTime > j.dueShip;
     if (late) { cr = Math.round(cr * 0.5); notes.push('late (half pay)'); }
     return { cr: Math.round(cr), notes, late };
   }

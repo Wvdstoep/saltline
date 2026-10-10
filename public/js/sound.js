@@ -252,6 +252,8 @@ function sanitize(s, o) {
   o.docked = !!s.docked;
   o.towing = !!s.towing;
   o.warp = Math.max(1, fin(s.warp, 1));
+  const cw = s.crowd;   // cruise ships, walk mode: what the people around the player sound like (iv2crowdplan soundMix)
+  o.crowd = cw && typeof cw === 'object' ? { murmur: clamp(fin(cw.murmur), 0, 1), music: clamp(fin(cw.music), 0, 1), splash: clamp(fin(cw.splash), 0, 1), kind: typeof cw.kind === 'string' ? cw.kind : '' } : null;
   return o;
 }
 
@@ -725,6 +727,7 @@ export class SoundEngine {
 
     const running = this._ctlEngine(s, env, ci, wf, step);
     this._ctlHotel(s, env, ci, wf, running);
+    this._ctlCrowd(s, wf);
     this._ctlWater(s, env, ci, wf);
     this._ctlWind(s, env, ci, wf);
     this._ctlRain(s, env, wf);
@@ -832,6 +835,37 @@ export class SoundEngine {
     this._set(v.lp.frequency, env.hlp, 0.3);
     this._set(v.vent.gain, env.key === 'engine' ? 0.25 : 0.6, 0.3);
     this._set(v.out.gain, lvl, 0.4);
+  }
+
+  _ctlCrowd(s, wf) {
+    // cruise ships (walk mode): the murmur of the people around, the room's music and splashing at the pools. At most 5 processing
+    // nodes (a band-passed noise bed, two oscillators through a low-pass, a hissy noise for the water), made only while it is heard.
+    const cw = s.crowd, k = cw ? cw.kind : '';
+    const murmur = cw ? cw.murmur * wf * 0.2 : 0, music = cw ? cw.music * wf * 0.1 : 0, splash = cw ? cw.splash * wf * 0.16 : 0;
+    const v = this._want('crowd', Math.max(murmur, music, splash), () => {
+      const c = this.ctx, cv = this._newVoice(this.ambBus);
+      cv.mg = this._gain(cv, 0); cv.mb = this._bq(cv, 'bandpass', 520, 0.7); this._feed(cv, this.noiseP, cv.mb); cv.mb.connect(cv.mg); cv.mg.connect(cv.out);
+      cv.sg = this._gain(cv, 0); cv.sb = this._bq(cv, 'highpass', 2600, 0.5); this._feed(cv, this.noiseW, cv.sb); cv.sb.connect(cv.sg); cv.sg.connect(cv.out);
+      cv.lp = this._bq(cv, 'lowpass', 1400, 0.6); cv.ug = this._gain(cv, 0); cv.lp.connect(cv.ug); cv.ug.connect(cv.out);
+      cv.A = this._add(cv, c.createOscillator()); cv.B = this._add(cv, c.createOscillator());
+      cv.A.type = 'triangle'; cv.B.type = 'sine'; cv.A.connect(cv.lp); cv.B.connect(cv.lp); cv.A.start(); cv.B.start(); cv.srcs.push(cv.A, cv.B);
+      cv.beat = 0; cv.step = 0;
+      return cv;
+    }, 5);
+    if (!v) return;
+    // chatter swells and falls; a show room applauds as the murmur peaks
+    const chat = 0.75 + 0.25 * Math.sin(this._t * 1.7) * Math.sin(this._t * 0.53 + 1);
+    this._set(v.mg.gain, murmur * chat, 0.25); this._set(v.mb.frequency, k === 'casino' || k === 'bar' ? 700 : k === 'pool' || k === 'sun' ? 900 : 520, 0.4);
+    this._set(v.sg.gain, splash * (0.6 + 0.4 * Math.sin(this._t * 3.1)), 0.15);
+    // music: a slow chord walk (theatre / lounge), a four-on-the-floor pulse in the club, bright bleeps in the casino
+    const NOTES = k === 'club' ? [110, 110, 146.8, 123.5] : k === 'casino' ? [523, 659, 784, 1046] : k === 'theatre' ? [196, 220, 246.9, 261.6] : [174.6, 196, 220, 164.8];
+    const bpm = k === 'club' ? 124 : k === 'casino' ? 150 : 72;
+    v.beat += this._step * bpm / 60;
+    const bi = Math.floor(v.beat);
+    if (bi !== v.step) { v.step = bi; const f = NOTES[bi % NOTES.length] * (k === 'casino' && bi % 3 === 0 ? 2 : 1); this._set(v.A.frequency, f, 0.03); this._set(v.B.frequency, f * 1.5, 0.03); }
+    const ph = v.beat - bi, pulse = k === 'club' ? Math.pow(Math.max(0, 1 - ph * 3), 2) : k === 'casino' ? (ph < 0.25 ? 1 : 0.15) : 0.6 + 0.4 * Math.sin(ph * Math.PI);
+    this._set(v.ug.gain, music * pulse, 0.03); this._set(v.lp.frequency, k === 'club' ? 500 : k === 'casino' ? 3000 : 1100, 0.2);
+    this._set(v.out.gain, 1, 0.3);
   }
 
   _ctlWater(s, env, ci, wf) {

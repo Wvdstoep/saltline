@@ -17,6 +17,8 @@ import {
 } from '../shared/jobs/catalogue.js';
 import { canDo } from '../shared/jobs/eligibility.js';
 import { tagsOf, isSeed, limitsOf, shortName, SEED_WEIGHT_MUL } from '../shared/jobs/ports.js';
+import { itinerariesFrom, callsOf, cruiseIncome, CRUISE_RULES } from '../shared/jobs/cruises.js';
+import { cruiseProfile, onboardIndex } from '../shared/ships/cruiseprofile.js';
 import { iceNeedAt, ecoSitesFor, windfarmsNear, monthOf } from '../shared/jobs/sites.js';
 import { loaOf, draftOf, isKnown, rowOf, nameOf } from '../shared/jobs/shipview.js';
 
@@ -144,7 +146,7 @@ const REF_DIMS = { // L, T of band references (Appendix A) for destination limit
   aframax115: [250, 15], suezmax158: [274, 17], vlcc300: [333, 22.5], mr50: [183, 13.3], lr1_75: [228, 14.5], chem13k: [128, 8.7],
   lpg5k: [99.9, 6.6], vlgc86k: [230, 11.4], lng174k: [295, 11.5], livestock135: [134, 6.5], reefer150: [150, 9.2],
   feeder1000: [134, 7.6], feeder1700: [172, 9.8], subpmax2800: [200, 11.5], panamax4500: [294, 12.5], neopmax14k: [366, 15.2],
-  mpp160: [160, 9.8], pctc7000: [200, 10], roro3500: [195, 7], ropax200: [200, 6.8], cruise230: [230, 7], expedition105: [104.4, 5.3],
+  mpp160: [160, 9.8], pctc7000: [200, 10], roro3500: [195, 7], ropax200: [200, 6.8], cruise230: [230, 7], expedition105: [104.4, 5.3], rivercruise110: [110, 1.7], boutique125: [125, 4.8], cruise285: [285, 8.1], cruise330: [330, 8.8], cruise362: [362, 9.3], cruise370: [370, 9.5],
 };
 const dimsOf = (cls) => (isKnown(cls) && loaOf(cls) > 0 ? [loaOf(cls), draftOf(cls)] : REF_DIMS[cls] || [150, 9]);
 const EXPORT_TAG = { grain: 'bulk_grain', ore: 'bulk_ore', coal: 'bulk_coal', crude: 'oil', fuel: 'products', chemicals: 'chem', lpg: 'lpg', lng: 'lng', livestock: 'livestock' };
@@ -373,30 +375,85 @@ B.ropax_route = (from, o) => {
   });
   return finish(job, from, o.simTime, rnd, refCls);
 };
+// Cruise ships: real-style itineraries (shared/jobs/cruises.js) with a stop at every call and sea days between. Which ship
+// the cruise is sold for follows the size of the home harbour; every port must pass the ship's length / draught limits and,
+// for ships over 250 m, be a cruise terminal (a ship that size cannot lie at a plain commercial quay).
+const CRUISE_REF = { mega: ['cruise362', 'cruise370', 'cruise330', 'cruise285'], major: ['cruise230', 'cruise285', 'cruise330', 'cruise230'], regional: ['boutique125', 'cruise230', 'rivercruise110'], minor: ['rivercruise110', 'boutique125'] };
+function cruisePortOk(h, refCls) {
+  const [L, T] = dimsOf(refCls);
+  if (!h || !fits(h, L, T)) return false;
+  if (L > 250 && !tagsOf(h).has('cruise')) return false;
+  return L <= 140 || h.size !== 'minor';
+}
+/** An expedition cruise: sail to each landing site, guests ashore by Zodiac, then home. */
+function cruiseSites(from, o, it, refCls, prof, guests) {
+  const rnd = o.rnd, kn = 13, steps = [step('board', from.id, { label: `Embark ${fmtN(guests)} guests` })];
+  let t = o.simTime + 3600, prev = from, kmTot = 0;
+  for (const s of it.sites) {
+    const km = r1(kmBetween(prev, s) * RATES.DETOUR); kmTot += km; t += Math.round((km / (kn * NM)) * 3600);
+    steps.push(step('sail', at(s, 4000), { km, until: t, comfort: true, label: `Sail to ${s.name}` }));
+    const stay = I(rnd, 12, 20); steps.push(step('work', null, { h: stay, chartered: true, label: `Landings at ${s.name}` })); t += stay * 3600; prev = s;
+  }
+  const back = r1(kmBetween(prev, from) * RATES.DETOUR); kmTot += back; t += Math.round((back / (kn * NM)) * 3600);
+  steps.push(step('sail', from.id, { km: back, until: t, comfort: true, label: `Return to ${shortName(from)}` }), step('land', from.id, { label: 'Disembark' }));
+  const hours = Math.round((t - o.simTime) / 3600), inc = cruiseIncome({ guests, hours, cls: refCls });
+  const job = base('cruise', from, {
+    to: from.id, legs: [], title: `${it.name}: ${Math.max(3, Math.round(hours / 24))} nights, ${it.sites.map((x) => x.name).join(', ')}`, pax: guests,
+    needs: { handling: ['pax'], unit: 'pax', qty: guests, paxCert: true, ice: 'pc6' }, steps, timetable: steps.filter((s) => s.until).map((s) => s.until),
+    pay: { cr: inc.ticket + inc.onboard, ticket: inc.ticket, onboardRate: onboardIndex(refCls), model: 'lump', bonus: { kind: 'perfect', cr: Math.round((inc.ticket + inc.onboard) * CRUISE_RULES.PERFECT_BONUS) } },
+    seaKm: r1(kmTot), cruiseH: hours, itinerary: { id: it.id, name: it.name, nights: Math.max(3, Math.round(hours / 24)), ports: [from.id], oneWay: false, sites: it.sites.map((x) => x.name) },
+  });
+  void prof;
+  return finish(job, from, o.simTime, rnd, refCls);
+}
 B.cruise = (from, o) => {
   const rnd = o.rnd, polar = ['ushuaia', 'nuuk', 'tromso', 'hobart'].includes(from.id);
-  const refCls = o.fit?.cls || (polar ? 'expedition105' : 'cruise230');
-  const berths = o.fit ? unitsOf(o.fit.cls).pax : refCls === 'expedition105' ? 200 : 1250;
-  const guests = Math.round(U(rnd, 0.6, 1.0) * berths), n = I(rnd, 3, 6), calls = [];
-  let prev = from;
-  for (let i = 0; i < n; i++) {
-    const d = pickDest(prev, rnd, (h) => !calls.includes(h) && h !== from && h.size !== 'minor' && fits(h, ...dimsOf(refCls)) && kmBetween(h, from) < 900, { minKm: 40, maxKm: 600 });
-    if (!d) break; calls.push(d.h); prev = d.h;
+  const refCls = o.fit?.cls || (polar ? 'expedition105' : pick(rnd, CRUISE_REF[from.size] || CRUISE_REF.regional));
+  const prof = cruiseProfile(refCls);
+  const berths = o.fit ? unitsOf(o.fit.cls).pax : prof?.guests || (refCls === 'expedition105' ? 200 : 1250);
+  const guests = Math.max(13, Math.round(U(rnd, CRUISE_RULES.OCCUPANCY[0], CRUISE_RULES.OCCUPANCY[1]) * berths));
+  const kn = Math.min(CRUISE_RULES.SEA_KN, 17), stayH = () => I(rnd, CRUISE_RULES.PORT_STAY_H[0], CRUISE_RULES.PORT_STAY_H[1]);
+  let calls = [], it = null;
+  if (polar) { const pit = itinerariesFrom(from.id).find((x) => x.sites); if (pit) return cruiseSites(from, o, pit, refCls, prof, guests); }
+  const its = polar ? [] : itinerariesFrom(from.id).filter((x) => !x.minGuests || berths >= x.minGuests);
+  if (its.length && cruisePortOk(from, refCls)) {
+    it = pick(rnd, its);
+    const ids = callsOf(it, from.id, (id) => cruisePortOk(harborById(id), refCls));
+    if (ids) calls = ids.map((id) => harborById(id)); else it = null;
+  }
+  if (!it) {   // no listed itinerary starts here (or none fits the ship): calls drawn within 900 km
+    let prev = from;
+    for (let i = 0, n = I(rnd, 3, 6); i < n; i++) {
+      const d = pickDest(prev, rnd, (h) => !calls.includes(h) && h !== from && cruisePortOk(h, refCls) && kmBetween(h, from) < 900, { minKm: 40, maxKm: 600 });
+      if (!d) break; calls.push(d.h); prev = d.h;
+    }
   }
   if (calls.length < 2) return null;
+  const oneWay = !!it?.oneWay, legs = oneWay ? calls : [...calls, from], nights = it?.nights ?? Math.max(3, Math.round((calls.length + 1) * 1.3));
+  // timetable: sail → guests ashore, sea days padded in before the last leg so that the cruise sells its nights
+  const seq = []; let a = from, kmTot = 0, totalH = 1;
+  for (const c of legs) { const km = seaKm(o.env, a, c), stay = c === from ? 0 : stayH(); seq.push({ c, km, stay }); kmTot += km; totalH += km / (kn * NM) + stay; a = c; }
+  const padH = Math.max(0, nights * 24 - totalH), padAt = seq.length - 1;
   const steps = [step('board', from.id, { label: `Embark ${fmtN(guests)} guests` })];
-  let t = o.simTime + 3600, a = from, kmTot = 0;
-  for (const c of [...calls, from]) {
-    const km = seaKm(o.env, a, c); kmTot += km; t += Math.round((km / (16 * NM) + 8) * 3600);
-    steps.push(step('sail', c.id, { km, until: t, label: c === from ? `Return to ${shortName(from)}` : `Call at ${shortName(c)}` }));
-    a = c;
-  }
-  steps.push(step('land', from.id, { label: 'Disembark' }));
+  let t = o.simTime + 3600;
+  seq.forEach(({ c, km, stay }, i) => {
+    if (i === padAt && padH >= 6) { steps.push(step('work', null, { h: Math.round(padH), chartered: true, comfort: true, label: 'Sea days: shows, pools and dinner' })); t += Math.round(padH) * 3600; }
+    t += Math.round((km / (kn * NM)) * 3600);
+    const last = i === seq.length - 1;
+    steps.push(step('sail', c.id, { km, until: t, comfort: true, label: c === from ? `Return to ${shortName(from)}` : `${last && oneWay ? 'Arrive at' : 'Call at'} ${shortName(c)}` }));
+    if (stay > 0 && !(last && oneWay)) { steps.push(step('work', null, { h: stay, chartered: true, label: `Guests ashore at ${shortName(c)}` })); t += stay * 3600; }
+  });
+  const endId = oneWay ? calls[calls.length - 1].id : from.id;
+  steps.push(step('land', endId, { label: 'Disembark' }));
   const hours = Math.round((t - o.simTime) / 3600);
+  const inc = cruiseIncome({ guests, hours, cls: refCls });
+  const cr = polar && !prof ? payCruise({ guests, hours, comfort: 1, expedition: true }) : inc.ticket + inc.onboard;
+  const name = it?.name || (polar ? 'Expedition cruise' : 'Cruise');
   const job = base('cruise', from, {
-    to: from.id, legs: calls.map((h) => h.id), title: `${polar ? 'Expedition cruise' : 'Cruise'}: ${hours} h, ${calls.map(shortName).join(', ')}`, pax: guests,
+    to: endId, legs: calls.map((h) => h.id), title: `${name}: ${nights} nights, ${calls.map(shortName).join(', ')}`, pax: guests,
     needs: { handling: ['pax'], unit: 'pax', qty: guests, paxCert: true, ice: polar ? 'pc6' : undefined }, steps, timetable: steps.filter((s) => s.until).map((s) => s.until),
-    pay: { cr: payCruise({ guests, hours, comfort: 1, expedition: polar }), model: 'lump' }, seaKm: r1(kmTot), cruiseH: hours,
+    pay: { cr, ticket: inc.ticket, onboardRate: onboardIndex(refCls), model: 'lump', bonus: { kind: 'perfect', cr: Math.round(cr * CRUISE_RULES.PERFECT_BONUS) } },
+    seaKm: r1(kmTot), cruiseH: hours, itinerary: { id: it?.id || 'custom', name, nights, ports: [from.id, ...calls.map((h) => h.id)], oneWay },
   });
   if (!polar) delete job.needs.ice;
   return finish(job, from, o.simTime, rnd, refCls);

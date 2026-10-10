@@ -13,11 +13,12 @@
 //   houseSpaces(ga, params)     → per GA room id: the spaces that replace it (gaplan2.js applies them to the plan)
 import { generalArrangement, RULES } from './ga.js';
 import { modelParams } from './gaparams.js';
+import { cruiseDeck, deckFrame } from './cruiselayout.js';
 
 export const IV2_VERSION = 1;
 export const IV2_GENS = Object.freeze(['aft_house_dry', 'aft_house_tanker', 'container', 'lng', 'roro_pctc', 'offshore', 'special', 'tug', 'fishing', 'small_fast', 'ferry', 'cruise', 'motor_yacht']);
 /** Generators planned by v2 (reviewer flips entries, §12). `?iv2=0` / globalThis.__iv2 = false forces v1 at runtime. */
-export const IV2_READY = new Set(['aft_house_dry', 'aft_house_tanker', 'container', 'lng']);
+export const IV2_READY = new Set(['aft_house_dry', 'aft_house_tanker', 'container', 'lng', 'cruise']);
 
 // ------------------------------------------------------------------------------------------------ §2.1 SCALE
 // S(min, target, max, [hLo, hHi], floor, wall, ceil, emptyR, [fillLo, fillHi], extra)
@@ -93,7 +94,7 @@ export const SCALE = Object.freeze({
   bonded_store: S(3, 6, 14, [2.2, 2.2], 'chequer', 'paint_grey', 'panel', 0.8, [0.35, 0.65], { legacy: 'store', kit: 'store', acoustic: 'wet', name: 'Bonded store' }),
   store_gen: S(3, 8, 18, [2.2, 2.2], 'chequer', 'paint_grey', 'panel', 0.8, [0.35, 0.65], { legacy: 'store', kit: 'store', acoustic: 'wet', name: 'Store', inner: ['*'] }),
   lobby_pax: S(20, 45, 120, [2.6, 3.0], 'carpet_pax', 'veneer', 'panel', 2.5, [0.12, 0.5], { legacy: 'stairs', kit: 'lobby_pax', acoustic: 'public', name: 'Lobby' }),
-  atrium: S(40, 120, 1200, [2.6, 9], 'stone', 'veneer', 'feature', 4.0, [0.05, 0.5], { legacy: 'mess', kit: 'lobby_pax', acoustic: 'public', name: 'Atrium' }),
+  atrium: S(40, 120, 1200, [2.6, 12], 'stone', 'veneer', 'feature', 4.0, [0.03, 0.5], { legacy: 'mess', kit: 'atrium', acoustic: 'public', name: 'Atrium' }),
   restaurant: S(40, 200, 450, [2.7, 3.0], 'carpet_pax', 'veneer', 'coffered', 1.8, [0.3, 0.5], { legacy: 'mess', kit: 'restaurant', acoustic: 'public', name: 'Restaurant' }),
   buffet: S(40, 200, 450, [2.7, 2.7], 'vinyl', 'laminate', 'panel', 1.8, [0.3, 0.5], { legacy: 'mess', kit: 'restaurant', acoustic: 'public', name: 'Buffet' }),
   cafeteria: S(30, 150, 450, [2.7, 2.7], 'vinyl', 'laminate', 'panel', 1.8, [0.3, 0.5], { legacy: 'mess', kit: 'restaurant', acoustic: 'public', name: 'Cafeteria' }),
@@ -101,12 +102,12 @@ export const SCALE = Object.freeze({
   lounge_pax: S(25, 150, 350, [2.6, 3.0], 'carpet_pax', 'veneer', 'coffered', 2.0, [0.25, 0.45], { legacy: 'mess', kit: 'bar', acoustic: 'public', name: 'Lounge' }),
   casino: S(40, 150, 350, [2.6, 3.0], 'carpet_pax', 'veneer', 'coffered', 2.0, [0.25, 0.45], { legacy: 'mess', kit: 'casino', acoustic: 'public', name: 'Casino' }),
   nightclub: S(40, 150, 350, [2.6, 3.0], 'carpet_pax', 'veneer', 'coffered', 2.0, [0.25, 0.45], { legacy: 'mess', kit: 'bar', acoustic: 'public', name: 'Nightclub' }),
-  theatre: S(80, 400, 900, [2.6, 9], 'carpet_th', 'fabric', 'dark', 1.2, [0.55, 0.9], { legacy: 'mess', kit: 'theatre', acoustic: 'public', name: 'Theatre' }),
+  theatre: S(80, 400, 900, [2.6, 9], 'carpet', 'veneer_dark', 'dark', 1.2, [0.55, 0.9], { legacy: 'mess', kit: 'theatre', acoustic: 'public', name: 'Theatre' }),
   shop: S(20, 60, 150, [2.7, 2.7], 'stone', 'laminate', 'panel', 1.4, [0.3, 0.55], { legacy: 'mess', kit: 'shop', acoustic: 'public', name: 'Shop' }),
   seats_lounge: S(30, 150, 400, [2.5, 2.5], 'carpet_pax', 'laminate', 'panel', 1.2, [0.45, 0.65], { legacy: 'mess', kit: 'seats_lounge', acoustic: 'public', name: 'Seating lounge' }),
   kids: S(30, 80, 200, [2.6, 2.6], 'rubber', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'mess', kit: 'kids', acoustic: 'public', name: 'Kids club' }),
   spa: S(30, 80, 200, [2.6, 2.6], 'tile_wet', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'mess', kit: 'spa', acoustic: 'public', name: 'Spa' }),
-  medical_pax: S(20, 60, 200, [2.6, 2.6], 'vinyl', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'cabin', kit: 'hospital', acoustic: 'cabin', name: 'Medical centre' }),
+  medical_pax: S(20, 60, 200, [2.6, 2.6], 'vinyl', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'cabin', kit: 'medical_pax', acoustic: 'cabin', name: 'Medical centre' }),
   wc_block: S(4, 10, 40, [2.3, 2.3], 'tile_wet', 'tile_wet', 'panel', 0.8, [0.35, 0.6], { legacy: 'store', kit: 'washroom', acoustic: 'wet', name: 'Toilets' }),
   saloon_yacht: S(12, 30, 70, [2.1, 2.4], 'wood', 'veneer', 'panel', 1.4, [0.3, 0.5], { legacy: 'mess', kit: 'saloon_yacht', acoustic: 'mess', name: 'Saloon' }),
   skylounge: S(12, 30, 70, [2.1, 2.4], 'carpet', 'veneer', 'panel', 1.4, [0.3, 0.5], { legacy: 'mess', kit: 'saloon_yacht', acoustic: 'mess', name: 'Sky lounge' }),
@@ -114,6 +115,35 @@ export const SCALE = Object.freeze({
   head: S(1.6, 2.4, 4, [2.0, 2.2], 'tile_wet', 'veneer', 'panel', 0.5, [0.4, 0.65], { legacy: 'store', kit: 'washroom', acoustic: 'wet', name: 'Head' }),
   wheelhouse_small: S(3, 10, 60, [2.0, 2.2], 'vinyl_dark', 'laminate', 'panel', 1.2, [0.25, 0.45], { legacy: 'bridge', kit: 'wheelhouse_small', acoustic: 'bridge', name: 'Wheelhouse' }),
   lab: S(8, 20, 60, [2.25, 2.25], 'vinyl', 'laminate', 'panel', 1.2, [0.3, 0.55], { legacy: 'store', kit: 'lab', acoustic: 'workshop', name: 'Laboratory' }),
+  // ---- cruise ships (docs/CRUISE-CONTRACT.md §4): bigger staterooms, public street and decks, crew service spaces
+  cabin_cruise_suite: S(28, 38, 64, [2.35, 2.5], 'carpet', 'veneer', 'panel', 1.4, [0.22, 0.42], { legacy: 'cabin', kit: 'cabin_pax', acoustic: 'cabin', name: 'Suite', berth: 2, suite: true }),
+  cabin_cruise_acc: S(18, 22, 28, [2.35, 2.45], 'carpet', 'veneer', 'panel', 1.2, [0.25, 0.45], { legacy: 'cabin', kit: 'cabin_pax', acoustic: 'cabin', name: 'Accessible stateroom', berth: 2, access: true }),
+  promenade: S(30, 200, 1600, [2.6, 3.4], 'stone', 'veneer', 'coffered', 3.6, [0.04, 0.35], { legacy: 'mess', kit: 'street', acoustic: 'public', name: 'Promenade', circulation: true }),
+  atrium_gallery: S(15, 90, 420, [2.6, 3.4], 'stone', 'veneer', 'coffered', 3.2, [0.04, 0.35], { legacy: 'mess', kit: 'gallery', acoustic: 'public', name: 'Atrium gallery' }),
+  theatre_balcony: S(50, 250, 650, [2.6, 6.8], 'carpet', 'veneer_dark', 'dark', 1.2, [0.5, 0.9], { legacy: 'mess', kit: 'theatre_balcony', acoustic: 'public', name: 'Theatre balcony' }),
+  galley_pax: S(30, 200, 800, [2.4, 3.2], 'quarry', 'stainless', 'panel', 1.6, [0.32, 0.6], { legacy: 'mess', kit: 'galley_pax', acoustic: 'galley', name: 'Galley' }),
+  guest_services: S(20, 70, 170, [2.6, 3.0], 'stone', 'veneer', 'coffered', 1.8, [0.08, 0.4], { legacy: 'mess', kit: 'guest_services', acoustic: 'public', name: 'Guest services' }),
+  cafe: S(40, 100, 220, [2.6, 3.0], 'carpet_pax', 'veneer', 'coffered', 1.8, [0.25, 0.5], { legacy: 'mess', kit: 'cafe', acoustic: 'public', name: 'Café' }),
+  art_gallery: S(40, 100, 200, [2.6, 3.0], 'stone', 'veneer', 'panel', 1.8, [0.1, 0.4], { legacy: 'mess', kit: 'art_gallery', acoustic: 'public', name: 'Art gallery' }),
+  arcade: S(50, 130, 220, [2.6, 3.0], 'carpet_pax', 'veneer_dark', 'dark', 1.8, [0.3, 0.55], { legacy: 'mess', kit: 'arcade', acoustic: 'public', name: 'Arcade' }),
+  card_room: S(30, 90, 160, [2.6, 3.0], 'carpet_pax', 'veneer', 'coffered', 1.6, [0.25, 0.5], { legacy: 'mess', kit: 'card_room', acoustic: 'public', name: 'Card room' }),
+  library_pax: S(50, 130, 240, [2.6, 3.0], 'carpet_pax', 'veneer', 'coffered', 1.8, [0.25, 0.5], { legacy: 'mess', kit: 'library_pax', acoustic: 'public', name: 'Library' }),
+  cinema: S(80, 210, 320, [2.6, 4.0], 'carpet', 'veneer_dark', 'dark', 1.4, [0.45, 0.8], { legacy: 'mess', kit: 'cinema', acoustic: 'public', name: 'Cinema' }),
+  gym_pax: S(80, 330, 480, [2.6, 3.0], 'rubber', 'laminate', 'panel', 1.8, [0.25, 0.5], { legacy: 'mess', kit: 'gym_pax', acoustic: 'public', name: 'Fitness centre' }),
+  ice_rink: S(150, 420, 520, [3.0, 7.0], 'tile_wet', 'laminate', 'panel', 6.5, [0.01, 0.2], { legacy: 'mess', kit: 'ice_rink', acoustic: 'public', name: 'Ice rink', exempt: true }),
+  store_large: S(12, 60, 220, [2.3, 3.0], 'chequer', 'paint_grey', 'panel', 1.6, [0.3, 0.6], { legacy: 'store', kit: 'store_large', acoustic: 'workshop', name: 'Store' }),
+  laundry_pax: S(40, 120, 300, [2.4, 3.0], 'vinyl', 'laminate', 'panel', 1.6, [0.3, 0.55], { legacy: 'store', kit: 'laundry_pax', acoustic: 'wet', name: 'Laundry' }),
+  crew_mess: S(40, 180, 400, [2.4, 3.0], 'vinyl', 'laminate', 'panel', 1.8, [0.28, 0.5], { legacy: 'mess', kit: 'crew_mess', acoustic: 'mess', name: 'Crew mess' }),
+  crew_bar: S(30, 100, 220, [2.4, 3.0], 'carpet', 'veneer', 'panel', 1.8, [0.25, 0.5], { legacy: 'mess', kit: 'crew_bar', acoustic: 'mess', name: 'Crew bar' }),
+  conference_pax: S(40, 130, 260, [2.5, 3.2], 'carpet', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'mess', kit: 'conference_pax', acoustic: 'mess', name: 'Conference room' }),
+  medical_ward: S(40, 120, 220, [2.5, 3.0], 'vinyl', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'cabin', kit: 'medical_pax', acoustic: 'cabin', name: 'Medical centre', berth: 1 }),
+  workshop_pax: S(30, 160, 420, [2.8, 3.6], 'epoxy', 'paint_er', 'panel', 1.8, [0.25, 0.5], { legacy: 'store', kit: 'workshop_pax', acoustic: 'workshop', name: 'Workshop' }),
+  plant_pax: S(30, 140, 400, [2.8, 3.6], 'chequer', 'paint_grey', 'panel', 1.8, [0.25, 0.5], { legacy: 'store', kit: 'plant_pax', acoustic: 'engine', name: 'Plant room' }),
+  office_pax: S(30, 90, 220, [2.4, 3.0], 'vinyl', 'laminate', 'panel', 1.6, [0.25, 0.5], { legacy: 'store', kit: 'office_pax', acoustic: 'cabin', name: 'Office' }),
+  pool_deck: S(0, 0, Infinity, [2.4, 2.4], 'teak', 'paint_white', 'open', Infinity, [0, 1], { legacy: 'deck', kit: 'pool_deck', openKit: true, exempt: true, acoustic: 'deck', name: 'Pool deck' }),
+  water_deck: S(0, 0, Infinity, [2.4, 2.4], 'teak', 'paint_white', 'open', Infinity, [0, 1], { legacy: 'deck', kit: 'water_deck', openKit: true, exempt: true, acoustic: 'deck', name: 'Water park' }),
+  sports_deck: S(0, 0, Infinity, [2.4, 2.4], 'teak', 'paint_white', 'open', Infinity, [0, 1], { legacy: 'deck', kit: 'sports_deck', openKit: true, exempt: true, acoustic: 'deck', name: 'Sports deck' }),
+  sun_deck: S(0, 0, Infinity, [2.4, 2.4], 'teak', 'paint_white', 'open', Infinity, [0, 1], { legacy: 'deck', kit: 'sun_deck', openKit: true, exempt: true, acoustic: 'deck', name: 'Sun deck' }),
   cargo: S(0, 0, Infinity, [2, 30], 'steel', 'paint_grey', 'open', Infinity, [0, 1], { legacy: 'store', kit: null, acoustic: 'hold', name: 'Cargo space', exempt: true }),
   open_deck: S(0, 0, Infinity, [2.4, 2.4], 'deck', 'paint_white', 'open', Infinity, [0, 1], { legacy: 'deck', kit: null, acoustic: 'deck', name: 'Open deck', exempt: true }),
 });
@@ -469,11 +499,39 @@ export function spacePlan(variantId, opts = {}) {
     const C = H.core;
     for (let k = 0; k < H.tiers.length - 1; k++) { const a = H.tiers[k], b = H.tiers[k + 1]; stairs.push({ id: `flight-${a.id}`, x0: C.fx0, x1: C.fx1, z0: C.runZ0, z1: C.runZ1, yLow: a.y, yHigh: b.y, up: 'n', foot: `${a.id}-stairs`, head: `${b.id}-stairs` }); }
   }
+  if (ga.pax && ga.type === 'cruise') cruiseSpaces(ga, levels, rooms, doors, stairs, voids);
   const nodes = rooms.map((r) => r.id), ids = new Set(nodes);
   const edges = doors.map((d, i) => [d.a, d.b, i]).filter(([a, b]) => ids.has(a) && ids.has(b));
   const sp = deepFreeze({ v: 1, id: variantId, gen: ga.gen, params, levels, rooms, doors, stairs, links: [], voids, graph: { nodes, edges }, goto: (ga.goto || []).map((g) => ({ ...g })) });
   spCache.set(key, sp);
   return sp;
+}
+/** Cruise ships: every deck of the layout except the cabin decks that repeat (only the bridge deck's is kept: ~330 rooms). */
+function cruiseSpaces(ga, levels, rooms, doors, stairs, voids) {
+  const X = ga.pax, keepCabin = X.decks[X.bridgeDeck - 1].id;
+  for (const d of X.decks) {
+    if (d.use === 'cabin' && d.id !== keepCabin) continue;
+    const spec = cruiseDeck(ga, d.id); if (!spec) continue;
+    levels.push({ id: d.id, y: d.y, deckH: d.h, name: d.name, use: d.use });
+    const F = deckFrame(ga, d.id);
+    for (const t of F.towers) {
+      const id = `${d.id}-${t.id}`;
+      rooms.push(spaceOf({ id, kind: 'stair', x0: t.x0, x1: t.x1, z0: t.z0, z1: t.z1 }, { id: d.id, y: d.y, h: d.h }, 0));
+    }
+    for (const r of spec.rooms) {
+      if (r.walk === false) continue;
+      const k = SCALE[r.space]; if (!k) continue;
+      const o = spaceOf({ id: r.id, kind: r.space, x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1, win: r.win }, { id: d.id, y: d.y, h: d.h }, 0);
+      rooms.push({ ...o, name: r.name, zone: `deck:${d.id}`, h: r.h ?? o.h });
+    }
+    for (const dd of spec.doors) if (dd.b) doors.push({ a: dd.a, b: dd.b, side: dd.side, at: dd.at, w: dd.w, h: dd.h || 2.0, kind: dd.kind, leaf: dd.kind === 'open' ? 'none' : 'swing', sill: 0.05, fire: false });
+    for (const l of spec.links) doors.push({ a: l.room, b: `${d.id}-${l.tower}`, side: l.end, at: 0, w: 1.4, h: 2.0, kind: 'open', leaf: 'none', sill: 0, fire: false });
+    for (const v of spec.voids) voids.push({ id: v.id, level: d.id, x0: v.x0, x1: v.x1, z0: v.z0, z1: v.z1, why: v.why });
+  }
+  for (let k = 0; k < levels.length - 1; k++) {
+    const a = levels[k], b = levels[k + 1];
+    stairs.push({ id: `flight-${a.id}`, x0: -1, x1: 1, z0: 0, z1: 1, yLow: a.y, yHigh: b.y, foot: a.id, head: b.id });
+  }
 }
 function spaceOf(s, t, ti) {
   const k = SCALE[s.kind];

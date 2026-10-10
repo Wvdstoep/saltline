@@ -5,6 +5,7 @@ import { CARGO, unitsOf, handlingOf, eqOf, toTonnes } from '../cargo.js';
 import { typeOf, loaOf, isSail, isYacht, bpOf, basePriceOf, serviceKnOf, iceRank, ICE_RANK, rowOf } from './shipview.js';
 import { payOf, payInfoOf } from './types.js';
 import { CATALOGUE } from '../econ/catalogue.js';
+import { cruiseIncome, fareOf } from './cruises.js';
 
 export const PAY = {
   PER_T_KM: 0.08,
@@ -44,7 +45,12 @@ export function payVoyage({ good, t, km, size = 'mega' }) { return R(t * km * PA
 export function payProject({ t, pieces, km, size = 'mega' }) { return R(t * km * PAY.PER_T_KM * PAY.PROJECT_MUL * eos(t) * sizeMul(size) + PAY.PROJECT_PIECE * pieces); }
 export function payVehicles({ good = 'vehicles', units, km, size = 'mega' }) { const t = toTonnes(good, units); return R(t * km * PAY.PER_T_KM * PAY.VEHICLE_MUL * eos(t) * sizeMul(size)); }
 export function payRopaxCrossing({ pax, lm, km }) { return R(pax * (25 + 0.35 * km) + lm * 2.2 * km * PAY.PER_T_KM * PAY.VEHICLE_MUL); }
-export function payCruise({ guests, hours, comfort = 1, expedition = false }) { return R(guests * PAY.CRUISE_CR * hours * (0.85 + 0.075 * comfort) * (expedition ? PAY.EXPEDITION_MUL : 1)); }
+/** Cruise charter: with a cruise ship class (`cls`) the net ticket fare of her class plus the onboard spending of her venues
+ * (shared/jobs/cruises.js, docs/CRUISE-CONTRACT.md §3); without one the old flat rate (kept for old jobs and tests). */
+export function payCruise({ guests, hours, comfort = 1, expedition = false, cls = null }) {
+  if (cls && fareOf(cls) != null) { const c = cruiseIncome({ guests, hours, cls }); return R(c.ticket + c.onboard); }
+  return R(guests * PAY.CRUISE_CR * hours * (0.85 + 0.075 * comfort) * (expedition ? PAY.EXPEDITION_MUL : 1));
+}
 export function payAnchor({ km, workH, size = 'mega' }) { return R((km * PAY.ANCHOR_KM + workH * PAY.ANCHOR_WORK_H) * sizeMul(size)); }
 export function payStandby(h) { return R(PAY.STANDBY_H * h); }
 export function payCrewchange({ techs, km, sovH = 0 }) { return R(techs * (PAY.CREW_BASE + PAY.CREW_KM * km) + PAY.SOV_H * sovH); }
