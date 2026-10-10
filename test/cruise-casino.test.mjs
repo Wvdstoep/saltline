@@ -248,3 +248,29 @@ test('server: wins and losses go to the company books; stats track the house acc
 test('house edge summary: every game returns less than it takes (roulette 97.3, slots ~95.8, baccarat 98.8-98.9, blackjack ~99.5 with basic strategy)', () => {
   assert.ok(C.slotStats().rtp < 1); assert.ok(36 / 37 < 1);
 });
+
+// ------------------------------------------------------------------------------------------------ the tables' look (pure parts)
+test('table art: the roulette ball always ends in the server pocket, whatever the rotor does', async () => {
+  const { ORDER, ballPath, rotorPath, POCKET, TAU } = await import('../public/js/iv2roulette.js');
+  assert.equal(ORDER.length, 37); assert.deepEqual([...ORDER].sort((a, b) => a - b), Array.from({ length: 37 }, (_, i) => i)); assert.equal(ORDER[0], 0);
+  const R = 100;
+  for (let n = 0; n <= 36; n++) {
+    const k = ORDER.indexOf(n);
+    for (const [T0, rot0] of [[5.6, 0], [1.2, 2.3], [5.6, 17.9]]) {
+      const end = ballPath(T0, T0, k, rot0, R), rel = (((end.ang - rotorPath(T0, T0, rot0) - k * POCKET) % TAU) + TAU) % TAU;
+      assert.ok(Math.min(rel, TAU - rel) < 1e-9, `number ${n}`); assert.ok(Math.abs(end.r - R * 0.5) < 1e-9);
+      let prev = ballPath(0, T0, k, rot0, R).ang, laps = 0; for (let t = 0.01; t <= T0; t += T0 / 400) { const a = ballPath(t, T0, k, rot0, R).ang; laps += Math.abs(a - prev); prev = a; }
+      assert.ok(laps > TAU * 5, 'the ball circles several times');
+    }
+  }
+  assert.ok(ballPath(0, 5, 3, 0, R).r > R * 0.8, 'it starts on the rim'); assert.ok(ballPath(2.5, 5, 3, 0, R).r > ballPath(4.9, 5, 3, 0, R).r);
+});
+test('table art: easing, chips and particles are well behaved', async () => {
+  const UI = await import('../public/js/iv2casinoui.js');
+  for (const k of ['out', 'in', 'io']) { assert.equal(UI.E[k](0), 0); assert.ok(Math.abs(UI.E[k](1) - 1) < 1e-9); }
+  assert.ok(Math.abs(UI.E.back(1) - 1) < 1e-9); assert.ok(Math.abs(UI.E.bounce(1) - 1) < 1e-9);
+  assert.equal(UI.short(1500), '1.5k'); assert.equal(UI.short(25), '25'); assert.equal(UI.short(2500000), '2.5M');
+  assert.equal(UI.quick(), false); assert.equal(UI.T(1), 1);   // no localStorage in node: never throws, never quick
+  assert.match(UI.shade('#336699', 0.3), /^rgb\(/); assert.match(UI.chipColour(7), /^#/);
+  const P = new UI.Particles(); P.confetti(400, 40); P.coins(400, 20); assert.equal(P.p.length, 60); P.update(10, 300); assert.equal(P.p.length, 0);
+});

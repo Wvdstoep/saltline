@@ -38,17 +38,18 @@ export function close() {
   el.style.display = 'none'; el.textContent = ''; const I = cur?.I; cur?.stop?.(); cur = null;
   if (I) { I.modal = false; I.keys?.clear?.(); }
 }
-function mount(I, title, sub) {
+function mount(I, title, sub, casino = false, themeCss = '') {
   if (!styled) { document.head.append(h('style', { id: 'iv2gamescss' }, CSS)); styled = true; }
+  if (casino && !document.getElementById('iv2casinocss')) document.head.append(h('style', { id: 'iv2casinocss' }, themeCss));
   if (!el) {
     el = h('div', { id: 'iv2Game', role: 'dialog', 'aria-modal': 'true' }); document.body.append(el);
     addEventListener('keydown', (e) => { if (isOpen() && (e.key === 'Escape' || (e.key.toLowerCase() === 'e' && !/INPUT|TEXTAREA/.test(e.target.tagName)))) { e.stopPropagation(); e.preventDefault(); close(); } }, true);
   }
-  el.textContent = ''; el.style.display = 'block'; I.unlock?.(); I.keys?.clear?.(); I.modal = true;
+  el.className = casino ? 'casino' : ''; el.textContent = ''; el.style.display = 'block'; I.unlock?.(); I.keys?.clear?.(); I.modal = true;
   const bal = h('span', {}, '');
   el.append(h('div', { class: 'gh' }, h('b', {}, title), bal, h('button', { 'aria-label': 'Close', onclick: close }, '×')));
-  if (sub) el.append(h('div', { class: 'note' }, sub));
-  const body = h('div', {}); el.append(body);
+  if (sub) el.append(h('div', { class: casino ? 'cnote' : 'note', style: casino ? 'padding:4px 14px 0' : '' }, sub));
+  const body = h('div', { class: casino ? 'cbody' : '' }); el.append(body);
   const setMoney = (v) => { bal.textContent = `${money(v)} cr`; };
   setMoney(I.app?.you?.money ?? 0);
   return { body, setMoney };
@@ -148,127 +149,37 @@ function openGuest(I, cls) {
 }
 
 // ------------------------------------------------------------------------------------------------ casino
-function openCasino(I, game, cls) {
+// Each table is its own module (canvas art, animations, sound cues), fetched when the table is used and dropped with the panel; the
+// server's answer is the only thing that decides what the table shows (see iv2roulette.js, iv2cards.js, iv2slots.js).
+const TABLE_MODULES = { roulette: ['./iv2roulette.js', 'create'], blackjack: ['./iv2cards.js', 'blackjack'], baccarat: ['./iv2cards.js', 'baccarat'], poker: ['./iv2cards.js', 'poker'], slots: ['./iv2slots.js', 'create'] };
+async function openCasino(I, game, cls) {
   const lim = tableLimits(cls);
   if (!lim) { ev(I, 'This ship has no casino.', 'warn'); return; }
-  const NAMES = { roulette: 'Roulette (European, one zero)', blackjack: 'Blackjack (pays 3:2)', poker: "Texas hold'em (limit, 3 guests)", slots: 'Slot machine (5 reels, 10 lines)', baccarat: 'Baccarat' };
-  const U = mount(I, NAMES[game], `Table limits ${money(lim.min)}–${money(lim.max)} cr. Credits only. The house keeps a small edge: play for fun, take a break when it stops being fun.`);
-  const msg = h('div', { class: 'msg' }), pending = { busy: false };
-  const chips = [lim.min, lim.min * 2, lim.min * 5, lim.min * 10, lim.min * 25].filter((v, i, a) => v <= lim.max && a.indexOf(v) === i);
-  const S = { chip: chips[0], U, msg, lim, I, game, chips, pending };
-  const impl = { roulette, blackjack, baccarat, slots, poker }[game](S);
-  U.body.append(msg);
-  cur = { I, onMsg(m) {
-    if (m.t !== 'casino' || m.game !== game) return;
-    pending.busy = false; U.setMoney(m.money);
-    if (m.ok !== false && !m.view) return;   // limits / sync with no round open
-    if (m.ok === false) { msg.textContent = m.text || 'Refused.'; msg.style.color = '#ffb0a0'; impl.refused?.(m); return; }
-    if (m.cool > 0) msg.textContent = `Cooling-off: ${Math.ceil(m.cool / 60)} min.`;
+  const NAMES = { roulette: 'Roulette', blackjack: 'Blackjack', poker: "Texas Hold'em", slots: 'Saltline Sevens', baccarat: 'Baccarat' };
+  const { THEME_CSS } = await import('./iv2casinoui.js');   // the theme and helpers of the tables: fetched with the first table
+  const U = mount(I, NAMES[game], `Limits ${money(lim.min)}–${money(lim.max)} cr · credits only · the house keeps a small edge: play for fun, take a break when it stops being fun.`, true, THEME_CSS);
+  const msg = h('div', { class: 'msg' }), pending = { busy: false }, queue = [];
+  const chips = [lim.min, lim.min * 2, lim.min * 5, lim.min * 10, lim.min * 25, lim.min * 100].filter((v, i, a) => v <= lim.max && a.indexOf(v) === i);
+  const S = { chip: chips[0], U, msg, lim, I, game, chips, pending, balance: I.app.you?.money ?? 0, last: null,
+    say(text, good) { msg.textContent = text || ''; msg.style.color = good === true ? '#bfe8c8' : good === false ? '#ffb8a0' : '#f4ecd2'; },
+    send: (op, extra) => send(I, game, op, extra) };
+  let impl = null, alive = true;
+  const dispatch = (m) => {
+    pending.busy = false;
+    if (m.ok === false) { S.say(m.text || 'Refused.', false); U.setMoney(m.money); impl?.refused?.(m); return; }
+    if (m.cool > 0) S.say(`Cooling-off: ${Math.ceil(m.cool / 60)} min.`, false);
+    if (!m.view) { U.setMoney(m.money); return; }   // limits / sync with no round open
     impl.onResult(m);
-  }, stop: impl.stop };
+  };
+  cur = { I, onMsg(m) { if (m.t !== 'casino' || m.game !== game) return; if (impl) dispatch(m); else queue.push(m); }, stop() { alive = false; impl?.stop?.(); } };
+  try {
+    const [file, fn] = TABLE_MODULES[game], mod = await import(file);
+    if (!alive) return;
+    const UI = await import('./iv2casinoui.js');
+    if (!alive) return;
+    impl = mod[fn](S); U.body.append(msg); void UI;
+    for (const m of queue.splice(0)) dispatch(m);
+  } catch (e) { console.warn('[casino]', e); close(); ev(I, 'The table is closed.', 'warn'); return; }
   send(I, game, 'limits');
 }
-const chipRow = (S, onPick) => h('div', { class: 'row' }, S.chips.map((v) => { const b = h('button', { class: v === S.chip ? 'on' : '', onclick: () => { S.chip = v; [...b.parentNode.children].forEach((x) => x.classList.remove('on')); b.classList.add('on'); onPick?.(v); } }, `${money(v)}`); return b; }));
-const netText = (net) => (net > 0 ? `You win ${money(net)} cr!` : net < 0 ? `You lose ${money(-net)} cr.` : 'Push: your stake comes back.');
-const setMsg = (S, text, good) => { S.msg.textContent = text; S.msg.style.color = good === true ? '#bfe8c8' : good === false ? '#ffd0a0' : '#dbe9f4'; };
-
-function roulette(S) {
-  const bets = [], hist = h('div', { class: 'note' }, ''), view = h('div', { class: 'msg' }), board = h('div', {}), tot = h('div', { class: 'note' });
-  let mode = 'straight', first = null; const modes = ['straight', 'split', 'street', 'corner', 'line'];
-  const addBet = (type, n) => {
-    const b = { type, amt: S.chip }; if (n !== undefined) b.n = n;
-    if (!coverOf(b)) { setMsg(S, 'That is not a bet on the layout.', false); return; }
-    const same = bets.find((q) => q.type === type && JSON.stringify(q.n) === JSON.stringify(n));
-    if (same) same.amt = Math.min(S.lim.max, same.amt + S.chip); else bets.push(b);
-    redraw();
-  };
-  const redraw = () => { tot.textContent = bets.length ? `Bets: ${bets.map((b) => `${b.type}${b.n !== undefined ? ' ' + (Array.isArray(b.n) ? b.n.join('/') : b.n) : ''} ${money(b.amt)}`).join(' · ')} — total ${money(bets.reduce((a, b) => a + b.amt, 0))} cr` : 'Pick a chip and tap the layout.'; };
-  const tap = (n) => {
-    if (mode === 'straight') addBet('straight', n);
-    else if (mode === 'split') { if (first === null) { first = n; setMsg(S, `Split: now tap a neighbour of ${n}.`); } else { addBet('split', [first, n]); first = null; setMsg(S, ''); } }
-    else if (mode === 'street') addBet('street', Math.max(1, Math.ceil(n / 3)));
-    else if (mode === 'line') addBet('line', Math.min(11, Math.max(1, Math.ceil(n / 3))));
-    else addBet('corner', n);
-  };
-  const g = h('div', { class: 'grid12' });
-  const zero = h('button', { class: 'num g', style: 'grid-row:1 / span 3', onclick: () => tap(0) }, '0'); g.append(zero);
-  for (let row = 0; row < 3; row++) for (let c = 0; c < 12; c++) { const n = c * 3 + (3 - row); g.append(h('button', { class: `num ${RED.has(n) ? 'r' : 'b'}`, style: `grid-row:${row + 1};grid-column:${c + 2}`, onclick: () => tap(n) }, n)); }
-  const outside = h('div', { class: 'row' }, [['1st 12', 'dozen', 1], ['2nd 12', 'dozen', 2], ['3rd 12', 'dozen', 3], ['Col 1', 'column', 1], ['Col 2', 'column', 2], ['Col 3', 'column', 3], ['Red', 'red'], ['Black', 'black'], ['Odd', 'odd'], ['Even', 'even'], ['1–18', 'low'], ['19–36', 'high']].map(([l, t, n]) => h('button', { onclick: () => addBet(t, n) }, l)));
-  const mrow = h('div', { class: 'row' }, modes.map((m) => { const b = h('button', { class: m === mode ? 'on' : '', onclick: () => { mode = m; first = null; [...b.parentNode.children].forEach((x) => x.classList.remove('on')); b.classList.add('on'); setMsg(S, m === 'corner' ? 'Corner: tap the lowest number of the square.' : ''); } }, m); return b; }));
-  const spin = h('button', { class: 'gold', onclick: async () => { if (!bets.length || S.pending.busy) return; S.pending.busy = true; view.textContent = 'The wheel spins…'; await sleep(500); send(S.I, 'roulette', 'spin', { bets: bets.map((b) => ({ ...b })) }); } }, 'Spin');
-  const clear = h('button', { class: 'red', onclick: () => { bets.length = 0; redraw(); } }, 'Clear');
-  const rebet = h('button', { onclick: () => { if (S.last) { bets.length = 0; bets.push(...S.last.map((b) => ({ ...b }))); redraw(); } } }, 'Rebet');
-  board.append(h('div', { class: 'note' }, 'Chip'), chipRow(S), mrow, g, outside, tot, h('div', { class: 'row' }, spin, clear, rebet), view, hist);
-  S.U.body.append(board); redraw();
-  const history = [];
-  return { onResult(m) {
-    const v = m.view; S.last = bets.map((b) => ({ ...b })); history.unshift(`${v.number}`);
-    view.textContent = `${v.number} ${v.colour}. ${netText(m.net)}`; view.style.color = m.net > 0 ? '#bfe8c8' : m.net < 0 ? '#ffd0a0' : '#dbe9f4';
-    hist.textContent = `Last: ${history.slice(0, 14).join(' ')}`; bets.length = 0; redraw();
-  } };
-}
-
-function blackjack(S) {
-  let bet = S.chips[0]; const dealer = h('div', {}), hands = h('div', {}), acts = h('div', { class: 'row' }), betRow = h('div', { class: 'row' });
-  const betLabel = h('div', { class: 'note' });
-  const setBet = (d) => { const i = Math.max(0, Math.min(S.chips.length - 1, S.chips.indexOf(bet) + d)); bet = S.chips[i]; betLabel.textContent = `Bet ${money(bet)} cr`; };
-  const deal = h('button', { class: 'gold', onclick: () => { if (S.pending.busy) return; S.pending.busy = true; send(S.I, 'blackjack', 'deal', { bet }); } }, 'Deal');
-  betRow.append(h('button', { onclick: () => setBet(-1) }, '−'), h('button', { onclick: () => setBet(1) }, '+'), deal); setBet(0);
-  S.U.body.append(h('div', { class: 'note' }, 'Dealer'), dealer, h('div', { class: 'note' }, 'You'), hands, acts, betLabel, betRow);
-  const show = (v, done) => {
-    dealer.textContent = ''; v.dealer.forEach((c) => dealer.append(card(c))); if (!done) dealer.append(card(0, true)); if (done) dealer.append(h('span', { class: 'note' }, ` ${v.dealerValue}`));
-    hands.textContent = ''; v.hands.forEach((hd, i) => { const row = h('div', {}); hd.cards.forEach((c) => row.append(card(c))); row.append(h('span', { class: 'note' }, ` ${hd.value}${hd.doubled ? ' ×2' : ''}${v.results ? ' · ' + v.results[i] : i === v.active && v.phase === 'play' && v.hands.length > 1 ? ' ◄' : ''}`)); hands.append(row); });
-    acts.textContent = ''; for (const o of v.options) acts.append(h('button', { onclick: () => { if (S.pending.busy) return; S.pending.busy = true; send(S.I, 'blackjack', o); } }, o));
-    betRow.style.display = done || v.phase === 'play' ? (v.phase === 'play' ? 'none' : '') : ''; betLabel.style.display = betRow.style.display;
-  };
-  return { onResult(m) { const v = m.view, done = v.phase === 'done'; show(v, done); if (done) setMsg(S, netText(m.net), m.net > 0 ? true : m.net < 0 ? false : null); else setMsg(S, ''); }, refused() {} };
-}
-
-function baccarat(S) {
-  const stakes = { player: 0, banker: 0, tie: 0 }, area = h('div', { class: 'row' }), out = h('div', {}), tot = h('div', { class: 'note' });
-  const redraw = () => { tot.textContent = `Player ${money(stakes.player)} · Banker ${money(stakes.banker)} (5 % commission) · Tie ${money(stakes.tie)} (8:1)`; };
-  for (const k of ['player', 'banker', 'tie']) area.append(h('button', { onclick: () => { stakes[k] = Math.min(S.lim.max, stakes[k] + S.chip); redraw(); } }, `${k[0].toUpperCase()}${k.slice(1)}`));
-  const deal = h('button', { class: 'gold', onclick: () => { const b = {}; for (const k of Object.keys(stakes)) if (stakes[k]) b[k] = stakes[k]; if (!Object.keys(b).length || S.pending.busy) return; S.pending.busy = true; send(S.I, 'baccarat', 'deal', { bets: b }); } }, 'Deal');
-  S.U.body.append(h('div', { class: 'note' }, 'Chip'), chipRow(S), area, tot, h('div', { class: 'row' }, deal, h('button', { class: 'red', onclick: () => { stakes.player = stakes.banker = stakes.tie = 0; redraw(); } }, 'Clear')), out); redraw();
-  return { onResult(m) {
-    const v = m.view; out.textContent = '';
-    out.append(h('div', {}, 'Player ', ...v.player.map((c) => card(c)), h('span', { class: 'note' }, ` ${v.pv}`)), h('div', {}, 'Banker ', ...v.banker.map((c) => card(c)), h('span', { class: 'note' }, ` ${v.bv}`)));
-    setMsg(S, `${v.outcome === 'tie' ? 'Tie' : v.outcome[0].toUpperCase() + v.outcome.slice(1) + ' wins'}. ${netText(m.net)}`, m.net > 0 ? true : m.net < 0 ? false : null);
-  } };
-}
-
-function slots(S) {
-  let line = Math.max(1, Math.ceil(S.lim.min / 10)); const maxLine = Math.floor(S.lim.max / 10);
-  const reels = h('div', { class: 'row', style: 'flex-wrap:nowrap' }), cells = [], label = h('div', { class: 'note' }), info = h('div', { class: 'note' });
-  for (let r = 0; r < 5; r++) { const col = h('div', { class: 'reel' }); cells.push([]); for (let k = 0; k < 3; k++) { const c = h('div', { class: 'sym' }, '?'); cells[r].push(c); col.append(c); } reels.append(col); }
-  const setLine = (d) => { const steps = [1, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000].filter((v) => v >= Math.ceil(S.lim.min / 10) && v <= maxLine); const i = Math.max(0, Math.min(steps.length - 1, steps.indexOf(line) + d)); line = steps[i] ?? line; label.textContent = `Bet per line ${line} · total ${money(line * 10)} cr`; };
-  const draw = (win, hits = []) => { for (let r = 0; r < 5; r++) for (let k = 0; k < 3; k++) { cells[r][k].textContent = SYMBOLS[win[r][k]]; cells[r][k].classList.toggle('hit', hits.some((q) => LINES[q.line][r] === k && r < q.count)); } };
-  const spin = h('button', { class: 'gold', style: 'flex:1', onclick: async () => { if (S.pending.busy) return; S.pending.busy = true; for (let i = 0; i < 4; i++) { draw(Array.from({ length: 5 }, () => [0, 1, 2].map(() => Math.floor(Math.random() * 8)))); await sleep(90); } send(S.I, 'slots', 'spin', { lineBet: line }); } }, 'SPIN');
-  S.U.body.append(reels, label, h('div', { class: 'row' }, h('button', { onclick: () => setLine(-1) }, '−'), h('button', { onclick: () => setLine(1) }, '+'), h('button', { onclick: () => setLine(99) }, 'Max'), spin), info, h('div', { class: 'note' }, '3 or more ★ anywhere: free spins (×2). W is wild.'));
-  setLine(0);
-  return { async onResult(m) {
-    const v = m.view; draw(v.window, v.hits); let txt = v.pays ? `Lines pay ${money(v.pays)}.` : 'No line.';
-    setMsg(S, txt, v.pays > 0 ? true : null);
-    if (v.free.length) { info.textContent = `${v.scatters} scatters: ${v.freeSpins} free spins!`; await sleep(900); let sum = 0; for (const f of v.free) { draw(f.window, f.hits); sum += f.pays; info.textContent = `Free spin: ${money(sum)} cr so far`; await sleep(f.pays ? 700 : 280); } }
-    setMsg(S, `${v.free.length ? `Free spins ${v.free.reduce((a, f) => a + f.pays, 0)} + lines ${v.pays}. ` : ''}${netText(m.net)}`, m.net > 0 ? true : m.net < 0 ? false : null);
-    info.textContent = v.free.length ? info.textContent : '';
-  } };
-}
-
-function poker(S) {
-  const board = h('div', {}), you = h('div', {}), seats = h('div', { class: 'note' }), acts = h('div', { class: 'row' }), log = h('div', { class: 'note' }), info = h('div', { class: 'note' });
-  const deal = h('button', { class: 'gold', onclick: () => { if (S.pending.busy) return; S.pending.busy = true; send(S.I, 'poker', 'deal'); } }, `Deal (ante ${money(S.lim.min)})`);
-  S.U.body.append(info, h('div', { class: 'note' }, 'Board'), board, h('div', { class: 'note' }, 'Your hand'), you, seats, acts, log, h('div', { class: 'row' }, deal));
-  const NAMES = ['You', 'Anna', 'Ben', 'Carla'];
-  return { onResult(m) {
-    const v = m.view, done = v.phase === 'done'; board.textContent = ''; v.board.forEach((c) => board.append(card(c))); for (let i = v.board.length; i < 5; i++) board.append(card(0, true));
-    you.textContent = ''; v.you.forEach((c) => you.append(card(c)));
-    info.textContent = `${v.stage} · pot ${money(v.pot)} cr · you have put in ${money(v.paid)} · bets ${money(v.unit)} / ${money(v.unit * 2)}`;
-    seats.textContent = v.seats ? v.seats.map((s, i) => (s ? `${NAMES[i]}: ${s.cards.map(cardName).join(' ')} (${s.name})` : `${NAMES[i]}: folded`)).join('  ·  ') : v.folded.map((f, i) => (i ? `${NAMES[i]}${f ? ' folded' : ''}` : '')).filter(Boolean).join(' · ');
-    log.textContent = (v.log || []).map((l) => `${NAMES[l.seat]} ${l.a}s`).join(', ');
-    acts.textContent = ''; for (const o of v.options) acts.append(h('button', { class: o === 'fold' ? 'red' : '', onclick: () => { if (S.pending.busy) return; S.pending.busy = true; send(S.I, 'poker', o); } }, v.costs[o] ? `${o} ${money(v.costs[o])}` : o));
-    deal.style.display = done ? '' : 'none';
-    if (done) setMsg(S, `${v.winners?.includes(0) ? 'You win the pot' : v.folded[0] ? 'You folded' : 'A guest wins'}${v.rake ? ` (house rake ${v.rake})` : ''}. ${netText(m.net)}`, m.net > 0 ? true : m.net < 0 ? false : null); else setMsg(S, '');
-  }, refused(m) { void m; } };
-}
-void MENUS; void rankOf; void colourOf;
+void MENUS; void rankOf; void colourOf; void cardName; void SYMBOLS; void LINES; void RED; void coverOf;

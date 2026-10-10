@@ -1193,6 +1193,33 @@ export class SoundEngine {
     } catch (e) { this._err('event', e); return false; } finally { this._boost = 0; }
   }
 
+  /**
+   * Casino cues (public/js/iv2casinoui.js sfx): synthesised, no samples. name: chip · card · shuffle · tick · reelstop · ball · win · big · lose · coin ·
+   * whoosh. Each is a short shot of at most 3 processing nodes on the shared noise sources, so the casino stays inside the engine's node budget.
+   */
+  casino(name, v = 1) {
+    try {
+      if (!this._live() || !this._gap('cas-' + name, name === 'tick' || name === 'coin' ? 0.025 : 0.04)) return false;
+      const A = 0.5 * clamp(fin(v, 1), 0, 1.5);
+      const click = (sh, t0, f, q, amp, dec) => { const bp = this._bq(sh, 'bandpass', f, q), g = this._gain(sh, 0); this._feed(sh, this.noiseW, bp); bp.connect(g); g.connect(sh.out); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(amp, t0 + 0.002); g.gain.setTargetAtTime(0, t0 + 0.003, dec); };
+      const tone = (sh, t0, f, dur, amp, type = 'sine') => { const o = this._osc(sh, type, f, t0, t0 + dur + 0.05), g = this._gain(sh, 0); o.connect(g); g.connect(sh.out); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(amp, t0 + 0.01); g.gain.setTargetAtTime(0, t0 + dur * 0.4, dur * 0.3); };
+      const shot = (proc, dur, f) => this._shot('cas-' + name, { proc, prio: 1, dur, reverb: 0.25 }, (sh, t0) => { f(sh, t0); sh.end = t0 + dur; });
+      switch (name) {
+        case 'chip': return !!shot(2, 0.2, (sh, t0) => { click(sh, t0, 3200, 4, A * 1.2, 0.006); click(sh, t0 + 0.045, 2600, 5, A * 0.9, 0.005); });
+        case 'card': return !!shot(1, 0.2, (sh, t0) => click(sh, t0, 4200, 1.4, A * 0.9, 0.03));
+        case 'shuffle': return !!shot(1, 0.7, (sh, t0) => { const bp = this._bq(sh, 'bandpass', 3000, 1.1), g = this._gain(sh, 0); this._feed(sh, this.noiseW, bp); bp.connect(g); g.connect(sh.out); for (let i = 0; i < 9; i++) { g.gain.setTargetAtTime(A * 0.8, t0 + i * 0.07, 0.004); g.gain.setTargetAtTime(0, t0 + i * 0.07 + 0.02, 0.01); } });
+        case 'tick': return !!shot(1, 0.08, (sh, t0) => click(sh, t0, 1500 + Math.random() * 300, 6, A * 0.8, 0.004));
+        case 'reelstop': return !!shot(2, 0.35, (sh, t0) => { tone(sh, t0, 130, 0.22, A * 1.2); click(sh, t0, 900, 2, A, 0.012); });
+        case 'ball': return !!shot(2, 0.5, (sh, t0) => { tone(sh, t0, 2300 * (0.9 + Math.random() * 0.2), 0.3, A * 0.7); click(sh, t0, 5000, 3, A * 0.5, 0.004); });
+        case 'whoosh': return !!shot(1, 1.2, (sh, t0) => { const bp = this._bq(sh, 'bandpass', 400, 0.8), g = this._gain(sh, 0); this._feed(sh, this.noiseP, bp); bp.connect(g); g.connect(sh.out); bp.frequency.setValueAtTime(300, t0); bp.frequency.exponentialRampToValueAtTime(2200, t0 + 0.9); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(A * 0.5, t0 + 0.3); g.gain.linearRampToValueAtTime(0, t0 + 1.1); });
+        case 'win': return !!shot(3, 1.1, (sh, t0) => { [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(sh, t0 + i * 0.09, f, 0.5, A * 0.6, 'triangle')); });
+        case 'big': return !!shot(3, 2.2, (sh, t0) => { [523.25, 659.25, 783.99, 1046.5, 1318.5, 1568, 2093].forEach((f, i) => tone(sh, t0 + i * 0.11, f, 0.7, A * 0.5, 'triangle')); click(sh, t0, 6500, 2, A * 0.4, 0.4); });
+        case 'lose': return !!shot(2, 0.8, (sh, t0) => { tone(sh, t0, 233, 0.35, A * 0.5, 'triangle'); tone(sh, t0 + 0.2, 174.6, 0.5, A * 0.5, 'triangle'); });
+        case 'coin': return !!shot(2, 0.4, (sh, t0) => { const f = 1800 + Math.random() * 900; tone(sh, t0, f, 0.18, A * 0.5); tone(sh, t0 + 0.05, f * 1.5, 0.22, A * 0.4); });
+        default: return false;
+      }
+    } catch (e) { this._err('casino', e); return false; }
+  }
   footstep(surface) {
     try {
       if (!this._live() || !this._gap('step', 0.09)) return false;
