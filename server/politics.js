@@ -207,12 +207,25 @@ export class Politics {
     this.record(p, 'refused', e.refuse.text, { harbor: h.id, vid: v?.id || null });
     return { refuse: true, text: e.refuse.text, needs: e.needs || null, reason: e.refuse };
   }
-  canUndock(p) { return this.heldText(this.vesselOf(p)); }
+  canUndock(p) { return this.heldText(this.vesselOf(p), p); }
+  /** Seconds left on a hold: the world clock, or for a PSC wait on the ship the player is on, the ship's clock (warp). */
+  holdLeftS(v, p = null) {
+    const h = v?.held; if (!h) return 0;
+    const world = h.until - this.now;
+    const ship = h.untilShip != null && p && Number.isFinite(p.shipTime) && v === this.vesselOf(p) ? h.untilShip - p.shipTime : Infinity;
+    return Math.max(0, Math.min(world, ship));
+  }
   /** Why this vessel may not sail now (PSC detention, coastal-state detention, hijack hold), or null. */
-  heldText(v) {
+  heldText(v, p = null) {
     const h = v?.held;
     if (!h) return null;
-    if (h.why === 'psc' && (num(v.cond, 100) < (h.cond ?? POL.PSC_RELEASE_COND) || this.now < h.until)) return `Detained by port state control: repair the hull to ${h.cond ?? POL.PSC_RELEASE_COND} % (now ${Math.round(num(v.cond, 100))} %)${this.now < h.until ? ' and wait for the inspector' : ''}.`;
+    if (h.why === 'psc') {
+      const need = h.cond ?? POL.PSC_RELEASE_COND, cond = num(v.cond, 100), left = this.holdLeftS(v, p);
+      if (cond >= need && left <= 0) return null;
+      const wait = left > 0 ? `the inspector re-attends in ${left >= 5400 ? `${Math.ceil(left / 3600)} h` : `${Math.max(1, Math.ceil(left / 60))} min`} of ship time (time warp speeds it up)` : '';
+      if (cond < need) return `Detained by port state control: repair the hull to ${need} % (now ${Math.round(cond)} %)${wait ? ` and ${wait}` : ''}.`;
+      return `Detained by port state control: hull OK (${Math.round(cond)} %), ${wait}.`;
+    }
     if (this.now < h.until) return `Held ${h.why === 'detention' ? 'by coastal state authorities' : 'in port'} — expected release in ${Math.max(1, Math.ceil((h.until - this.now) / 3600))} h.`;
     return null;
   }
@@ -291,6 +304,7 @@ export class Politics {
   pscDetain(p, v, h, regId) {
     const reg = this.ds.psc.regimes[regId];
     v.held = { until: this.now + POL.PSC_MIN_HOLD_H * 3600, why: 'psc', cond: POL.PSC_RELEASE_COND, regime: regId, harbor: h.id };
+    if (v === this.vesselOf(p) && Number.isFinite(p.shipTime)) v.held.untilShip = p.shipTime + POL.PSC_MIN_HOLD_H * 3600;   // the inspector's wait runs on the ship's clock (time warp)
     v.psc.detentions.push({ regime: regId, at: Math.floor(this.now), harbor: h.id });
     if (v.psc.detentions.length > 20) v.psc.detentions.splice(0, v.psc.detentions.length - 20);
     this.charge(p, POL.PSC_FEE, 'fees', v);
@@ -691,7 +705,7 @@ export class Politics {
   tick(p) {
     const pol = this.polOf(p), t = this.now;
     for (const v of this.vesselsOf(p)) {
-      if (v.held && t >= v.held.until && (v.held.why !== 'psc' || num(v.cond, 100) >= (v.held.cond ?? POL.PSC_RELEASE_COND))) { const why = v.held.why; v.held = null; this.say(p, 'info', `${this.shipName(p, v)} released (${why === 'psc' ? 'port state control' : 'hold'} lifted). Crew safe.`, v); }
+      if (v.held && (t >= v.held.until || (v.held.why === 'psc' && this.holdLeftS(v, p) <= 0)) && (v.held.why !== 'psc' || num(v.cond, 100) >= (v.held.cond ?? POL.PSC_RELEASE_COND))) { const why = v.held.why; v.held = null; this.say(p, 'info', `${this.shipName(p, v)} released (${why === 'psc' ? 'port state control' : 'hold'} lifted). Crew safe.`, v); }
       if (v.reflag && t >= v.reflag.readyAt && !(v.reflag.forMove && pol.pending)) this.reflagComplete(p, v);
     }
     if (pol.pending && t >= pol.pending.readyAt) this.homeComplete(p);

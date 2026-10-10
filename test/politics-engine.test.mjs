@@ -49,10 +49,23 @@ test('PSC detention: fee, standing, and no undocking below 60 % or before the ho
   assert.equal(p.money, 1000000 - 1500);
   assert.deepEqual(p.office.pol.rep, { XD: -5, XA: -2, XB: -2, XC: -2 });
   assert.match(pol.canUndock(p), /repair the hull to 60 %/);
-  p.cond = 65; assert.match(pol.canUndock(p), /wait for the inspector/);
+  p.cond = 65; assert.match(pol.canUndock(p), /hull OK \(65 %\), the inspector re-attends in 60 min of ship time/);
   game.simTime = T0 + 3601; assert.equal(pol.canUndock(p), null);
   pol.tick(p); assert.equal(p.held, null);
   assert.ok(game.events.at(-1).text.includes('Crew safe'));
+});
+test('PSC detention: the inspector\'s wait runs on the ship\'s clock, so time warp shortens it', () => {
+  const { pol, game } = makePolitics(), p = player({ home: 'ha1', cond: 50 });
+  p.shipTime = T0;
+  game.rolls = [0.01, 0.01];
+  pol.onDock(p, 'hd1');
+  p.cond = 100;
+  assert.match(pol.canUndock(p), /hull OK \(100 %\), the inspector re-attends in 60 min/);
+  p.shipTime = T0 + 1800; game.simTime = T0 + 360;   // 5× warp for 6 real minutes: 30 min of ship time
+  assert.match(pol.canUndock(p), /re-attends in 30 min/);
+  p.shipTime = T0 + 3601; game.simTime = T0 + 720;   // the hour has passed on the ship's clock
+  assert.equal(pol.canUndock(p), null);
+  pol.tick(p); assert.equal(p.held, null);
 });
 test('war incident outcomes with injected dice: major, minor, total loss, detention', () => {
   const { pol, game } = makePolitics(), p = player({ cargo: [{ good: 'grain', qty: 100, jobId: null }, { good: 'steel', qty: 200, jobId: 'j9' }] });
