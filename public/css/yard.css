@@ -201,3 +201,5 @@
   .ycmpBox { height: 100%; border-radius: 0; }
   .ycmp table { font-size: 12px; }
 }
+.ycardFoot button.gold { background: linear-gradient(180deg, #f3d37a, #c9962c); color: #2a1c02; border-color: #e8c35a; font-weight: 700; }
+.ycardFoot button.gold:hover { filter: brightness(1.08); }

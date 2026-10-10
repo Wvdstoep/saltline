@@ -780,7 +780,7 @@ export class Game {
           return this.sendHarbor(p);
         }
         case 'buy_ship': return this.fleet.buyShip(p, m);   // v6: tradeIn !== false → today's buyShip
-        case 'yard_order': case 'yard_pay': case 'yard_cancel': case 'yard_deliver': case 'yard_buy_stock':
+        case 'yard_order': case 'yard_pay': case 'yard_rush': case 'yard_cancel': case 'yard_deliver': case 'yard_buy_stock':
         case 'yard_inspect': case 'yard_buy_used': case 'yard_repaint': case 'yard_rename':
           this.yard.action(p, m); this.sendYou(p); return this.sendHarbor(p);   // SHIPYARD §7.3 (YARD_ACTIONS)
         case 'patch': return this.patch(p);

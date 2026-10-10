@@ -184,3 +184,44 @@ test('validation: unknown design, yard that cannot build it, option the yard lac
   assert.equal(y.action(p, { action: 'yard_pay', orderId: 'ozzz' }), false);
   assert.equal(y.action(p, { action: 'nope' }), false);
 });
+
+test('rush delivery (speed-up): pays the unpaid instalments + a 8–20 % fee and delivers at once; refused when short of cash or fleet full', () => {
+  const { g, p, ws, y } = setup(1000000);
+  const o = order(y, p);                                   // 6,067,000 hull: contract instalment only
+  const q = y.rushQuote(p, o);
+  assert.equal(q.premium, Math.round(6067000 * 0.20), 'fresh order: 20 % fee');
+  assert.equal(q.cash, 6067000 - 606700, 'the instalments still unpaid');
+  assert.equal(y.action(p, { action: 'yard_rush', orderId: o.id }), false, 'not enough cash');
+  assert.ok(events(ws).at(-1).includes('rush delivery costs'));
+  assert.equal(o.state, 'ordered');
+  cash(g, p, 20000000); const m0 = p.money;
+  assert.equal(y.action(p, { action: 'yard_rush', orderId: o.id }), q.total);
+  assert.equal(o.state, 'delivered'); assert.ok(o.vesselId);
+  assert.equal(p.money, m0 - q.total);
+  assert.ok(p.fleet.some((v) => v.id === o.vesselId));
+  assert.ok(events(ws).some((t) => /rush delivery/.test(t)));
+  assert.equal(y.action(p, { action: 'yard_rush', orderId: o.id }), false, 'already delivered');
+  // later in the build the fee shrinks towards 8 %
+  const o2 = order(y, p);
+  at(g, y, o2.launchAt);
+  const q2 = y.rushQuote(p, o2);
+  assert.ok(q2.premium < q.premium && q2.premium >= Math.round(6067000 * 0.08), `${q2.premium}`);
+  // fleet full: refused before charging
+  const o3 = order(y, p); cash(g, p, 30000000); const m1 = p.money;
+  for (let i = p.fleet.length; i < FLEET.MAX_VESSELS; i++) {
+    const v = g.fleet.makeVessel(p.id, { name: `Filler ${i}`, ship: { cls: 'pilot', lat: 51.98, lon: 4.03, hdg: 0, spd: 0, throttle: 0, rudder: 0 }, docked: 'rotterdam' });
+    p.fleet.push(v); g.fleet.index(v);
+  }
+  assert.equal(y.action(p, { action: 'yard_rush', orderId: o3.id }), false);
+  assert.equal(p.money, m1);
+});
+
+test('order with rush: ordered and delivered in one go; with too little cash nothing is ordered', () => {
+  const { g, p, y } = setup(1000000);
+  assert.equal(order(y, p, { rush: true }), false, 'cash short');
+  assert.equal(p.office.orders.length, 0); assert.equal(p.money, 1000000);
+  cash(g, p, 9000000);
+  const o = order(y, p, { rush: true });
+  assert.equal(o.state, 'delivered');
+  assert.equal(p.money, 9000000 - Math.round(6067000 * 1.20));
+});

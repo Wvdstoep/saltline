@@ -24,7 +24,7 @@ import {
   yardStorageFeePerDay, defaultLivery, validLivery, financing, SIZE_LISTINGS, seededRnd, healOrders, healShipsVessel, yardsFor, isSpecialist,
 } from '../shared/ships/index.js';
 
-export const YARD_ACTIONS = ['yard_order', 'yard_pay', 'yard_cancel', 'yard_deliver', 'yard_buy_stock', 'yard_inspect', 'yard_buy_used', 'yard_repaint', 'yard_rename'];
+export const YARD_ACTIONS = ['yard_order', 'yard_pay', 'yard_rush', 'yard_cancel', 'yard_deliver', 'yard_buy_stock', 'yard_inspect', 'yard_buy_used', 'yard_repaint', 'yard_rename'];
 const ORDER_ID_RE = /^o[0-9a-z]{1,16}$/;
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -85,7 +85,7 @@ export class Yard {
       here, local, localId: local ? `local:${h.id}` : null,
       stock: this.stockAt(h),
       used: this.listingsAt(h).map((l) => publicListing(l, this.reportFor(l, p))),
-      orders: this.ordersOf(p).map((o) => ({ ...compactOrder(o, this.now), price: o.price, schedule: o.schedule, deliverTo: o.deliverTo, quote: this.deliveryQuote(p, o) })),
+      orders: this.ordersOf(p).map((o) => ({ ...compactOrder(o, this.now), price: o.price, schedule: o.schedule, deliverTo: o.deliverTo, quote: this.deliveryQuote(p, o), rush: this.rushQuote(p, o) })),
       tradeIn, sellValue: tradeIn.find((t) => t.vesselId === p.aboard)?.cr ?? 0,
       openOrders: this.openOf(p).length, maxOpen: YARD.MAX_OPEN_ORDERS,
     };
@@ -102,6 +102,7 @@ export class Yard {
     switch (m.action) {
       case 'yard_order': r = this.order(p, m); break;
       case 'yard_pay': r = this.payAction(p, m); break;
+      case 'yard_rush': r = this.rush(p, m); break;
       case 'yard_cancel': r = this.cancel(p, m); break;
       case 'yard_deliver': r = this.deliverAction(p, m); break;
       case 'yard_buy_stock': r = this.buyStock(p, m); break;
@@ -166,6 +167,11 @@ export class Yard {
       registry: typeof m.registry === 'string' ? m.registry.slice(0, 40) : null, deliverTo: m.deliverTo, hull: this.hullNo(id), tradeIn: t.v ? { vesselId: t.v.id, cr: t.cr } : null });
     const first = o.schedule[0], dueNow = Math.max(0, first.cr - o.credit);
     if (Math.floor(p.money) < dueNow) return this.warn(p, `The contract instalment is ${fmt(dueNow)} cr. You have ${fmt(Math.floor(p.money))}.`);
+    if (m.rush) {   // order and have her delivered at once: everything is paid now, plus the rush fee
+      const q = this.rushQuote(p, o);
+      if (Math.floor(p.money) < q.total) return this.warn(p, `A rush delivery costs ${fmt(q.total)} cr now (${fmt(q.cash)} cr of instalments + ${fmt(q.premium)} cr rush fee). You have ${fmt(Math.floor(p.money))}.`);
+      if (!this.fleetRoom(p, t.v ? -1 : 0) || (p.fleet?.length || 0) >= FLEET.MAX_VESSELS) return this.warn(p, 'Your fleet is full: she could not be delivered at once.');
+    }
     // financing (wave-2 bank): instalments are then paid by the loan first; without the bank, cash only
     if (m.loan && this.game.bank && typeof this.game.bank.offerShipLoan === 'function') {
       const f = financing(m.yard, o.price);
@@ -176,6 +182,7 @@ export class Yard {
     this.dropTradeIn(p, t);
     this.payInstalment(p, o, first);
     this.say(p, 'info', `Ordered ${this.modelName(o.variant)} (${o.hull}) at ${this.yardName(o.yard)} for ${fmt(o.price)} cr — ${fmt(first.cr)} cr at signing${t.v ? ` (trade-in ${t.v.name} ${fmt(t.cr)} cr)` : ''}. Delivery in about ${Math.round((o.plannedDeliverAt - o.createdAt) / 3600)} h.`);
+    if (m.rush) this.rush(p, { orderId: o.id });
     return o;
   }
 
@@ -207,6 +214,43 @@ export class Yard {
     this.say(p, 'info', `${o.hull}: ${KEY_TEXT[inst.key].toLowerCase()} instalment paid (${fmt(due)} cr).`);
     this.process(p, o);
     return true;
+  }
+  /**
+   * Rush delivery (speed-up): what it costs to have an open order delivered right now — the instalments still unpaid
+   * (after trade-in and loan credit) plus a rush fee of price × (RUSH_BASE + RUSH_TIME × share of the build still to go).
+   * null when the order can no longer be rushed. A rushed order forfeits its delay damages (it is not late).
+   */
+  rushQuote(p, o) {
+    if (!o || !['ordered', 'building', 'launched'].includes(o.state)) return null;
+    const end = o.delayShown ? o.deliverAt : o.plannedDeliverAt, total = Math.max(1, end - o.createdAt);
+    const left = Math.max(0, Math.min(1, (end - this.now) / total));
+    const premium = Math.round(o.price * (YARD.RUSH_BASE + YARD.RUSH_TIME * left));
+    let credit = o.credit || 0, loan = o.loanCredit || 0, cash = 0;
+    for (const inst of o.schedule) {
+      if (inst.paidAt) continue;
+      let due = inst.cr;
+      const c = Math.min(due, credit); credit -= c; due -= c;
+      const l = Math.min(due, loan); loan -= l; due -= l;
+      cash += due;
+    }
+    return { premium, cash: Math.round(cash), total: Math.round(cash) + premium, left: Math.round(left * 1000) / 1000 };
+  }
+  rush(p, m) {
+    const o = this.orderById(p, m.orderId);
+    if (!o || !isOpen(o)) return this.warn(p, 'No such order.');
+    const q = this.rushQuote(p, o);
+    if (!q) return this.warn(p, 'This order cannot be rushed.');
+    if (o.state === 'defaulted' || o.warnedAt) return this.warn(p, 'Settle the overdue instalment first.');
+    if ((p.fleet?.length || 0) >= FLEET.MAX_VESSELS) return this.warn(p, `Your fleet is full (${FLEET.MAX_VESSELS} ships): she could not be delivered. Sell or trade in a ship first.`);
+    if (Math.floor(p.money) < q.total) return this.warn(p, `A rush delivery costs ${fmt(q.total)} cr now (${fmt(q.cash)} cr of instalments + ${fmt(q.premium)} cr rush fee). You have ${fmt(Math.floor(p.money))}.`);
+    o.ldCr = 0;   // not late: no damages (and none were deducted from the quote)
+    for (const inst of o.schedule) if (!inst.paidAt) this.payInstalment(p, o, inst);
+    this.pay(p, q.premium);
+    const t = this.now;
+    o.steelAt = Math.min(o.steelAt, t); o.keelAt = Math.min(o.keelAt ?? t, t); o.launchAt = Math.min(o.launchAt, t); o.deliverAt = t;
+    o.state = 'ready'; o.readyAt = t; o.storagePaidTo = t;
+    this.say(p, 'info', `${o.hull}: rush delivery — ${fmt(q.cash)} cr of instalments and ${fmt(q.premium)} cr rush fee paid. The yard works round the clock.`);
+    return this.deliver(p, o) ? q.total : false;
   }
   cancel(p, m) {
     const o = this.orderById(p, m.orderId);

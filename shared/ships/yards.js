@@ -17,6 +17,8 @@ export const YARD = {
   LD_PER_MONTH: 0.005,      // liquidated damages: 0.5 % of the price per month of delay, credited at delivery
   WARRANTY_H: 720,          // Game rule (real guarantee period is 12 months [S6])
   GRACE_H: 48,              // an instalment not paid within this is a buyer default
+  RUSH_BASE: 0.08,          // rush delivery (speed-up): fee = price × (RUSH_BASE + RUSH_TIME × share of the build still to go) …
+  RUSH_TIME: 0.12,          // … so 20 % on a fresh order, down to 8 % just before delivery; the unpaid instalments are due at once
   CANCEL_REFUND: 0.8,       // buyer cancels: first instalment lost, later paid instalments come back × 0.8
   LOCAL_MAX_LOA: 30,        // local boatyards (every regional+ harbour) build up to this length
   LOCAL_YACHT_LOA: 24,      // … yachts only up to this length

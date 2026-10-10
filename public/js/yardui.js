@@ -166,10 +166,11 @@ export class YardUi {
     const payHTML = sum ? `<table class="ypay"><thead><tr><th>Instalment</th><th>%</th><th>Due</th><th class="r">Credits</th></tr></thead><tbody>${inst.map((r) => `<tr><td>${esc(r.label)}</td><td>${r.pct}</td><td>${esc(r.atText)}</td><td class="r">${esc(r.crText)}</td></tr>`).join('')}</tbody></table>
       <label class="yline">Payment<select data-yc="loan"><option value="0"${!s.loan ? ' selected' : ''}>Cash</option>${fin ? `<option value="1"${s.loan ? ' selected' : ''}>Loan ${Math.round(fin.ltv * 100)} % over ${fin.years} y · ${esc(fin.name)}</option>` : ''}</select></label>` : '';
     const delHTML = `<fieldset class="yopt"><legend>Delivery</legend><label><input type="radio" name="yd" data-act="yard-del" data-to="yard"${s.deliverTo !== 'home' ? ' checked' : ''}> At the yard (${esc(yardById(s.yard)?.harbor || '')})</label><label><input type="radio" name="yd" data-act="yard-del" data-to="home"${s.deliverTo === 'home' ? ' checked' : ''}> Delivery crew to my home port</label>
-      <label title="Skip the yard's backlog for 12 % more"><input type="checkbox" data-act="yard-slot"${s.slot === 'resale' ? ' checked' : ''}> Buy an earlier slot (resale, +12 %)</label></fieldset>`;
+      <label title="Skip the yard's backlog for 12 % more"><input type="checkbox" data-act="yard-slot"${s.slot === 'resale' ? ' checked' : ''}> Buy an earlier slot (resale, +12 %)</label>
+      <label title="Pay every instalment now plus a rush fee of ${Math.round((YARD.RUSH_BASE + YARD.RUSH_TIME) * 100)} % of the price and she is delivered at once"><input type="checkbox" data-act="yard-rush-now"${s.rush ? ' checked' : ''}> Speed up: deliver immediately (+${Math.round((YARD.RUSH_BASE + YARD.RUSH_TIME) * 100)} % rush fee${sum ? `, about ${esc(F.fmtCr(Math.round(sum.price * (1 + YARD.RUSH_BASE + YARD.RUSH_TIME))))} in total` : ''})</label></fieldset>`;
     const sheet = F.specSheet(variant, s.yard).map((sec) => `<details class="yspec"><summary>${esc(sec.title)}</summary><dl>${sec.rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details>`).join('');
     const blocked = row?.blockedBy ? `<p class="ywarn">${esc(row.blockText)}</p>` : '';
-    const canOrder = !!sum && (you?.money ?? 0) >= sum.dueNow && !row?.blockedBy;
+    const canOrder = !!sum && (you?.money ?? 0) >= (s.rush ? Math.round(sum.price * (1 + YARD.RUSH_BASE + YARD.RUSH_TIME)) - (sum.credit || 0) : sum.dueNow) && !row?.blockedBy;
     const foot = `<div class="yfoot"><div class="ysum">${sum ? `<span>Due now <b>${esc(sum.dueText)}</b></span><span>Total <b>${esc(sum.priceText)}</b></span><span>Delivery <b>${esc(sum.hoursText)}</b></span>` : '<span class="muted">Choose a yard</span>'}</div>
       <div class="ybtns"><button class="small" data-act="yard-cmp" data-key="cfg">Compare</button><button class="primary" data-act="yard-order" ${canOrder ? '' : 'disabled'} title="${sum && !canOrder ? esc(`You need ${F.fmtCr(sum.dueNow)} for the contract instalment.`) : ''}">Order — ${esc(sum ? sum.dueText : '—')}</button></div></div>`;
     return `<div class="yconf"><div class="yconfHead"><h3>${esc(m.refName.split(' (')[0])}</h3><p class="muted small">${esc(F.sizeLine(m))} · ${m.length} × ${m.beam} × ${m.draft} m · ${esc(m.engine.label)} · burn ${row0?.burn ?? m.burn} t/h · ref. ${esc(F.fmtUsd(m.usdM))}</p></div>
@@ -251,6 +252,7 @@ export class YardUi {
         <p class="small">${v.next ? `Next: <b>${esc(v.next.label)}</b> ${esc(v.next.crText)} — <span class="${v.next.overdue ? 'down' : ''}">${esc(v.next.dueText)}</span>` : 'Fully paid.'}${v.deliverText && v.open ? ` · delivery ${esc(v.deliverText)}` : ''}</p>
         ${v.open ? `<div class="ycardFoot">${v.next ? `<button class="small primary" data-act="yard-pay" data-id="${esc(o.id)}">Pay now · ${esc(v.next.crText)}</button>` : ''}
           <select data-act-change="yard-deliver" data-id="${esc(o.id)}" aria-label="Delivery"><option value="yard"${o.deliverTo !== 'home' ? ' selected' : ''}>Hand over at the yard</option><option value="home"${o.deliverTo === 'home' ? ' selected' : ''}>Delivery crew home</option><option value="express">Express delivery home</option></select>
+          ${o.rush && ['ordered', 'building', 'launched'].includes(o.state) ? `<button class="small gold" data-act="yard-rush" data-id="${esc(o.id)}" data-total="${o.rush.total}" data-premium="${o.rush.premium}" title="Pay the unpaid instalments (${F.fmtCr(o.rush.cash)}) plus a rush fee (${F.fmtCr(o.rush.premium)}) and she is delivered at once">Speed up · deliver now · ${F.fmtCr(o.rush.total)}</button>` : ''}
           <button class="small danger" data-act="yard-cancel" data-id="${esc(o.id)}" title="The first instalment is lost; later paid instalments come back × ${YARD.CANCEL_REFUND}">Cancel</button></div>` : ''}</div></article>`).join('')}</div>`;
   }
 
@@ -364,6 +366,7 @@ export class YardUi {
       }
       case 'yard-livery': if (this.sel) { this.sel.preset = d.preset; this.sel.livery = F.liveryFrom(d.preset, this.sel.mark, this.sel.livery); } break;
       case 'yard-del': if (this.sel) this.sel.deliverTo = d.to === 'home' ? 'home' : 'yard'; break;
+      case 'yard-rush-now': if (this.sel) this.sel.rush = !this.sel.rush; break;
       case 'yard-slot': if (this.sel) this.sel.slot = this.sel.slot === 'resale' ? 'normal' : 'resale'; break;
       case 'yard-rot': this.preview.rotate(Number(d.d) || 15); return;
       case 'yard-view': this.preview.setView(d.v); return;
@@ -379,6 +382,7 @@ export class YardUi {
       case 'yard-inspect': { const l = (this._h?.yard?.used || []).find((x) => x.id === d.id); if (!l) return; this.send('yard_inspect', { listingId: l.id }); return; }
       case 'yard-buy-used': { const l = (this._h?.yard?.used || []).find((x) => x.id === d.id); if (!l) return; const c = F.listingCard(l); if (this.confirm(`Buy the ${c.age}-year-old ${c.title} for ${c.priceText}?${c.inspected ? '' : ' She has not been inspected.'}`)) this.send('yard_buy_used', { listingId: l.id, tradeIn: this.tradeIn || null }); return; }
       case 'yard-pay': this.send('yard_pay', { orderId: d.id }); return;
+      case 'yard-rush': if (this.confirm(`Speed up: pay ${F.fmtCr(+d.total)} now (including a rush fee of ${F.fmtCr(+d.premium)}) and take delivery immediately?`)) this.send('yard_rush', { orderId: d.id }); return;
       case 'yard-cancel': if (this.confirm('Cancel this order? The contract instalment is lost; later paid instalments come back at 80 %.')) this.send('yard_cancel', { orderId: d.id }); return;
       case 'yard-sell': if (this.confirm('Sell the ship you are aboard?')) this.send('sell_ship'); return;
       default: return;
@@ -391,7 +395,7 @@ export class YardUi {
     const sum = F.orderSummary(cur.variant, s.yard, { tradeIn: this.tradeInCr(), slot: s.slot }); if (!sum) return;
     const y = yardById(s.yard);
     if (!this.confirm(`Order a ${MODELS[s.model].short} at ${y?.name || s.yard} for ${sum.priceText}? ${sum.dueText} is due now, delivery in ${sum.hoursText}.`)) return;
-    this.send('yard_order', { variant: cur.variant, yard: s.yard, livery: this.livery(), name: s.name || null, registry: s.registry || null, deliverTo: s.deliverTo, slot: s.slot, tradeIn: this.tradeIn || null, loan: !!s.loan });
+    this.send('yard_order', { variant: cur.variant, yard: s.yard, livery: this.livery(), name: s.name || null, registry: s.registry || null, deliverTo: s.deliverTo, slot: s.slot, tradeIn: this.tradeIn || null, loan: !!s.loan, rush: !!s.rush });
     this.sec = 'orders'; this.sheet = null; this.rerender();
   }
   /** keys while the shipyard is open: N / U / O jump to Newbuild / Used / Orders, [ ] rotate the preview. true = handled. */
