@@ -40,6 +40,11 @@ export const MOTION_CLASSES = {
   schooner: { gm: 1.4, zr: 0.1, zh: 0.3, wind: 15, turn: 2, vmax: 10, sail: true },
   cutter: { gm: 1.6, zr: 0.08, zh: 0.28, wind: 1.5, turn: 5, vmax: 24 },
   lifeboat: { gm: 1.2, zr: 0.1, zh: 0.3, wind: 1.0, turn: -5, vmax: 25 },
+  skiff: { gm: 0.7, zr: 0.12, zh: 0.32, wind: 0.6, turn: -9, vmax: 35 },
+  rib: { gm: 0.7, zr: 0.12, zh: 0.32, wind: 0.6, turn: -9, vmax: 32 },
+  patrol: { gm: 1.0, zr: 0.1, zh: 0.3, wind: 0.9, turn: -6, vmax: 34 },
+  corvette: { gm: 1.8, zr: 0.07, zh: 0.28, wind: 1.6, turn: 4, vmax: 26 },
+  frigate: { gm: 2.2, zr: 0.06, zh: 0.27, wind: 2.0, turn: 3, vmax: 28, fins: 0.12 },
   derelict: { gm: 0.6, zr: 0.04, zh: 0.25, wind: 1.0, turn: 0, vmax: 1 },
 };
 const BY_CATEGORY = { cargo: 'coaster', working: 'trawler', passenger: 'ferry', 'motor yacht': 'myacht', 'sailing yacht': 'sloop' };

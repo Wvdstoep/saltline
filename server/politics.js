@@ -334,7 +334,7 @@ export class Politics {
       return { kind, outcome, text: txt, covered };
     }
     const n = outcome === 'minor' ? POL.OUTCOME.minor[1] : POL.OUTCOME.major[1];
-    v.cond = Math.max(0, num(v.cond, 100) - n);
+    v.cond = Math.max(Math.min(1, num(v.cond, 100)), num(v.cond, 100) - n);   // an incident that is not a total loss never takes the hull below 1 %
     let lost = 0;
     if (outcome === 'major') for (const c of v.cargo || []) { const k = c.qty * POL.MAJOR_CARGO_LOSS; c.qty = Math.round((c.qty - k) * 10) / 10; lost += k; }
     if (outcome === 'major') v.cargo = (v.cargo || []).filter((c) => c.qty > 0);
@@ -343,6 +343,19 @@ export class Politics {
     this.record(p, 'incident', txt, { areaId: area?.id || null, outcome });
     this.say(p, 'risk', txt, v);
     return { kind, outcome, hull: n, cargoLost: Math.round(lost * 10) / 10, covered, text: txt };
+  }
+  /**
+   * Hostile ship attack (server/hostile.js) in a war_risk area: with war cover active the hull points become a repair credit
+   * (30 days) and a total loss pays the hull value, the same terms as incident(). Returns whether cover applied. Piracy is not
+   * covered by war cover (areas of kind 'piracy' never are).
+   */
+  hostileClaim(p, area, { points = 0, loss = false, cond = null } = {}) {
+    if (!area || area.kind !== 'war_risk') return false;
+    const v = this.vesselOf(p), pol = this.polOf(p), vid = this.vkey(v, p);
+    if (!((pol.cover[`${vid}|${area.id}`] || 0) > this.now)) return false;
+    if (loss) { this.charge(p, -hullValue(this.vview(v).cls, num(cond, num(v.cond, 100))), 'income', v); this.record(p, 'loss', `War cover paid out the hull value after the loss of ${this.shipName(p, v)}.`, { areaId: area.id }); }
+    else if (points > 0) pol.claims.push({ v: vid, points, until: Math.floor(this.now + 30 * 86400) });
+    return true;
   }
   /** Hull points covered by war cover that a repair may credit (call from the yard; consumes the claim). */
   repairCredit(p, v = this.vesselOf(p)) {
@@ -386,7 +399,12 @@ export class Politics {
         let pDay = pDayOf(a) * mul;
         if (corr && this.offCorridor(v, corr)) { const mine = a.mix?.mine || 0; pDay *= mine * POL.OFF_CORRIDOR_MINE_MUL + (1 - mine); if (!rt.offCorr) { rt.offCorr = true; this.say(p, 'risk', `Off the corridor — mine risk higher (advisory ${srcShort(this.ds, corr.src)}).`, v); } } else rt.offCorr = false;
         const pH = 1 - Math.pow(1 - Math.min(1, pDay), hrs / 24);
-        if (this.rnd() < pH) { out.incidents.push(this.incident(p, v, a, pickShare(a.mix || { projectile: 1 }, this.rnd()))); if (!v.ship || num(v.cond, 1) <= 0) break; }
+        if (this.rnd() < pH) {
+          const kind = pickShare(a.mix || { projectile: 1 }, this.rnd());
+          const r = this.run3d(p, { type: 'incident', kind, area: a }, () => this.incident(p, v, a, kind));   // an online skipper sees it happen (server/hostile.js present)
+          if (r) out.incidents.push(r);
+          if (!v.ship || num(v.cond, 1) <= 0) break;
+        }
       } else if (a.kind === 'warlike' && underway && C.crewCost) {
         if (fresh) this.say(p, 'risk', fill(TEMPLATES.warlike, { asOf: fmtDate(a.asOf) }), v);
         this.accrue(p, `crew|${key}`, C.crewCost * ((a.crewPayMul || 2) - 1) * hrs, 'wages', v);
@@ -396,13 +414,19 @@ export class Politics {
         const kn = Math.abs(num(v.ship.spd)), km = kn * 1.852 * hrs;
         const guards = (pol.guards[key]?.until || 0) > t && pol.guards[key]?.areaId === a.id;
         const pr = piracyChance(a.p100 || 0, km, { speedKn: kn, convoy: !!(this.ownerOf(p)?.convoyId), guards });
-        if (pr > 0 && this.rnd() < pr) out.incidents.push(this.piracy(p, v, a, pickShare(a.kinds || { robbery: 1 }, this.rnd())));
+        if (pr > 0 && this.rnd() < pr) {
+          const kind = pickShare(a.kinds || { robbery: 1 }, this.rnd());
+          const r = this.run3d(p, { type: 'piracy', kind, area: a }, () => this.piracy(p, v, a, kind));
+          if (r) out.incidents.push(r);
+        }
       }
       for (const j of v.jobs || []) if (j?.pol?.mustAvoid?.includes(a.id) && !j.pol.breached) { j.pol.breached = true; this.say(p, 'risk', `${this.shipName(p, v)} entered ${a.name}, which the contract "${j.title}" says to avoid: pay halved on delivery.`, v); }
     }
     rt.inAreas = ids;
     return out;
   }
+  /** Dice outcome with a 3D scene for an online skipper (server/hostile.js): returns null when a scene took over, else the outcome now. */
+  run3d(p, spec, fn) { const h = this.game.hostiles; if (!p?.isActor && h && typeof h.present === 'function' && h.present(p, spec, fn)) return null; return fn(); }
   corridorFor(area) {
     for (const c of this.ds.areas) if (c.kind === 'corridor' && isActive(c, this.now) && (c.to || []).some((hid) => { const h = this.harborById(hid); return h && areasAt(this.ds, h.lat, h.lon, ['war_risk']).some((x) => x.id === area.id); })) return c;
     return null;
@@ -420,7 +444,8 @@ export class Politics {
     const ship = this.shipName(p, v), pol = this.polOf(p), covered = (pol.cover[this.coverKey(v, p, a.id)] || 0) > this.now;
     let txt;
     if (kind === 'robbery') { const cr = Math.min(POL.ROBBERY_MAX, Math.round(POL.ROBBERY_FRAC * Math.max(0, num(this.ownerOf(p)?.money)))); this.charge(p, cr, 'costs', v); txt = fill(TEMPLATES.robbery, { ship, where, cr }); }
-    else if (kind === 'repelled') { v.cond = Math.max(0, num(v.cond, 100) - 3); txt = fill(TEMPLATES.repelled, { ship, where, n: 3 }); }
+    else if (kind === 'repelled') { v.cond = Math.max(Math.min(1, num(v.cond, 100)), num(v.cond, 100) - 3);   // a repelled approach never takes the hull below 1 %
+      txt = fill(TEMPLATES.repelled, { ship, where, n: 3 }); }
     else { v.held = { until: this.now + POL.HIJACK_H * 3600, why: 'hijack', areaId: a.id }; if (!covered) this.charge(p, Math.round(POL.HIJACK_COST_FRAC * hullValue(this.vview(v).cls, num(v.cond, 100))), 'costs', v); txt = fill(TEMPLATES.hijack, { ship, where, h: POL.HIJACK_H }); }
     this.record(p, 'piracy', txt, { areaId: a.id, kind }); this.say(p, 'risk', txt, v);
     return { kind, text: txt };

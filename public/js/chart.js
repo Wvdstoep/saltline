@@ -592,6 +592,7 @@ export class Chart {
       this.drawTriangle(p, cur.hdg ?? 0, 6, c.state && c.state !== 'patrol' ? '#ff2020' : '#ff6b6b');
       if (this.zoom >= 8) { ctx.fillStyle = '#ffb0b0'; ctx.fillText(c.name || 'Coast guard', p.x + 8, p.y); }
     }
+    try { a.hostile?.drawChart(this); } catch { /* hostile layer is optional */ }
     for (const o of a.others?.values?.() || []) {
       const cur = o.cur || o; const p = this.project(cur.lat, cur.lon); if (!this.onScreen(p)) continue;
       const convoy = o.convoyId && o.convoyId === a.you?.convoyId;
@@ -825,6 +826,7 @@ export class Chart {
     }
     for (const o of a.others?.values?.() || []) { const c = o.cur || o; consider(c.lat, c.lon, { kind: 'player', text: `${o.name} · ${SHIP_CLASSES[o.cls]?.name || o.cls || 'ship'}`, data: o }); }
     for (const c of a.cutters?.values?.() || []) { const cur = c.cur || c; consider(cur.lat, cur.lon, { kind: 'cutter', text: `${c.name || 'Coast guard'} · ${c.state || 'patrol'}`, data: c }); }
+    a.hostile?.chartHits(consider);
     for (const r of collectRescues(a)) consider(r.lat, r.lon, { kind: 'rescue', text: `SAR ${r.kind} → ${r.playerName || ''}`, data: r });
     if (this.layers.fleet) this.app.fleetUi?.chartHits(consider); // v6 fleet ships
     if (this.layers.mh) this.app.mhLayer?.chartHits(consider);   // inland harbours
@@ -920,7 +922,7 @@ export class Chart {
     if (hit.kind === 'mh') { this.hidePopup?.(); return this.app.hud?.openMinorHarbour?.(hit.data.id); }   // inland harbour → its card
     const a = this.app, s = a.ship, d = hit.data;
     this.openPopup(hit.lat, hit.lon, (head, body) => {
-      const b = document.createElement('b'); b.textContent = hit.kind === 'ai' ? d.name : hit.kind === 'cutter' ? (d.name || 'Coast guard cutter') : hit.kind === 'rescue' ? `SAR ${d.kind}` : d.name; head.appendChild(b);
+      const b = document.createElement('b'); b.textContent = hit.kind === 'ai' ? d.name : hit.kind === 'cutter' ? (d.name || 'Coast guard cutter') : hit.kind === 'hostile' ? (d.label || 'Unknown fast craft') : hit.kind === 'rescue' ? `SAR ${d.kind}` : d.name; head.appendChild(b);
       if (hit.kind === 'fleet') { this.app.fleetUi?.chartPopup(hit, body); return; } // v6
       const lines = [];
       const cur = d.cur || d;

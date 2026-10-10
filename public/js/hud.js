@@ -790,7 +790,7 @@ export class Hud {
     el.innerHTML = `<span class="vsum">${ic('route')}<span>${pts.length} wp · ${nm.toFixed(1)} nm · ETA ${esc(fmtDur(eta))}</span>${plan}${a.autopilot ? '<span class="chip good">autopilot</span>' : ''}</span>
       <button id="voySail" class="primary">${ic('play')}<span class="lbl">${!editing && a.autopilot ? 'Sailing' : 'Sail route'}</span></button><button id="voyExpress">${ic('ffwd')}<span class="lbl">Express ${fmt(cost)} cr</span></button><button id="voySet" title="The crew keeps sailing this route while you are offline">${ic('clock')}<span class="lbl">Set voyage</span></button>`;
     $('voySail').onclick = () => { if (editing || !a.pilot) this.chart.sailRoute(); else if (!a.autopilot) a.pilot.engage(true); };
-    $('voyExpress').onclick = () => { if (a.you?.docked) return this.event({ kind: 'warn', text: 'Cast off first — express passages start at sea.' }); if (confirm(`Express passage to the last waypoint: ${fmt(cost)} cr plus the fuel and wear of the leg. Go?`)) a.net.action('express', { lat: last.lat, lon: last.lon }); };
+    $('voyExpress').onclick = () => { if (a.you?.docked) return this.event({ kind: 'warn', text: 'Cast off first — express passages start at sea.' }); if (confirm(`Express passage to the last waypoint: ${fmt(cost)} cr plus the fuel and wear of the leg.${a.hostile?.expressWarning(pts) || ''} Go?`)) a.net.action('express', { lat: last.lat, lon: last.lon }); };
     $('voySet').onclick = () => {
       const order = Number.isFinite(a.pilot?.order) && a.autopilot ? a.pilot.order : a.input?.throttleCmd;
       const throttle = order > 0.05 ? Math.round(order * 100) / 100 : 0.7;
@@ -866,6 +866,12 @@ export class Hud {
       ctx.fillStyle = c.color; ctx.strokeStyle = c.color; ctx.lineWidth = 1;
       if (c.kind === 'harbor') { ctx.fillRect(x - 3.5, y - 3.5, 7, 7); ctx.fillStyle = 'rgba(200,240,255,0.8)'; if ((rangeU < 12000 || c.size === 'mega') && !small) ctx.fillText(c.label, x, y - 9); }
       else if (c.kind === 'cutter') { ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y + 4); ctx.lineTo(x - 5, y + 4); ctx.closePath(); ctx.fill(); }
+      else if (c.kind === 'hostile') {   // hostile AI ship: red diamond with a pulsing ring, the label once identified (hostile.js)
+        const hh = (((c.hdg || 0) + rot) * Math.PI) / 180, pulse = 7 + 2 * Math.sin(now / 160);
+        ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, pulse, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + Math.sin(hh) * 7, y - Math.cos(hh) * 7); ctx.lineTo(x + Math.cos(hh) * 4, y + Math.sin(hh) * 4); ctx.lineTo(x - Math.sin(hh) * 4, y + Math.cos(hh) * 4); ctx.lineTo(x - Math.cos(hh) * 4, y - Math.sin(hh) * 4); ctx.closePath(); ctx.fill();
+        if (!small) { ctx.fillStyle = c.color; ctx.fillText(c.label, x, y - 12); }
+      }
       else if (c.kind === 'wreck') { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x - 4, y - 4); ctx.lineTo(x + 4, y + 4); ctx.moveTo(x + 4, y - 4); ctx.lineTo(x - 4, y + 4); ctx.stroke(); }
       else if (c.kind === 'ground') { ctx.beginPath(); ctx.arc(x, y, Math.max(4, c.radiusU * k), 0, Math.PI * 2); ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]); }
       else if (c.kind === 'storm') { ctx.beginPath(); ctx.arc(x, y, Math.max(5, (c.radiusU || 0) * k), 0, Math.PI * 2); ctx.setLineDash([4, 3]); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = 'rgba(255,100,100,0.08)'; ctx.fill(); }

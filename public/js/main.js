@@ -152,6 +152,8 @@ class App {
     import('./hq.js').then((m) => { this.hq = new m.Hq(this); }).catch((e) => console.warn('[hq] unavailable', e));
     this.yardUi = null;   // SHIPYARD H13: the shipyard screen (yardui.js); harbour sheet → Shipyard tab (hud.js H5)
     if (new URLSearchParams(location.search).get('yard') !== '0') import('./yardui.js').then((m) => { this.yardUi = new m.YardUi(this); }).catch((e) => console.warn('[yard] unavailable', e));
+    this.hostile = null;    // hostile AI ships (docs/HOSTILE-AI-CONTRACT.md): risk chip, banner, pirates and navy in 3D, radar and chart
+    import('./hostile.js').then((m) => { this.hostile = new m.HostileLayer(this); }).catch((e) => console.warn('[hostile] unavailable', e));
     this.politics = null;   // world politics (docs/WORLD-POLITICS-CONTRACT.md §5): Rules tab, chart overlays, risk check, Compliance
     import('./politics.js').then((m) => { this.politics = new m.PoliticsUi(this); if (this.net.connected) this.politics.load(); }).catch((e) => console.warn('[politics] unavailable', e));
     this.touchHelm = null;
@@ -235,6 +237,7 @@ class App {
       case 'ww_static': this.wwMesh?.setStatics(m.objects || []); this.terrain.wtiles?.setSkipIds?.(this.wwMesh?.knownIds?.() || []); break;  // bridges & locks near us (§8.2)
       case 'ww': this.wwMesh?.applyDelta(m); break;                       // span / chamber state, signals, outages
       case 'strike': this.flash?.(); break;                               // bridge strike (the event line carries the text)
+      case 'hostile_fx': try { this.hostile?.onFx(m); } catch { /* optional */ } break;   // hostile AI ships: a mine blast
       case 'chat': this.hud.chat(m); break;
       case 'join': this.hud.event({ kind: 'info', text: `${m.player.name} came online.` }); break;
       case 'leave': { const o = this.others.get(m.id); if (o) { this.hud.event({ kind: 'info', text: `${o.name} went offline.` }); this.drop(o.mesh); this.others.delete(m.id); } break; }
@@ -378,6 +381,7 @@ class App {
     }
     if (Array.isArray(m.rescues)) this.syncRescues(m.rescues, now);
     if (Array.isArray(m.fleet)) this.syncFleet(m.fleet, !!m.fleetFull, now);
+    try { this.hostile?.sync(m.hostiles, now); } catch (e) { if (!this.hostileWarned) { this.hostileWarned = true; console.warn('[hostile] sync failed', e); } }
   }
   /** v6: fleet ships (snap.fleet) drawn and interpolated like AI traffic; labels "<ship> · <owner>" / "· yours" / "· laid up". */
   syncFleet(list, full, now) {
@@ -1394,6 +1398,7 @@ class App {
     this.updateOtherRigs(now);
     for (const o of this.others.values()) { this.interp(o, now); this.shipVisual(o.mesh, o.cur.lat, o.cur.lon, o.cur.hdg, o.cur.spd, o.vis, o.flooding || 0, dt, !!o.docked); }
     for (const c of this.cutters.values()) { this.interp(c, now); this.shipVisual(c.mesh, c.cur.lat, c.cur.lon, c.cur.hdg, c.cur.spd, c.vis, 0, dt, false); if (c.mesh.userData.beacon) c.mesh.userData.beacon.material.emissiveIntensity = c.state === 'patrol' ? 0.5 : 2 + 2 * Math.sin(this.time * 12); }
+    try { this.hostile?.update(dt, now); } catch (e) { if (!this.hostileWarned) { this.hostileWarned = true; console.warn('[hostile] update failed', e); } }
     for (const a of this.ai.values()) { this.interp(a, now); this.shipVisual(a.mesh, a.cur.lat, a.cur.lon, a.cur.hdg, a.state === 'underway' ? a.cur.spd : 0, a.vis, 0, dt, a.state !== 'underway'); }
     for (const f of this.fleetShips.values()) { this.interp(f, now); this.shipVisual(f.mesh, f.cur.lat, f.cur.lon, f.cur.hdg, f.state === 'at_sea' ? f.cur.spd : 0, f.vis, 0, dt, f.state !== 'at_sea'); }
     for (const r of this.rescues.values()) {
@@ -1483,6 +1488,7 @@ class App {
     for (const pl of this.world.platforms || []) contacts.push({ kind: 'platform', lat: pl.lat, lon: pl.lon, color: '#f2b134', label: pl.name.split(' (')[0] });
     for (const w of this.wrecks) contacts.push({ kind: 'wreck', lat: w.lat, lon: w.lon, color: '#bbb' });
     for (const c of this.cutters.values()) contacts.push({ kind: 'cutter', lat: c.cur.lat, lon: c.cur.lon, color: c.state === 'patrol' ? '#ff6b6b' : '#ff2020' });
+    if (this.hostile) for (const c of this.hostile.radarContacts()) contacts.push(c);
     for (const o of this.others.values()) contacts.push({ kind: 'ship', lat: o.cur.lat, lon: o.cur.lon, hdg: o.cur.hdg, color: o.convoyId && o.convoyId === this.you?.convoyId ? '#5ad6ff' : o.wanted ? '#ffb070' : '#ffffff', label: o.name });
     for (const a of this.ai.values()) contacts.push({ kind: 'ai', lat: a.cur.lat, lon: a.cur.lon, hdg: a.cur.hdg, spd: a.cur.spd, color: '#9aa3ab', label: a.name, dest: a.destName, state: a.state });
     for (const f of this.fleetShips.values()) contacts.push({ kind: 'ai', lat: f.cur.lat, lon: f.cur.lon, hdg: f.cur.hdg, spd: f.cur.spd, color: f.ownerId === this.you?.id ? '#6fe3d6' : '#c8d6e2', label: f.name, state: f.state === 'at_sea' ? 'underway' : 'moored' });

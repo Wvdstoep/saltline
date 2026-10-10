@@ -1188,6 +1188,8 @@ export class SoundEngine {
         case 'thunder': return !!this._thunder(k);
         case 'tug': return !!this._tug(k, env);
         case 'anchor': return this._gap('anchor', 2) && !!this._anchor(k, env);
+        case 'shot': return this._gap('shot', 0.15) && !!this._gunshot(k, env);   // hostile AI ships: a gun or rifle crack with a splash tail
+        case 'alarm': return this._gap('alarm', 4) && !!this._alarm(k);          // hostile AI ships: a contact warning (two-tone)
         default: return false;
       }
     } catch (e) { this._err('event', e); return false; } finally { this._boost = 0; }
@@ -1309,6 +1311,33 @@ export class SoundEngine {
       const m1 = this._osc(sh, 'triangle', rand(120, 160), t0, t0 + dur), m2 = this._osc(sh, 'sine', m1.frequency.value * 2.71, t0, t0 + dur), mg = this._gain(sh, 0);
       m1.connect(mg); m2.connect(mg); mg.connect(sh.out);
       mg.gain.setValueAtTime(0, t0); mg.gain.linearRampToValueAtTime(amp * 0.22, t0 + 0.01); mg.gain.setTargetAtTime(0, t0 + 0.02, 0.4 + 0.3 * k);
+    });
+  }
+
+  /** Hostile AI ships: distant gunfire. k = 0 rifle crack … 1 naval gun. */
+  _gunshot(k, env) {
+    const dur = 0.5 + 1.1 * k, amp = (0.3 + 0.5 * k) * 0.6;
+    return this._shot('gunshot', { proc: 3, prio: 3, dur, reverb: 0.3 + 0.3 * k }, (sh, t0) => {
+      const bp = this._bq(sh, 'bandpass', 900 + 1800 * (1 - k), 0.9), ng = this._gain(sh, 0);
+      this._feed(sh, this.noiseW, bp); bp.connect(ng); ng.connect(sh.out);
+      ng.gain.setValueAtTime(0, t0); ng.gain.linearRampToValueAtTime(amp * 1.3, t0 + 0.002); ng.gain.setTargetAtTime(0, t0 + 0.004, 0.02 + 0.06 * k);
+      const o = this._osc(sh, 'sine', 90 - 30 * k, t0, t0 + dur), og = this._gain(sh, 0);
+      o.frequency.setValueAtTime(90 - 30 * k, t0); o.frequency.exponentialRampToValueAtTime(32, t0 + 0.25);
+      o.connect(og); og.connect(sh.out);
+      og.gain.setValueAtTime(0, t0); og.gain.linearRampToValueAtTime(amp * (0.4 + 0.6 * k), t0 + 0.004); og.gain.setTargetAtTime(0, t0 + 0.01, 0.1 + 0.2 * k);
+    });
+  }
+  /** Hostile AI ships: a two-tone contact warning. */
+  _alarm(k) {
+    const amp = 0.12 + 0.06 * k;
+    return this._shot('alarm', { bus: 'ui', proc: 2, prio: 3, dur: 1.6 }, (sh, t0) => {
+      for (let i = 0; i < 3; i++) {
+        for (const [f, at] of [[880, 0], [660, 0.16]]) {
+          const o = this._osc(sh, 'triangle', f, t0 + i * 0.5 + at, t0 + i * 0.5 + at + 0.2), g = this._gain(sh, 0);
+          o.connect(g); g.connect(sh.out);
+          g.gain.setValueAtTime(0, t0 + i * 0.5 + at); g.gain.linearRampToValueAtTime(amp, t0 + i * 0.5 + at + 0.01); g.gain.setTargetAtTime(0, t0 + i * 0.5 + at + 0.12, 0.03);
+        }
+      }
     });
   }
 
