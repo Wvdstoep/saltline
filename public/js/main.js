@@ -91,6 +91,7 @@ class App {
     this.hemi = new THREE.HemisphereLight(0x9fc4e8, 0x3a4a3a, 0.9); this.scene.add(this.hemi);
     this.sky = this.makeSky();
     this.ocean = new Ocean(this.scene);
+    this.ocean.init?.(this.renderer);   // OCEAN: pick the shader tier this GPU can run (self-tested, falls back full → lite → basic)
     this.terrain = new Terrain(this.scene);
     this.geoms = new HarborGeomSet(); this.geomState = new Map(); // harbour id -> { state: 'loading'|'loaded'|'failed', t }
     this.weatherFx = new WeatherFX(this.scene, this.camera);
@@ -1329,6 +1330,7 @@ class App {
     mesh.rotation.set(r.pitch, -h, r.roll, 'YXZ');
     ud.updateRig?.(dt, { camera: this.camera, time: this.time, own, touch: document.body.classList.contains('touch') });   // sailing: cloth, springs, LOD
     mesh.userData.setWake?.(Math.abs(spd) / 10);
+    if (!docked && flooding < 1) this.ocean.feedShip?.(mesh, { x: p.x, z: p.z, hdg: h, spd: spd || 0, length: ud.length, beam: ud.beam, draft: ud.draft, throttle: ctx.throttle, own });   // OCEAN: Kelvin wake + local wake sim
     mesh.userData.setWaterY?.(mesh.position.y);
     if (ud.updateWake) {
       if (ud.wakeGroup && !ud.wakeGroup.parent) this.scene.add(ud.wakeGroup);
