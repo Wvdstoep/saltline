@@ -278,6 +278,216 @@ void main() {
 export const FFT_SHADERS = { vert: PASS_VERT, evolve: EVOLVE_FRAG, fft: FFT_FRAG, assemble: ASSEMBLE_FRAG, probe: PROBE_FRAG };
 
 // ------------------------------------------------------------------------------------------------ GPU
+// ------------------------------------------------------------------------------------------------ CPU mirror (physics)
+// Ships must ride the sea that is drawn. The evolve pass is deterministic (hashed Gaussians × spectrum), so the CPU can
+// rebuild any of its wave components exactly: a cell k and its mirror −k together are ONE real wave
+//   y = A·sin(k·X + φ),  A = 2|h̃(k,t)|,  φ = arg h̃(k,t) + π/2,  horizontal = λ_c·(k/|k|)·A·cos(k·X + φ)
+// i.e. exactly a Gerstner component with Q = λ_c (ocean2.js sums those for heightAt / normalAt). The cells are ranked
+// by energy |h0(k)|² + |h0(−k)|²; the top few hundred of the two long cascades carry > 99 % of the height variance.
+/** The shader's PCG hash (uint32). */
+export function pcg32(v) {
+  const s = (Math.imul(v >>> 0, 747796405) + 2891336453) >>> 0;
+  const w = Math.imul(((s >>> ((s >>> 28) + 4)) ^ s) >>> 0, 277803737) >>> 0;
+  return ((w >>> 22) ^ w) >>> 0;
+}
+/** The shader's per-cell Gaussian pair (gauss2). */
+export function gauss2(mx, mz, c) {
+  const h = pcg32(((mx + 8192) >>> 0) ^ pcg32(((mz + 8192) >>> 0) ^ pcg32(c + 17)));
+  const u1 = ((h >>> 8) + 0.5) / 16777216, u2 = ((pcg32(h) >>> 8) + 0.5) / 16777216;
+  const r = Math.sqrt(-2 * Math.log(u1));
+  return [r * Math.cos(TAU * u2), r * Math.sin(TAU * u2)];
+}
+/** The shader's spec(k, c) for evolve-pass uniform values U = { lo[3], hi[3], boost[3], wind[4], swell[4] }. */
+export function specGLSL(kx, kz, c, U) {
+  const kk = Math.hypot(kx, kz);
+  if (kk < 1e-6 || kk <= U.lo[c] || kk >= U.hi[c]) return 0;
+  const w = Math.sqrt(G * kk + ST * kk * kk * kk), jac = (G + 3 * ST * kk * kk) / (2 * w) / kk, ux = kx / kk, uz = kz / kk;
+  let e = 0;
+  const W = U.wind, S = U.swell;
+  if (W[0] > 0) { const th = Math.atan2(ux * W[3] - uz * W[2], ux * W[2] + uz * W[3]); const wr = w / W[1]; e += W[0] * U.boost[c] * jonswapS(w, W[1], 3.3) * sech2D(th, donelanBeta(wr)); }
+  if (S[0] > 0) { const th = Math.atan2(ux * S[3] - uz * S[2], ux * S[2] + uz * S[3]); e += S[0] * swellS(w, S[1]) * sech2D(th, 6); }
+  return e * jac;
+}
+/**
+ * All wave components (half plane, both long cascades) of the FFT for evolve uniforms U, n texels: sorted by energy,
+ * [{ c, kx, kz, k, wq (quantised ω), ar, ai, br, bi, e }] + total energy. a = h0(k), b = h0(−k) (as in the shader).
+ */
+export function fftComponents(U, n, cascades = [0, 1]) {
+  const out = []; let total = 0;
+  for (const c of cascades) {
+    const dk = TAU / FFT_L[c], sc = dk * 0.5, half = n / 2, R = Math.min(half - 1, Math.ceil(U.hi[c] / dk));
+    for (let mz = 0; mz <= R; mz++) for (let mx = -R; mx <= R; mx++) {
+      if (mz === 0 && mx <= 0) continue;                                   // half plane: (k, −k) is one real wave
+      const kx = mx * dk, kz = mz * dk, k = Math.hypot(kx, kz);
+      if (k <= U.lo[c] || k >= U.hi[c]) continue;
+      const P = specGLSL(kx, kz, c, U), Pm = specGLSL(-kx, -kz, c, U);
+      if (!(P > 0 || Pm > 0)) continue;
+      const ga = gauss2(mx, mz, c), gb = gauss2(-mx, -mz, c), sa = Math.sqrt(P) * sc, sb = Math.sqrt(Pm) * sc;
+      const ar = ga[0] * sa, ai = ga[1] * sa, br = gb[0] * sb, bi = gb[1] * sb, e = ar * ar + ai * ai + br * br + bi * bi;
+      const w = Math.sqrt(G * k + ST * k * k * k);
+      out.push({ c, kx, kz, k, wq: Math.floor(w / W0) * W0, ar, ai, br, bi, e }); total += e;
+    }
+  }
+  out.sort((p, q) => q.e - p.e);
+  return { list: out, total };
+}
+/** h̃(k, t) of one component (tmod = t mod T_REP): [re, im]. */
+export function compAt(p, tmod) {
+  const ph = p.wq * tmod, c = Math.cos(ph), s = Math.sin(ph);
+  // a·e^{iφ} + conj(b)·e^{−iφ}
+  return [p.ar * c - p.ai * s + p.br * c - p.bi * s, p.ar * s + p.ai * c - p.br * s - p.bi * c];
+}
+
+const sinc = (x) => (Math.abs(x) < 1e-6 ? 1 : Math.sin(x) / x);
+/**
+ * What the sea MESH keeps of a wave (kx, kz) of cascade c: the vertex shader reads the displacement with
+ * textureLod(lod = log2(2·cell / texel)) — trilinear between two mip levels, each a box average of 2^l texels sampled
+ * bilinearly — and the mesh interpolates linearly between vertices `cell` metres apart. Position-averaged response.
+ */
+export function meshResponse(kx, kz, c, n, cell) {
+  const t = FFT_L[c] / n, lod = Math.log2(Math.max(1, (2 * cell) / t)), l0 = Math.floor(lod), f = lod - l0;
+  const lvl = (l) => { const h = (Math.pow(2, l) * t) / 2, bx = sinc(kx * h), bz = sinc(kz * h); return bx * bz * bx * bx * bz * bz; };
+  const tx = sinc((kx * cell) / 2), tz = sinc((kz * cell) / 2);
+  return ((1 - f) * lvl(l0) + f * lvl(l0 + 1)) * tx * tx * tz * tz;
+}
+/** Evolve-pass uniform values as plain arrays (what the GPU used this frame). */
+export function evolveSnapshot(eu) {
+  return { lo: eu.uLo.value.toArray(), hi: eu.uHi.value.toArray(), boost: eu.uBoost.value.toArray(), wind: eu.uWindS.value.toArray(), swell: eu.uSwellS.value.toArray() };
+}
+/** In-place iterative radix-2 inverse DFT (e^{+i}, unnormalised) of `n` complex values at stride `st` from offset `o`. */
+function ifft1(re, im, o, st, n, bitrev, cosT, sinT) {
+  for (let i = 0; i < n; i++) {
+    const j = bitrev[i];
+    if (j > i) { const a = o + i * st, b = o + j * st; let t = re[a]; re[a] = re[b]; re[b] = t; t = im[a]; im[a] = im[b]; im[b] = t; }
+  }
+  for (let size = 2; size <= n; size <<= 1) {
+    const half = size >> 1, step = n / size;
+    for (let s = 0; s < n; s += size) for (let j = 0; j < half; j++) {
+      const a = o + (s + j) * st, b = a + half * st, c = cosT[j * step], sn = sinT[j * step];
+      const tr = re[b] * c - im[b] * sn, ti = re[b] * sn + im[b] * c;
+      re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+    }
+  }
+}
+/** 2D inverse DFT of an M×M complex grid (row-major, index = mz·M + mx). */
+const _fftTab = new Map();
+export function ifft2D(re, im, M, rowLimit = M) {
+  let T = _fftTab.get(M);
+  if (!T) {
+    const bitrev = new Uint16Array(M), bits = Math.log2(M) | 0, cosT = new Float64Array(M / 2), sinT = new Float64Array(M / 2);
+    for (let i = 0; i < M; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); bitrev[i] = r; }
+    for (let i = 0; i < M / 2; i++) { cosT[i] = Math.cos((TAU * i) / M); sinT[i] = Math.sin((TAU * i) / M); }
+    T = { bitrev, cosT, sinT }; _fftTab.set(M, T);
+  }
+  const { bitrev, cosT, sinT } = T;
+  // rows: only those that hold a wave (|mz| < rowLimit) — the others are zero and stay zero
+  for (let r = 0; r < M; r++) if (r < rowLimit || r > M - rowLimit) ifft1(re, im, r * M, 1, M, bitrev, cosT, sinT);
+  for (let c = 0; c < M; c++) ifft1(re, im, c, M, M, bitrev, cosT, sinT);
+}
+/** Catmull-Rom weights for fraction f. */
+function crw(f, w) { const f2 = f * f, f3 = f2 * f; w[0] = -0.5 * f3 + f2 - 0.5 * f; w[1] = 1.5 * f3 - 2.5 * f2 + 1; w[2] = -1.5 * f3 + 2 * f2 + 0.5 * f; w[3] = 0.5 * f3 - 0.5 * f2; }
+const PHYS_M = [128, 64];                       // CPU grid per long cascade (covers every cell the mesh shows)
+/**
+ * The DRAWN FFT surface on the CPU, for the physics (ships ride what is seen). The two long cascades are rebuilt with
+ * the same hashed Gaussians, spectrum and quantised ω as the evolve pass, weighted by what the sea mesh keeps of each
+ * wave (meshResponse: texture LOD + vertex interpolation), and inverse-FFT'd on CPU grids (557 m / 128², 61 m / 64²)
+ * whenever a new time is asked for (once per frame in practice, ~1–2 ms). sample() reads height and the choppy
+ * horizontal displacement with Catmull-Rom interpolation at an invariant world position — synchronous, deterministic,
+ * no GPU read-back.
+ */
+export class FFTPhysicsGrid {
+  constructor() {
+    this.n = 0; this.cell = 0; this.cells = null; this.U = null; this.t = NaN; this.selAt = -1e9; this.reselects = 0; this.ms = 0;
+    this.g = PHYS_M.map((M) => ({ M, y: new Float64Array(M * M), dx: new Float64Array(M * M), dz: new Float64Array(M * M), re1: new Float64Array(M * M), im1: new Float64Array(M * M), re2: new Float64Array(M * M), im2: new Float64Array(M * M) }));
+    this._w = new Float64Array(4); this._v = new Float64Array(4); this.out = new Float64Array(3);
+  }
+  /** Candidate cells (half plane) of both long cascades that the mesh shows, for FFT size n and mesh cell size. */
+  prepare(n, cell) {
+    if (n === this.n && cell === this.cell && this.cells) return;
+    this.n = n; this.cell = cell; this.U = null;
+    const cells = [];
+    for (const c of [0, 1]) {
+      const dk = TAU / FFT_L[c], R = Math.min(n, PHYS_M[c]) / 2 - 1;
+      for (let mz = 0; mz <= R; mz++) for (let mx = -R; mx <= R; mx++) {
+        if (mz === 0 && mx <= 0) continue;
+        const kx = mx * dk, kz = mz * dk, k = Math.hypot(kx, kz);
+        if (c === 0 && k >= (6 * TAU) / FFT_L[1]) continue;
+        const resp = meshResponse(kx, kz, c, n, cell);
+        if (Math.abs(resp) < 0.003) continue;
+        const w = Math.sqrt(G * k + ST * k * k * k);
+        cells.push({ c, mx, mz, kx, kz, k, wq: Math.floor(w / W0) * W0, ga: gauss2(mx, mz, c), gb: gauss2(-mx, -mz, c), resp, sc: dk * 0.5, pwA: 0, pwB: 0, psA: 0, psB: 0 });
+      }
+    }
+    this.cells = cells;
+    for (const g of this.g) g.rows = g.M;
+    for (const g of this.g) { let m = 0; for (const p of cells) if (this.g[p.c] === g) m = Math.max(m, p.mz); g.rows = m + 1; }
+  }
+  sameShape(U) {
+    const S = this.U; if (!S) return false;
+    const near = (a, b, e) => Math.abs(a - b) <= e;
+    for (let c = 0; c < 3; c++) if (!near(S.lo[c], U.lo[c], 1e-6) || !near(S.hi[c], U.hi[c], 1e-6) || !near(S.boost[c], U.boost[c], 1e-3 * S.boost[c])) return false;
+    return near(S.wind[1], U.wind[1], 1e-3 * S.wind[1]) && near(S.wind[2], U.wind[2], 2e-3) && near(S.wind[3], U.wind[3], 2e-3)
+      && near(S.swell[1], U.swell[1], 1e-3 * S.swell[1]) && near(S.swell[2], U.swell[2], 2e-3) && near(S.swell[3], U.swell[3], 2e-3) && (S.swell[0] > 0) === (U.swell[0] > 0);
+  }
+  /** Unit-height wind / swell spectrum of every cell (heights rescale per frame without this). */
+  shape(U) {
+    const uW = { ...U, wind: [1, ...U.wind.slice(1)], swell: [0, ...U.swell.slice(1)] }, uS = { ...U, wind: [0, ...U.wind.slice(1)], swell: [1, ...U.swell.slice(1)] };
+    for (const p of this.cells) {
+      p.pwA = specGLSL(p.kx, p.kz, p.c, uW); p.pwB = specGLSL(-p.kx, -p.kz, p.c, uW);
+      p.psA = U.swell[0] > 0 ? specGLSL(p.kx, p.kz, p.c, uS) : 0; p.psB = U.swell[0] > 0 ? specGLSL(-p.kx, -p.kz, p.c, uS) : 0;
+    }
+    this.U = U; this.reselects++;
+  }
+  /** Rebuild the grids for time t (s), evolve uniforms U, choppiness per long cascade. */
+  frame(U, t, chop, minGap = 0.5) {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+    if (!this.U || (!this.sameShape(U) && Math.abs(t - this.selAt) >= minGap)) { this.shape(U); this.selAt = t; }
+    const W = U.wind[0], Sw = U.swell[0], tm = ((t % T_REP) + T_REP) % T_REP;
+    for (const g of this.g) { g.re1.fill(0); g.im1.fill(0); g.re2.fill(0); g.im2.fill(0); }
+    for (const p of this.cells) {
+      const g = this.g[p.c], M = g.M, q = chop[p.c] || 0;
+      const sa = Math.sqrt(Math.max(0, p.pwA * W + p.psA * Sw)) * p.sc, sb = Math.sqrt(Math.max(0, p.pwB * W + p.psB * Sw)) * p.sc;
+      if (!(sa > 0 || sb > 0)) continue;
+      const ar = p.ga[0] * sa, ai = p.ga[1] * sa, br = p.gb[0] * sb, bi = p.gb[1] * sb;
+      const ph = p.wq * tm, c = Math.cos(ph), s = Math.sin(ph);
+      const hr = (ar * c - ai * s + br * c - bi * s) * p.resp, hi = (ar * s + ai * c - br * s - bi * c) * p.resp;
+      // fields at +m: Y = h, DX = i(kx/k)λh, DZ = i(kz/k)λh; at −m the conjugates. Packed: C1 = Y + i·DX, C2 = DZ
+      const fx = (q * p.kx) / p.k, fz = (q * p.kz) / p.k;
+      const dxr = -fx * hi, dxi = fx * hr, dzr = -fz * hi, dzi = fz * hr;      // i·f·h
+      const iA = (p.mz & (M - 1)) * M + (p.mx & (M - 1)), iB = ((-p.mz) & (M - 1)) * M + ((-p.mx) & (M - 1));
+      g.re1[iA] += hr - dxi; g.im1[iA] += hi + dxr;                          // Y + i·DX at +m
+      g.re1[iB] += hr + dxi; g.im1[iB] += -hi + dxr;                         // conj(Y) + i·conj(DX) at −m
+      g.re2[iA] += dzr; g.im2[iA] += dzi; g.re2[iB] += dzr; g.im2[iB] += -dzi;
+    }
+    for (const g of this.g) {
+      ifft2D(g.re1, g.im1, g.M, g.rows); ifft2D(g.re2, g.im2, g.M, g.rows);
+      g.y.set(g.re1); g.dx.set(g.im1); g.dz.set(g.re2);
+    }
+    this.t = t;
+    if (t0) this.ms = performance.now() - t0;
+  }
+  /** Catmull-Rom sample of one grid field at invariant (X, Z). */
+  _cr(f, M, L, X, Z) {
+    const u = (X / L) * M, v = (Z / L) * M, iu = Math.floor(u), iv = Math.floor(v), w = this._w;
+    crw(u - iu, w); const wx0 = w[0], wx1 = w[1], wx2 = w[2], wx3 = w[3];
+    crw(v - iv, w);
+    let s = 0;
+    for (let b = 0; b < 4; b++) {
+      const row = ((iv - 1 + b) & (M - 1)) * M;
+      s += w[b] * (wx0 * f[row + ((iu - 1) & (M - 1))] + wx1 * f[row + (iu & (M - 1))] + wx2 * f[row + ((iu + 1) & (M - 1))] + wx3 * f[row + ((iu + 2) & (M - 1))]);
+    }
+    return s;
+  }
+  /** [y, dx, dz] of the drawn surface's water particle at invariant rest position (X, Z); mL / mM shelter damping per cascade. */
+  sample(X, Z, mL = 1, mM = 1) {
+    const o = this.out, g0 = this.g[0], g1 = this.g[1];
+    o[0] = mL * this._cr(g0.y, g0.M, FFT_L[0], X, Z) + mM * this._cr(g1.y, g1.M, FFT_L[1], X, Z);
+    o[1] = mL * this._cr(g0.dx, g0.M, FFT_L[0], X, Z) + mM * this._cr(g1.dx, g1.M, FFT_L[1], X, Z);
+    o[2] = mL * this._cr(g0.dz, g0.M, FFT_L[0], X, Z) + mM * this._cr(g1.dz, g1.M, FFT_L[1], X, Z);
+    return o;
+  }
+}
+
 export class FFTWaves {
   /** WebGL2, highp, renderable 32-bit float colour, enough texture units for the sea + the cascades. */
   static supported(renderer) {

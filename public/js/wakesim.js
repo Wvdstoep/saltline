@@ -208,9 +208,9 @@ ${convolutionGLSL(K)}
       // stern wash / propeller race: a turbulent, widening band right behind the stern
       float xs = max(0.0, (-a - 1.0) * B.x);                        // metres behind the stern
       float behind = 1.0 - smoothstep(-1.08, -0.92, a);
-      float w = B.y * 0.85 + xs * 0.1;
-      float band = behind * (1.0 - smoothstep(0.55 * w, w, abs(cs) * B.y)) * exp(-xs / (4.0 * B.y + 25.0));
-      fsrc += B.w * band;
+      float w = B.y * 0.85 + xs * 0.1 * min(1.0, B.y / 6.0);          // a small hull: a narrow band
+      float band = behind * (1.0 - smoothstep(0.55 * w, w, abs(cs) * B.y)) * exp(-xs / (4.0 * B.y + min(25.0, 3.0 * B.x)));
+      fsrc += B.w * band * C.y;                                         // C.y: deposit per metre travelled, not per second
       kick += B.w * band * (vnoise(p * 0.3 + uSeed * 13.7) - 0.5) * 0.04 * exp(-xs / (2.0 * B.y + 8.0));   // churn: smooth, metre-scale
     }
   }
@@ -247,7 +247,7 @@ export class WakeSim {
     this.K = buildWaveKernel(6, 0.2);
     this.L = 250; this.dx = this.L / n;
     this.origin = null;            // domain corner in texels (invariant frame)
-    this.acc = 0; this.ramp = 0; this.time = 0; this.seed = 0;
+    this.acc = 0; this.ramp = 0; this.time = 0; this.seed = 0; this.foamTau = 32;
     const opt = { depthBuffer: false, stencilBuffer: false, type: THREE.HalfFloatType, format: THREE.RGBAFormat, wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, magFilter: THREE.LinearFilter, minFilter: THREE.LinearFilter, generateMipmaps: false };
     this.rt = [new THREE.WebGLRenderTarget(n, n, opt), new THREE.WebGLRenderTarget(n, n, opt)];
     this.idx = 0;
@@ -279,6 +279,7 @@ export class WakeSim {
   get texture() { return this.rt[this.idx].texture; }
   /** Domain size for a player ship of this length (m): 5 lengths, 200–800 m. Changing it restarts the field. */
   setShipLength(len) {
+    this.foamTau = Math.min(32, Math.max(8, 0.8 * (Number(len) || 40)));   // foam life: a yacht's trace goes in seconds
     const L = Math.min(800, Math.max(200, 5 * (Number(len) || 40)));
     if (Math.abs(L - this.L) < 1) return;
     this.L = L; this.dx = L / this.n; this.origin = null;
@@ -312,7 +313,7 @@ export class WakeSim {
     if (!steps) return true;
     const u = this.uniforms, { c1, c2, c3 } = stepCoefficients(sdt, dx, 0.04, this.K.cal);
     u.uC1.value = c1; u.uC2.value = c2; u.uC3.value = c3; u.uFarDamp.value = farDamp(sdt); u.uDt.value = sdt; u.uTexel.value = 1 / n;
-    u.uFoamDecay.value = Math.exp(-sdt / 32);
+    u.uFoamDecay.value = Math.exp(-sdt / this.foamTau);
     const r = this.renderer, prevRT = r.getRenderTarget(), xr = r.xr ? r.xr.enabled : false;
     if (r.xr) r.xr.enabled = false;
     for (let s = 1; s <= steps; s++) {
@@ -333,7 +334,10 @@ export class WakeSim {
         if (px < -hl || pz < -hl || px > this.L + hl || pz > this.L + hl) continue;
         u.uShA.value[k].set(px, pz, sh.fx, sh.fz);
         u.uShB.value[k].set(hl, hb, hullHead(sh.draft, sh.beam) * this.ramp, Math.min(1, sh.wash || 0));
-        u.uShC.value[k].set(smooth(1.5, 7, Math.abs(sh.spd || 0)), 0, 0, 0);
+        // white water per metre travelled: a slow hull must not pile foam up where it lingers (the stern band's length
+        // over the speed is how long a patch of water sits in it); side foam scales with the hull's size
+        const U = Math.abs(sh.spd || 0), Lb = 4 * hb + Math.min(25, 3 * hl), size = Number.isFinite(sh.size) ? sh.size : 1;
+        u.uShC.value[k].set(smooth(1.5, 7, U) * size, Math.min(1, Math.max(0.1, (2 * U) / Lb)), 0, 0);
         k++;
       }
       u.uShN.value = k;
