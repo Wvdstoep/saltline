@@ -5,6 +5,7 @@
 // dt × warp in ≤ 0.05 s sim substeps, autopilot and grounding per substep; . / , step the level; manual helm above 20×
 // drops to real time; the chase camera lifts above 20×), going ashore (app.ashore, G, mutually exclusive with the
 // interior, no ship simulation while ashore, no casting off from the quay), chase camera sized to the hull.
+import { installDiag } from './diag.js';   // DIAG: first import so the console hook sees every later module's errors
 import * as THREE from 'three';
 import { GEO, SIM, SHIP_CLASSES, INTERACT, LAYERS, WARP } from '/shared/constants.js';
 import { toLocal, fromLocal, haversine, bearing, destination, unitsBetween, angleDiff, normDeg, fmtDistance } from '/shared/geo.js';
@@ -91,6 +92,7 @@ class App {
     this.hemi = new THREE.HemisphereLight(0x9fc4e8, 0x3a4a3a, 0.9); this.scene.add(this.hemi);
     this.ocean = new Ocean(this.scene);
     this.ocean.init?.(this.renderer);   // OCEAN: pick the shader tier this GPU can run (self-tested, falls back full → lite → basic)
+    try { this.diag = installDiag(this); } catch (e) { console.warn('[diag] panel unavailable', e); }   // DIAG: ?diag=1 or More → Diagnostics
     this.terrain = new Terrain(this.scene);
     this.geoms = new HarborGeomSet(); this.geomState = new Map(); // harbour id -> { state: 'loading'|'loaded'|'failed', t }
     this.weatherFx = new WeatherFX(this.scene, this.camera);
@@ -539,6 +541,7 @@ class App {
    *  the game becomes unplayable, and steps it back up once there is headroom again. Hidden tabs and hitches are ignored. */
   governOceanQuality(now) {
     if (!this.ocean.setQuality) return;
+    if (this.ocean.govern) { this.ocean.govern(now, this.renderer); this.qGov = this.ocean.gov; return; }   // OCEAN: hysteresis governor lives in the ocean
     const g = this.qGov || (this.qGov = { ema: 1 / 60, since: now, last: now, top: this.ocean.quality ?? 1 });
     const dt = (now - g.last) / 1000; g.last = now;
     if (dt <= 0 || dt > 3 || document.hidden) { g.since = Math.max(g.since, now - 2000); return; } // tab switch / hitch
