@@ -24,7 +24,7 @@
 // length) at pitch 0.32 rad, which keeps quays, buildings and hull in proportion next to the 10 m patch coast.
 import * as THREE from 'three';
 import { TILE, LAYERS, PATCH, decodeHeight, decodePatchHeight, GEO } from '/shared/constants.js';
-import { toLocal } from '/shared/geo.js';
+import { toLocal, haversine } from '/shared/geo.js';
 import { patchHeightAt, computeSDF } from './harborgeom.js';
 import { setShoreField } from './ocean2.js';
 import { WorldTileSet, applyClip } from './wtiles.js';
@@ -43,13 +43,18 @@ const D2R = Math.PI / 180;
 
 // drape configuration
 const DRAPE_TONE = 0.8;                         // map colours are designed for paper: tone them down under the sun
-const PATCH_ZOOM = 16, PATCH_ZOOM_LOW = 15;
-const REGION_ZOOM_NEAR = 12, REGION_ZOOM_FAR = 11, REGION_NEAR_M = 12000;
+const PATCH_ZOOM = 18, PATCH_ZOOM_LOW = 16;
+const REGION_ZOOM_NEAR = 13, REGION_ZOOM_FAR = 11, REGION_NEAR_M = 12000;
 const REGION_DRAPE_M = 30000, REGION_DROP_M = 38000;
-const MAX_CANVAS = 4096;
+// Phones (and every touch device) cap the drape canvases at 2048 px: a 3.3 k satellite canvas is ~45 MB of canvas plus the same on the GPU, which
+// phones refuse (the texture then samples black). The Drape constructor drops a zoom level until the canvas fits.
+const IS_COARSE = (() => { try { return typeof matchMedia === 'function' && (matchMedia('(pointer: coarse)').matches || matchMedia('(max-width: 768px)').matches); } catch { return false; } })();
+const MAX_CANVAS = IS_COARSE ? 2048 : 4096;
 const UPLOAD_MIN_MS = 1500, UPLOAD_MAX_MS = 6000; // full-texture uploads while a drape fills in: at coverage milestones
 const UPLOAD_STEPS = [0.25, 0.5, 0.75];          // (never closer than MIN apart) or after MAX with new tiles; always when complete
-const TILE_URL = (z, x, y) => `/api/maptile/osm/${z}/${x}/${y}.png`;
+const TILE_URL_OSM = (z, x, y) => `/api/maptile/osm/${z}/${x}/${y}.png`;
+const TILE_URL_SAT = (z, x, y) => `/api/maptile/sat/${z}/${x}/${y}.png?v=2`;   // ?v=2: browsers cached the "Map data not yet available" tiles for a day
+const TILE_URL = TILE_URL_SAT;
 const OSM_WATER = [170, 211, 223];              // openstreetmap-carto water (#aad3df), keyed out of the drape
 
 // ------------------------------------------------------------------------------------------------ registries
@@ -68,6 +73,12 @@ export function drapeState(id) {
 // ------------------------------------------------------------------------------------------------ Web Mercator
 const lonToPx = (lon, z) => ((lon + 180) / 360) * 256 * 2 ** z;
 const latToPx = (lat, z) => { const s = Math.sin(Math.max(-85.05, Math.min(85.05, lat)) * D2R); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 256 * 2 ** z; };
+const pxToLon = (px, z) => (px / (256 * (2 ** z))) * 360 - 180;
+const pxToLat = (py, z) => {
+  const n = Math.PI - (2 * Math.PI * py) / (256 * (2 ** z));
+  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+};
+
 
 // ------------------------------------------------------------------------------------------------ tile loader
 /**
@@ -80,7 +91,7 @@ const latToPx = (lat, z) => { const s = Math.sin(Math.max(-85.05, Math.min(85.05
 export const MapTiles = (() => {
   const queue = [];               // { key, z, x, y, prio, resolve, job }
   let active = 0, state = 'unknown', downUntil = 0, backoff = 90e3, fails = 0;
-  const maxActive = 4;
+  const maxActive = IS_COARSE ? 4 : 8;
   let urlFor = TILE_URL;
   const now = () => performance.now();
   function setDown() {
@@ -135,6 +146,7 @@ export const MapTiles = (() => {
     pump,
     /** testing / alternative sources: (z, x, y) → URL */
     setSource(fn) { urlFor = typeof fn === 'function' ? fn : TILE_URL; state = 'unknown'; downUntil = 0; backoff = 90e3; fails = 0; },
+    isSat: () => urlFor === TILE_URL_SAT || String(urlFor).includes('sat'),
     stats: () => ({ state, queued: queue.length, active, retryIn: state === 'down' ? Math.max(0, Math.round(downUntil - now())) : 0 }),
   };
 })();
@@ -203,6 +215,10 @@ class Drape {
     }
   }
   draw(t, img) {
+    if (MapTiles.isSat?.()) {
+      this.ctx.drawImage(img, (t.x - this.x0) * 256, (t.y - this.y0) * 256);
+      return;
+    }
     const K = keyCanvas();
     K.x.clearRect(0, 0, 256, 256);
     K.x.drawImage(img, 0, 0, 256, 256);
@@ -246,17 +262,25 @@ function closeImage(img) { try { img?.close?.(); } catch { /* HTMLImageElement *
  * uniforms uDrape (sampler), uDrapeOn (0/1), uDrapeTone. Final albedo = mix(vertex, 0.85·tile + 0.15·shaded vertex,
  * drapeW · tile alpha). All drape materials share one program (customProgramCacheKey).
  */
-function makeDrapeMaterial(clip = null) {
+function makeDrapeMaterial(clip = null, detailUniforms = null) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true });
   const uniforms = { uDrape: { value: blankTexture() }, uDrapeOn: { value: 0 }, uDrapeTone: { value: DRAPE_TONE } };
+  if (detailUniforms) {
+    uniforms.uDetailDrape = detailUniforms.uDetailDrape;
+    uniforms.uDetailOn = detailUniforms.uDetailOn;
+    uniforms.uDetailBox = detailUniforms.uDetailBox;
+    uniforms.uDetailTone = detailUniforms.uDetailTone;
+  }
   m.userData.uniforms = uniforms;
+  m.userData.detailUniforms = detailUniforms;
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec2 drapeUv; attribute float drapeW; varying vec2 vDrapeUv; varying float vDrapeW; varying vec3 vDrapeN;')
+      .replace('#include <common>', '#include <common>\nattribute vec2 drapeUv; attribute float drapeW; varying vec2 vDrapeUv; varying float vDrapeW; varying vec3 vDrapeN; varying vec3 vWorldPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;')
       .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n vDrapeUv = drapeUv; vDrapeW = drapeW; vDrapeN = objectNormal;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform sampler2D uDrape; uniform float uDrapeOn; uniform float uDrapeTone; varying vec2 vDrapeUv; varying float vDrapeW; varying vec3 vDrapeN;')
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uDrape; uniform float uDrapeOn; uniform float uDrapeTone;\nuniform sampler2D uDetailDrape; uniform float uDetailOn; uniform vec4 uDetailBox; uniform float uDetailTone;\nvarying vec2 vDrapeUv; varying float vDrapeW; varying vec3 vDrapeN; varying vec3 vWorldPos;')
       .replace('#include <color_fragment>', `#include <color_fragment>
   if (uDrapeOn > 0.5 && vDrapeW > 0.002) {
     vec4 dTex = texture2D(uDrape, vDrapeUv);              // premultiplied alpha (see Drape)
@@ -264,9 +288,21 @@ function makeDrapeMaterial(clip = null) {
     vec3 tile = dTex.rgb / max(dTex.a, 0.004);
     float shade = clamp(0.55 + 0.6 * dot(normalize(vDrapeN), normalize(vec3(-0.45, 0.8, -0.4))), 0.3, 1.15);
     diffuseColor.rgb = mix(diffuseColor.rgb, tile * uDrapeTone * 0.85 + diffuseColor.rgb * shade * 0.15, dW);
+  }
+  if (uDetailOn > 0.5) {
+    vec2 dUv = vec2((vWorldPos.x - uDetailBox.x) / (uDetailBox.z - uDetailBox.x), (vWorldPos.z - uDetailBox.y) / (uDetailBox.w - uDetailBox.y));
+    if (dUv.x >= 0.0 && dUv.x <= 1.0 && dUv.y >= 0.0 && dUv.y <= 1.0) {
+      vec4 detailTex = texture2D(uDetailDrape, vec2(dUv.x, 1.0 - dUv.y));
+      if (detailTex.a > 0.02 && max(detailTex.r, max(detailTex.g, detailTex.b)) > 0.015) {   // a texture that failed to upload samples as black: never paint it
+        float edge = smoothstep(0.0, 0.04, dUv.x) * smoothstep(1.0, 0.96, dUv.x) * smoothstep(0.0, 0.04, dUv.y) * smoothstep(1.0, 0.96, dUv.y);
+        vec3 detailRgb = detailTex.rgb / max(detailTex.a, 0.004);
+        float shade = clamp(0.55 + 0.6 * dot(normalize(vDrapeN), normalize(vec3(-0.45, 0.8, -0.4))), 0.3, 1.15);
+        diffuseColor.rgb = mix(diffuseColor.rgb, detailRgb * uDetailTone * 0.85 + diffuseColor.rgb * shade * 0.15, edge * 0.95);
+      }
+    }
   }`);
   };
-  m.customProgramCacheKey = () => 'saltline-drape-1';
+  m.customProgramCacheKey = () => `saltline-drape-${detailUniforms ? 'detail' : 'base'}`;
   return clip ? applyClip(m, clip) : m;
 }
 
@@ -287,16 +323,37 @@ export class Terrain {
     let pref = null; try { pref = localStorage.getItem('saltline.drape'); } catch { /* storage blocked */ }
     this.drapeEnabled = pref !== '0';
     this.shipPos = null;
+    this.detailUniforms = {
+      uDetailDrape: { value: blankTexture() },
+      uDetailOn: { value: 0 },
+      uDetailBox: { value: new THREE.Vector4(0, 0, 0, 0) },
+      uDetailTone: { value: DRAPE_TONE },
+    };
+    this.boatDrape = null;
+    this.boatDrapeNext = null;
+    this.boatDrapePos = null;
+    this.boatDrapeLatLonBox = null;
     // world detail tiles (D14 / C11): on unless ?wt=0 or localStorage saltline.wt = '0'
     let wtOn = true;
     try { wtOn = localStorage.getItem('saltline.wt') !== '0' && !/[?&]wt=0\b/.test(location.search); } catch { /* storage blocked */ }
     this.wtiles = new WorldTileSet({ parent: this.group, origin: this.origin, halfRes: this.halfRes, enabled: wtOn, coarseAt: (lat, lon, z) => this.coarseHeightAt(lat, lon, z), shoreField: (e) => buildShoreField(e) });
     this.wtVersion = 0;
   }
+  refreshBoatDrapeBox() {
+    if (!this.boatDrape || !this.boatDrapeLatLonBox) return;
+    const b = this.boatDrapeLatLonBox;
+    const pNW = toLocal(b.latMax, b.lonMin, this.origin);
+    const pSE = toLocal(b.latMin, b.lonMax, this.origin);
+    const minX = Math.min(pNW.x, pSE.x), maxX = Math.max(pNW.x, pSE.x);
+    const minZ = Math.min(pNW.z, pSE.z), maxZ = Math.max(pNW.z, pSE.z);
+    this.detailUniforms.uDetailBox.value.set(minX, minZ, maxX, maxZ);
+    if (this.wtiles) this.wtiles.setDetailDrape(this.boatDrape.texture, this.detailUniforms.uDetailBox.value);
+  }
   setOrigin(origin) {
     this.origin = origin;
     for (const t of this.tiles.values()) if (t.mesh) this.buildMesh(t);
     for (const p of this.patches.values()) this.placePatch(p);
+    this.refreshBoatDrapeBox();
     this.wtiles?.setOrigin(origin);
   }
   layerDef(level) { return LAYERS[level]; }
@@ -461,7 +518,7 @@ export class Terrain {
     }
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeVertexNormals();
-    if (drapable) t.mat = makeDrapeMaterial('coarse');
+    if (drapable) t.mat = makeDrapeMaterial('coarse', this.detailUniforms);
     t.mesh = new THREE.Mesh(geo, drapable ? t.mat : this.mat);
     t.mesh.frustumCulled = true;
     this.group.add(t.mesh);
@@ -477,8 +534,14 @@ export class Terrain {
       p.drape?.dispose(); p.drape = null;
       p.mat.userData.uniforms.uDrapeOn.value = 0; p.mat.userData.uniforms.uDrape.value = blankTexture(); // never sample a disposed canvas
     }
-    if (!on) for (const t of this.tiles.values()) this.dropRegionDrape(t);
-    else this.updateDrapes();
+    if (!on) {
+      this.boatDrape?.dispose(); this.boatDrapeNext?.dispose();
+      this.boatDrape = this.boatDrapeNext = this.boatDrapePos = this.boatDrapeLatLonBox = null;
+      this.detailUniforms.uDetailOn.value = 0;
+      this.detailUniforms.uDetailDrape.value = blankTexture();
+      if (this.wtiles) this.wtiles.setDetailDrape(null, null);
+      for (const t of this.tiles.values()) this.dropRegionDrape(t);
+    } else this.updateDrapes();
   }
   drapeStats() {
     const list = [];
@@ -487,10 +550,58 @@ export class Terrain {
     return { enabled: this.drapeEnabled, loader: MapTiles.stats(), drapes: list };
   }
   /** called from update(): request missing tiles, upload finished canvases, manage region drapes by distance */
+  updateBoatDrape(s) {
+    if (!this.drapeEnabled || !s || !Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
+    const dist = this.boatDrapePos ? haversine(s.lat, s.lon, this.boatDrapePos.lat, this.boatDrapePos.lon) : Infinity;
+    if (this.boatDrape && dist < 350) return;
+    if (this.boatDrapeNext) return;
+
+    const z = 18;
+    const spanLon = 0.016, spanLat = 0.010;
+    const bbox = {
+      lonMin: s.lon - spanLon / 2,
+      lonMax: s.lon + spanLon / 2,
+      latMin: s.lat - spanLat / 2,
+      latMax: s.lat + spanLat / 2,
+    };
+    const d = new Drape(bbox, z, s, -50);
+    const latLonBox = {
+      lonMin: pxToLon(d.x0 * 256, d.z),
+      lonMax: pxToLon((d.x1 + 1) * 256, d.z),
+      latMax: pxToLat(d.y0 * 256, d.z),
+      latMin: pxToLat((d.y1 + 1) * 256, d.z),
+    };
+
+    if (!this.boatDrape) this.boatDrape = d;
+    else this.boatDrapeNext = d;
+
+    d.onUpload = () => {
+      this.boatDrapeLatLonBox = latLonBox;
+      const pNW = toLocal(latLonBox.latMax, latLonBox.lonMin, this.origin);
+      const pSE = toLocal(latLonBox.latMin, latLonBox.lonMax, this.origin);
+      const minX = Math.min(pNW.x, pSE.x), maxX = Math.max(pNW.x, pSE.x);
+      const minZ = Math.min(pNW.z, pSE.z), maxZ = Math.max(pNW.z, pSE.z);
+      const boxVec = new THREE.Vector4(minX, minZ, maxX, maxZ);
+      this.detailUniforms.uDetailBox.value.copy(boxVec);
+      this.detailUniforms.uDetailDrape.value = d.texture;
+      this.detailUniforms.uDetailOn.value = 1;
+      if (this.wtiles) this.wtiles.setDetailDrape(d.texture, boxVec);
+
+      if (this.boatDrapeNext === d) {
+        this.boatDrape?.dispose();
+        this.boatDrape = d;
+        this.boatDrapeNext = null;
+      }
+      this.boatDrapePos = { lat: s.lat, lon: s.lon };
+    };
+    d.pump();
+  }
   updateDrapes() {
     if (!this.drapeEnabled) return;
     for (const p of this.patches.values()) { this.ensurePatchDrape(p); p.drape?.pump(); p.drape?.flush(); }
     const s = this.shipPos;
+    if (s) this.updateBoatDrape(s);
+    for (const d of [this.boatDrape, this.boatDrapeNext]) { d?.pump(); d?.flush(); }
     for (const t of this.tiles.values()) {
       if (t.level !== 1 || !t.mesh) continue;
       if (!s) continue;
@@ -628,7 +739,7 @@ export class Terrain {
     }
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeVertexNormals();
-    const mat = makeDrapeMaterial();
+    const mat = makeDrapeMaterial(null, this.detailUniforms);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = true;
     mesh.renderOrder = 0;
@@ -717,7 +828,7 @@ export class Terrain {
     return h == null ? null : h < 0 ? h - 4 : h;
   }
   dispose() {
-    this.wtiles?.dispose();
+    this.wtiles?.dispose(); this.boatDrape?.dispose(); this.boatDrapeNext?.dispose(); this.boatDrape = this.boatDrapeNext = null;
     for (const id of [...this.patches.keys()]) this.removePatch(id, false);
     for (const [key, t] of [...this.tiles]) this.dropTile(key, t);
     this.scene.remove(this.group); this.mat.dispose();

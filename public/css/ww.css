@@ -67,7 +67,8 @@
 .ww-foot:empty { display: none; }
 
 /* phone: AIR chip compact under the top bar, card as a bottom sheet */
-.ww-air.phone { top: calc(var(--sat, 0px) + var(--top-h, 64px) + 6px); left: 8px; right: auto; min-height: 36px; gap: 6px; padding: 3px 5px 3px 10px; font-size: 12px; max-width: calc(100vw - 16px); overflow: hidden; }
+.ww-air.phone { top: calc(var(--sat, 0px) + var(--top-h, 64px) + 46px); left: 8px; right: auto; min-height: 32px; gap: 6px; padding: 2px 5px 2px 8px; font-size: 11px; max-width: min(260px, calc(100vw - 16px)); overflow: hidden; z-index: 13; }
+body.touch:not(.berthOn):not(.jobOn) .ww-air.phone { top: calc(var(--sat, 0px) + var(--top-h, 64px) + 6px); }
 .ww-air.phone .ww-chip { padding: 3px 7px; font-size: 11px; }
 .ww-air.phone .ww-chip b, .ww-air.phone .ww-chip small { display: none; }
 .ww-card.phone { z-index: 26; left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 72dvh; border-radius: var(--r4, 20px) var(--r4, 20px) 0 0; padding: 10px 14px calc(14px + var(--sab, 0px)); }

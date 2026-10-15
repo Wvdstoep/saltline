@@ -28,10 +28,13 @@ export function viewBj(s) {
     options: C.bjOptions(s), results: s.results || null, returned: done ? s.returned : null, paid: s.paid };
 }
 /** What a client may see of a poker hand: its own hole cards, the board dealt so far, the guests' cards only at a showdown. */
-export function viewPoker(s) {
+export function viewPoker(s, lim = null, gst = null) {
   const done = s.phase === 'done', board = done ? (s.showdown || !s.folded[0] ? s.board : C.pokerBoard(s)) : C.pokerBoard(s);
+  const minB = C.pokerBetSize(s);
+  const stacks = gst ? (s.phase === 'done' ? gst.slice() : gst.map((b, i) => b - s.inn[i])) : null;
   return { phase: s.phase, stage: ['preflop', 'flop', 'turn', 'river'][Math.min(3, s.stage)], pot: s.pot, board, you: s.hole[0], folded: s.folded, in: s.inn, options: C.pokerOptions(s), costs: Object.fromEntries(C.pokerOptions(s).map((o) => [o, C.pokerCost(s, o)])),
-    log: s.log || [], seats: done && s.showdown ? s.hole.map((h, i) => (s.folded[i] ? null : { cards: h, name: C.handName(h.score) })) : null, winners: done ? s.winners : null, rake: done ? s.rake : null, returned: done ? s.returned : null, paid: s.inn[0], unit: s.u };
+    minBet: minB, maxBet: lim ? lim.max : Math.max(minB * 40, s.pot * 2),
+    log: s.log || [], seats: done && s.showdown ? s.hole.map((h, i) => (s.folded[i] ? null : { cards: h, name: C.handName(h.score) })) : null, winners: done ? s.winners : null, rake: done ? s.rake : null, returned: done ? s.returned : null, paid: s.inn[0], unit: s.u, stacks };
 }
 
 export class Casino {
@@ -96,12 +99,12 @@ export class Casino {
     if (!p.stats) p.stats = {};
     const lim = this.limitsOf(p);
     if (!lim) return this.refuse(p, game, op, 'This ship has no casino.');
-    if (op === 'limits' || op === 'sync') { const s = this.S(p); this.sweep(p, s); return this.reply(p, game, op, { ok: true, view: this.currentView(s, game) }); }
+    if (op === 'limits' || op === 'sync') { const s = this.S(p); this.sweep(p, s); return this.reply(p, game, op, { ok: true, view: this.currentView(s, game, lim) }); }
     if (!GAMES.includes(game)) return this.refuse(p, game, op, 'Unknown game.');
     const s = this.S(p); this.sweep(p, s);
     try { return this[game](p, s, m, lim, op); } catch (e) { return this.refuse(p, game, op, `Not allowed: ${e.message}`); }
   }
-  currentView(s, game) { return game === 'blackjack' && s.bj ? viewBj(s.bj) : game === 'poker' && s.poker ? viewPoker(s.poker) : null; }
+  currentView(s, game, lim = null) { return game === 'blackjack' && s.bj ? viewBj(s.bj) : game === 'poker' && s.poker ? viewPoker(s.poker, lim, s.gst) : null; }
   intAmt(v) { return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null; }   // numbers only: a string is not a bet
   inLimits(a, lim) { return a !== null && a >= lim.min && a <= lim.max; }
 
@@ -166,23 +169,29 @@ export class Casino {
   poker(p, s, m, lim, op) {
     if (op === 'deal') {
       if (s.poker) return this.refuse(p, 'poker', op, 'Finish the hand first.');
-      const u = lim.min;
+      let u = lim.min;
+      if (typeof m.amt === 'number' && Number.isSafeInteger(m.amt) && m.amt >= lim.min && m.amt <= lim.max) {
+        u = m.amt;
+      }
       if (u * 2 > p.money) return this.refuse(p, 'poker', op, 'You do not have the credits to sit down (the ante and a bet).');
       const g = this.gate(p, s); if (g) return this.refuse(p, 'poker', op, g);
+      s.gst = (s.gst || [0, 40000, 40000, 40000]).map((b, i) => (i && b < 1000 ? 40000 : b));
       this.take(p, u);
       s.poker = C.pokerStart(u, this.rnd); s.at = this.now(); this.mark(p, s);
-      return this.reply(p, 'poker', op, { ok: true, view: viewPoker(s.poker) });
+      return this.reply(p, 'poker', op, { ok: true, view: viewPoker(s.poker, lim, s.gst) });
     }
     const q = s.poker; if (!q) return this.refuse(p, 'poker', op, 'No hand in play — deal first.');
     if (!C.pokerOptions(q).includes(op)) return this.refuse(p, 'poker', op, `You cannot ${op} now.`);
-    const cost = C.pokerCost(q, op);
+    let customAmt = (typeof m.amt === 'number' && Number.isSafeInteger(m.amt) && m.amt > 0) ? m.amt : null;
+    const cost = C.pokerCost(q, op, customAmt);
     if (cost > 0 && (cost > p.money || !this.take(p, cost))) return this.refuse(p, 'poker', op, 'You do not have the credits to do that. Fold or call what you can.');
     s.at = this.now();
-    const n = C.pokerAct(q, op, this.rnd);
-    if (n.phase !== 'done') { s.poker = n; return this.reply(p, 'poker', op, { ok: true, view: viewPoker(n) }); }
+    const n = C.pokerAct(q, op, this.rnd, 5, customAmt);
+    if (n.phase !== 'done') { s.poker = n; return this.reply(p, 'poker', op, { ok: true, view: viewPoker(n, lim, s.gst) }); }
     s.poker = null;
+    { const share = n.winners.length ? (n.pot - n.rake) / n.winners.length : 0; for (let i = 1; i < 4; i++) s.gst[i] = Math.max(0, Math.floor(s.gst[i] + (n.winners.includes(i) ? share : 0) - n.inn[i])); }
     const ret = Math.floor(n.returned + 1e-9); this.give(p, ret); this.stat(p, n.inn[0], n.returned);
     s.hist.push([this.now(), ret - n.inn[0]]); this.ledger(p, ret - n.inn[0]);
-    return this.reply(p, 'poker', op, { ok: true, net: ret - n.inn[0], view: viewPoker(n) });
+    return this.reply(p, 'poker', op, { ok: true, net: ret - n.inn[0], view: viewPoker(n, lim, s.gst) });
   }
 }

@@ -7,7 +7,7 @@
 import { ORDERS, STOP_INDEX, THROTTLE_MIN, orderIndex } from '/shared/telegraph.js';
 
 export function isTouch() {
-  try { return (window.matchMedia && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 1; } catch { return false; }
+  try { return (window.matchMedia && (matchMedia('(pointer: coarse)').matches || matchMedia('(max-width: 768px)').matches)) || navigator.maxTouchPoints > 0; } catch { return false; }
 }
 
 const THR_MIN = THROTTLE_MIN, THR_MAX = 1, THR_DETENT = 0.05, ORDER_DETENT = 0.04;

@@ -151,7 +151,7 @@ function openGuest(I, cls) {
 // ------------------------------------------------------------------------------------------------ casino
 // Each table is its own module (canvas art, animations, sound cues), fetched when the table is used and dropped with the panel; the
 // server's answer is the only thing that decides what the table shows (see iv2roulette.js, iv2cards.js, iv2slots.js).
-const TABLE_MODULES = { roulette: ['./iv2roulette.js', 'create'], blackjack: ['./iv2cards.js', 'blackjack'], baccarat: ['./iv2cards.js', 'baccarat'], poker: ['./iv2cards.js', 'poker'], slots: ['./iv2slots.js', 'create'] };
+const TABLE_MODULES = { roulette: ['./iv2roulette.js', 'create'], blackjack: ['./iv2cards.js', 'blackjack'], baccarat: ['./iv2cards.js', 'baccarat'], poker: ['./iv2poker3d.js?v=20261011c', 'poker'], slots: ['./iv2slots.js', 'create'] };
 async function openCasino(I, game, cls) {
   const lim = tableLimits(cls);
   if (!lim) { ev(I, 'This ship has no casino.', 'warn'); return; }

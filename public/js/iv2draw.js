@@ -1,3 +1,4 @@
+import { createPBRTable, createPBRBlackjackTable, createPBRRouletteTable, createPBRBarCounter, createPBRSlotIsland, createPBRCasinoCeiling, getCasinoCarpetMat, getCasinoDamaskMat, loadGLTFProp, getPBRMaterials, applyCasinoEnvironment } from './iv2pbr.js';
 // Interiors v2 — the renderer (docs/INTERIORS-V2-CONTRACT.md §5–6, Lane R).
 //
 // buildInteriorV2(I, plan, root, { phone }) draws a Plan v2 into `root` and returns the zone groups interior.js streams
@@ -142,6 +143,57 @@ function rod(G, tile, a, b, r, seg = 6) {
 }
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+
+/** Vertical curved wall (band) along an elliptical arc from angle a0 to a1. */
+function arcWall(G, F, tile, cx, y, cz, rx, rz, h, a0, a1, seg = 14) {
+  if (G.segCap && seg > G.segCap) seg = G.segCap;
+  for (let i = 0; i < seg; i++) {
+    const th0 = a0 + ((a1 - a0) * i) / seg, th1 = a0 + ((a1 - a0) * (i + 1)) / seg;
+    const thm = (th0 + th1) / 2;
+    const p0b = W(F, cx + Math.cos(th0) * rx, y - h / 2, cz + Math.sin(th0) * rz);
+    const p1b = W(F, cx + Math.cos(th1) * rx, y - h / 2, cz + Math.sin(th1) * rz);
+    const p0t = W(F, cx + Math.cos(th0) * rx, y + h / 2, cz + Math.sin(th0) * rz);
+    const p1t = W(F, cx + Math.cos(th1) * rx, y + h / 2, cz + Math.sin(th1) * rz);
+    const nm = WN(F, Math.cos(thm), 0, Math.sin(thm));
+    G.quad(tile, p1b, p0b, p0t, p1t, nm, i * 0.2, 0, (i + 1) * 0.2, h);
+  }
+}
+
+/** Horizontal curved band (annulus) facing UP (+y) between inner & outer radii from a0 to a1. */
+function arcBand(G, F, tile, cx, y, cz, rInX, rOutX, rInZ, rOutZ, a0, a1, seg = 14) {
+  if (G.segCap && seg > G.segCap) seg = G.segCap;
+  const nrm = WN(F, 0, 1, 0);
+  for (let i = 0; i < seg; i++) {
+    const th0 = a0 + ((a1 - a0) * i) / seg, th1 = a0 + ((a1 - a0) * (i + 1)) / seg;
+    const pIn0 = W(F, cx + Math.cos(th0) * rInX, y, cz + Math.sin(th0) * rInZ);
+    const pIn1 = W(F, cx + Math.cos(th1) * rInX, y, cz + Math.sin(th1) * rInZ);
+    const pOut0 = W(F, cx + Math.cos(th0) * rOutX, y, cz + Math.sin(th0) * rOutZ);
+    const pOut1 = W(F, cx + Math.cos(th1) * rOutX, y, cz + Math.sin(th1) * rOutZ);
+    G.quad(tile, pIn1, pIn0, pOut0, pOut1, nrm, Math.cos(th0) * rInX, Math.sin(th0) * rInZ, Math.cos(th1) * rOutX, Math.sin(th1) * rOutZ);
+  }
+}
+
+/** Suspended classic casino cone pendant lamp with brass rods & warm diffuser. */
+function casinoPendant(G, F, lx, lz, yCeil = 2.8, yLamp = 2.15, shadeR = 0.38, shadeTile = "veneer_dark") {
+  cyl(G, F, "brass_gold", lx, yCeil - 0.02, lz, 0.12, 0.04, 10);
+  rod(G, "brass_gold", W(F, lx - 0.12, yCeil - 0.02, lz), W(F, lx - 0.09, yLamp, lz), 0.008, 4);
+  rod(G, "brass_gold", W(F, lx + 0.12, yCeil - 0.02, lz), W(F, lx + 0.09, yLamp, lz), 0.008, 4);
+  cyl(G, F, shadeTile, lx, yLamp - 0.10, lz, shadeR, 0.20, 14, { rt: 0.08 });
+  cyl(G, F, "brass_gold", lx, yLamp - 0.19, lz, shadeR + 0.015, 0.03, 14, { caps: false });
+  cyl(G, F, "light", lx, yLamp - 0.18, lz, shadeR * 0.85, 0.02, 12, { noBottom: true });
+}
+
+/** Plush casino high-roller swivel stool with weighted brass base, footrest & padded leather seat. */
+function casinoStool(G, F, sx, sz, lod = 0) {
+  cyl(G, F, "brass_gold", sx, 0.03, sz, 0.22, 0.05, 12);
+  cyl(G, F, "leather", sx, 0.54, sz, 0.22, 0.09, 12);
+  box(G, F, "leather", sx, 0.82, sz + 0.16, 0.34, 0.32, 0.06, { faces: "tsnew", rx: -0.12 });
+  if (lod === 0) {
+    cyl(G, F, "metal_brushed", sx, 0.28, sz, 0.035, 0.50, 6, { caps: false });
+    cyl(G, F, "brass_gold", sx, 0.20, sz, 0.18, 0.025, 8, { caps: false });
+    rod(G, "brass_gold", W(F, sx, 0.52, sz + 0.08), W(F, sx, 0.74, sz + 0.16), 0.016, 4);
+  }
+}
 
 // ------------------------------------------------------------------------------------------------ item factories
 // f(G, F, it, p, lod) draws one item in its frame: local x along the wall (width w), y up, z out of the wall (depth d,
@@ -292,8 +344,51 @@ FAC.drums = (G, F, it, p) => { const { w, d, h } = p; const n = Math.max(1, Math
 FAC.crates = (G, F, it, p) => { const { w, d, h } = p; box(G, F, 'wood_furn', -w / 4, h * 0.3, 0, w / 2 - 0.02, h * 0.6, d, { noBottom: true }); box(G, F, 'cardboard', w / 4, h * 0.25, 0, w / 2 - 0.02, h * 0.5, d - 0.1, { noBottom: true }); box(G, F, 'cardboard', -w / 4 + 0.05, h * 0.8, 0, w / 2 - 0.15, h * 0.4, d - 0.2, { faces: 'tsew' }); };
 FAC.sacks = (G, F, it, p) => { const { w, d, h } = p; for (let i = 0; i < 3; i++) box(G, F, 'canvas', 0, h * (0.17 + i * 0.32), 0, w - i * 0.1, h * 0.3, d - i * 0.05, { faces: 'tsew' }); };
 FAC.stage = (G, F, it, p) => { const { w, d, h } = p; box(G, F, 'veneer_dark', 0, h / 2, 0, w, h, d, { faces: 'tsew' }); box(G, F, 'fabric_red', 0, 2.2, -d / 2 + 0.05, w, 3.2, 0.1, { faces: 's' }); };
-FAC.bar = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, h / 2, 0, w, h, d, { noBottom: true }); box(G, F, T0(it, 1, 'stone'), 0, h + 0.02, 0, w + 0.06, 0.04, d + 0.1, { faces: 'tsewn' }); };
-FAC.slots = (G, F, it, p) => { const { w, d, h } = p; const n = Math.max(1, Math.round(w / 0.7)); for (let i = 0; i < n; i++) { const sx = -w / 2 + (w * (i + 0.5)) / n; box(G, F, 'console_body', sx, h / 2, 0, w / n - 0.06, h, d, { noBottom: true }); box(G, F, 'screen_ecdis', sx, h * 0.65, d / 2 + 0.005, w / n - 0.2, 0.4, 0.01, { faces: 's' }); } };
+FAC.bar = (G, F, it, p, lod = 0) => {
+  const { w, d, h } = p;
+  box(G, F, T0(it, 0, 'veneer_dark'), 0, h / 2 - 0.02, 0, w, h - 0.04, d, { noBottom: true });
+  box(G, F, T0(it, 1, 'stone'), 0, h + 0.02, 0, w + 0.12, 0.05, d + 0.14, { faces: 'tbsewn' });
+  rod(G, 'brass_gold', W(F, -w / 2 - 0.06, h + 0.04, d / 2 + 0.06), W(F, w / 2 + 0.06, h + 0.04, d / 2 + 0.06), 0.025, 6);
+  rod(G, 'brass_gold', W(F, -w / 2, 0.18, d / 2 + 0.12), W(F, w / 2, 0.18, d / 2 + 0.12), 0.025, 6);
+  if (lod === 0) {
+    box(G, F, 'bottles_bar', 0, h + 0.55, -d / 2 + 0.06, Math.min(w * 0.85, 3.6), 0.85, 0.08, { faces: 'sew' });
+    box(G, F, 'stainless', -w * 0.3, h + 0.22, 0, 0.45, 0.38, 0.32, { faces: 'tsewn' });
+    cyl(G, F, 'stainless', w * 0.3, h + 0.20, 0, 0.05, 0.35, 8);
+    cyl(G, F, 'stainless', w * 0.35, h + 0.20, 0, 0.05, 0.35, 8);
+  }
+};
+FAC.slots = (G, F, it, p, lod = 0) => {
+  const { w, d, h } = p;
+  const isIsland = it.id === "slot_island" || d > 1.3;
+  const n = Math.max(1, Math.round(w / 0.78)), pw = w / n;
+  for (let i = 0; i < n; i++) {
+    const sx = -w / 2 + (w * (i + 0.5)) / n, cw = pw - 0.08;
+    const dirs = isIsland ? [1, -1] : [1];
+    for (const dir of dirs) {
+      const zOffset = isIsland ? dir * (d * 0.20) : 0;
+      const F_slot = dir === 1 ? F : subF(F, 0, 0, Math.PI);
+      const actualSx = dir === 1 ? sx : -sx;
+      // Pedestal base
+      box(G, F_slot, "console_body", actualSx, 0.45, zOffset, cw, 0.9, 0.54, { noBottom: true });
+      box(G, F_slot, "metal_brushed", actualSx, 0.08, zOffset, cw + 0.02, 0.14, 0.58, { faces: "tbsew" });
+      // Ergonomic button deck
+      box(G, F_slot, "console_body", actualSx, 0.84, zOffset + 0.22, cw - 0.04, 0.12, 0.32, { faces: "tsew", rx: 0.25 });
+      cyl(G, F_slot, "light", actualSx, 0.90, zOffset + 0.28, 0.045, 0.02, 8); // Illuminated Spin button
+      // Main reel display screen
+      box(G, F_slot, "slot_reels", actualSx, 1.25, zOffset - 0.02, cw - 0.04, 0.65, 0.44, { faces: "tsnew", rx: -0.15 });
+      // Polished brass side trims
+      box(G, F_slot, "brass_gold", actualSx - cw / 2 + 0.015, 0.95, zOffset, 0.025, 1.65, 0.50, { faces: "tsew" });
+      box(G, F_slot, "brass_gold", actualSx + cw / 2 - 0.015, 0.95, zOffset, 0.025, 1.65, 0.50, { faces: "tsew" });
+      // Progressive jackpot header marquee & neon crown
+      box(G, F_slot, "slot_reels", actualSx, 1.70, zOffset - 0.06, cw - 0.06, 0.24, 0.18, { faces: "tsewn" });
+      box(G, F_slot, "light", actualSx, 1.83, zOffset - 0.06, cw - 0.04, 0.025, 0.19, { faces: "t" });
+      // Dedicated casino slot stool
+      if (lod === 0) {
+        casinoStool(G, F_slot, actualSx, zOffset + 0.72, lod);
+      }
+    }
+  }
+};
 FAC.play = (G, F, it, p) => { const { w, d, h } = p; box(G, F, 'paint_yellow', 0, h / 2, 0, w, h, d, { faces: 'tsew' }); box(G, F, 'paint_blue', 0, h + 0.2, 0, w * 0.5, 0.4, d * 0.5, { faces: 'tsew' }); };
 // ---- cruise ship furniture (docs/CRUISE-CONTRACT.md §4): composite sets keep the triangle count per guest low
 /** A child frame at local (lx, lz) of F, turned by `rot` (so its local +z points the way a guest faces). */
@@ -301,25 +396,69 @@ const subF = (F, lx, lz, rot) => { const w = W(F, lx, 0, lz); return frameOf(w[0
 /** A chair at local (lx, lz) facing the point (fx, fz). */
 function chairAt(G, F, lx, lz, tile, fx = 0, fz = 0, lod = 0) {
   const C = subF(F, lx, lz, Math.atan2(fx - lx, fz - lz));
-  box(G, C, tile, 0, 0.45, 0, 0.42, 0.07, 0.42, { faces: 'tsew' });
-  box(G, C, tile, 0, 0.74, -0.2, 0.42, 0.5, 0.05, { faces: 'tsnew' });
-  if (lod === 0) cyl(G, C, 'metal_brushed', 0, 0.21, 0, 0.03, 0.42, 4, { caps: false });
+  box(G, C, tile, 0, 0.45, 0, 0.44, 0.08, 0.44, { faces: 'tsew' });
+  box(G, C, tile, 0, 0.78, -0.21, 0.42, 0.54, 0.06, { faces: 'tsnew', rx: -0.08 });
+  box(G, C, tile, -0.20, 0.76, -0.17, 0.05, 0.48, 0.12, { faces: 'tsew' });
+  box(G, C, tile, 0.20, 0.76, -0.17, 0.05, 0.48, 0.12, { faces: 'tsew' });
+  if (lod === 0) {
+    for (const [sx, sz] of [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]]) {
+      rod(G, 'veneer_dark', W(C, sx, 0, sz), W(C, sx * 0.9, 0.42, sz * 0.9), 0.016, 5);
+      box(G, C, 'brass_gold', sx, 0.03, sz, 0.035, 0.06, 0.035, { faces: 'tsew' });
+    }
+  }
 }
-FAC.dining_set = (G, F, it, p, lod) => {
-  const { w, d } = p, t0 = T0(it, 0, 'wood_furn'), t1 = T0(it, 1, 'fabric_red'), n = it.spots ? it.spots.length : 4;
+FAC.dining_set = (G, F, it, p, lod = 0) => {
+  const { w, d } = p, t1 = T0(it, 1, 'fabric_red');
   const tw = Math.max(0.7, Math.min(w, d) - 1.2), long = w > d * 1.5;
-  if (long) { box(G, F, t0, 0, 0.74, 0, w - 0.1, 0.05, d - 0.1, { faces: 'tbsewn' }); box(G, F, 'metal_brushed', 0, 0.36, 0, 0.1, 0.72, d * 0.6, { faces: 'sewn' }); }
-  else { cyl(G, F, t0, 0, 0.74, 0, tw / 2, 0.05, 12); cyl(G, F, 'metal_brushed', 0, 0.36, 0, 0.05, 0.72, 6, { caps: false }); }
+  if (long) {
+    box(G, F, 'restaurant_linen', 0, 0.75, 0, w - 0.1, 0.05, d - 0.1, { faces: 'tbsewn' });
+    box(G, F, 'restaurant_linen', 0, 0.63, 0, w - 0.08, 0.22, d - 0.08, { faces: 'sewn' });
+    cyl(G, F, 'veneer_dark', -w * 0.25, 0.36, 0, 0.08, 0.72, 8);
+    cyl(G, F, 'veneer_dark', w * 0.25, 0.36, 0, 0.08, 0.72, 8);
+    cyl(G, F, 'brass_gold', -w * 0.25, 0.03, 0, 0.22, 0.05, 8);
+    cyl(G, F, 'brass_gold', w * 0.25, 0.03, 0, 0.22, 0.05, 8);
+  } else {
+    cyl(G, F, 'restaurant_linen', 0, 0.75, 0, tw / 2 + 0.05, 0.05, 16);
+    cyl(G, F, 'restaurant_linen', 0, 0.63, 0, tw / 2 + 0.04, 0.22, 16, { caps: false });
+    cyl(G, F, 'veneer_dark', 0, 0.36, 0, 0.06, 0.72, 8);
+    cyl(G, F, 'brass_gold', 0, 0.03, 0, tw * 0.28, 0.05, 10);
+  }
   for (const sp of it.spots || []) chairAt(G, F, sp[1] * 1.0, sp[2] * 1.0, t1, 0, 0, lod);
-  if (lod === 0 && n >= 4 && !long) box(G, F, 'paint_white', 0, 0.78, 0, 0.18, 0.04, 0.18, { faces: 'tsewn' });   // napkins
+  if (lod === 0) {
+    cyl(G, F, 'brass_gold', 0, 0.79, 0, 0.04, 0.03, 8);
+    cyl(G, F, 'light', 0, 0.86, 0, 0.025, 0.09, 8);
+    cyl(G, F, 'glass_tile', 0.08, 0.81, 0, 0.02, 0.07, 6);
+    cyl(G, F, 'paint_red', 0.08, 0.86, 0, 0.025, 0.035, 6);
+    for (const sp of it.spots || []) {
+      const ang = Math.atan2(sp[2], sp[1]);
+      const rad = (long ? Math.min(w, d) : tw) * 0.36;
+      const px = Math.cos(ang) * rad, pz = Math.sin(ang) * rad;
+      cyl(G, F, 'restaurant_linen', px, 0.78, pz, 0.12, 0.012, 10);
+      const cosA = Math.cos(ang + Math.PI / 2), sinA = Math.sin(ang + Math.PI / 2);
+      box(G, F, 'metal_brushed', px - cosA * 0.15, 0.785, pz - sinA * 0.15, 0.015, 0.008, 0.16);
+      box(G, F, 'metal_brushed', px + cosA * 0.15, 0.785, pz + sinA * 0.15, 0.015, 0.008, 0.16);
+      cyl(G, F, 'metal_brushed', px + cosA * 0.13 - Math.cos(ang) * 0.08, 0.79, pz + sinA * 0.13 - Math.sin(ang) * 0.08, 0.02, 0.005, 6);
+      cyl(G, F, 'paint_white', px + cosA * 0.13 - Math.cos(ang) * 0.08, 0.84, pz + sinA * 0.13 - Math.sin(ang) * 0.08, 0.025, 0.07, 6);
+      box(G, F, 'restaurant_linen', px, 0.79, pz, 0.08, 0.018, 0.08);
+    }
+  }
 };
-FAC.booth = (G, F, it, p, lod) => {
+FAC.booth = (G, F, it, p, lod = 0) => {
   const { w, d } = p;
-  box(G, F, T0(it, 0, 'fabric_red'), 0, 0.22, -d / 2 + 0.3, w, 0.44, 0.6, { faces: 'tsew' });
-  box(G, F, T0(it, 0, 'fabric_red'), 0, 0.75, -d / 2 + 0.06, w, 0.8, 0.12, { faces: 'tsew' });
-  box(G, F, T0(it, 1, 'wood_furn'), 0, 0.74, 0.1, w - 0.4, 0.05, 0.8, { faces: 'tbsewn' });
-  box(G, F, 'metal_brushed', 0, 0.36, 0.1, 0.1, 0.72, 0.1, { faces: 'sewn' });
-  chairAt(G, F, -0.55, 0.9, T0(it, 0, 'fabric_red'), 0, 0.1, lod); chairAt(G, F, 0.55, 0.9, T0(it, 0, 'fabric_red'), 0, 0.1, lod);
+  box(G, F, T0(it, 0, 'fabric_red'), 0, 0.24, -d / 2 + 0.32, w, 0.46, 0.64, { faces: 'tsew' });
+  box(G, F, T0(it, 0, 'fabric_red'), 0, 0.82, -d / 2 + 0.08, w, 0.85, 0.15, { faces: 'tsnew' });
+  box(G, F, 'veneer_dark', 0, 1.26, -d / 2 + 0.08, w + 0.02, 0.05, 0.18, { faces: 'tbsewn' });
+  box(G, F, 'restaurant_linen', 0, 0.75, 0.12, w - 0.35, 0.05, 0.85, { faces: 'tbsewn' });
+  box(G, F, 'restaurant_linen', 0, 0.63, 0.12, w - 0.33, 0.22, 0.83, { faces: 'sewn' });
+  cyl(G, F, 'brass_gold', 0, 0.36, 0.12, 0.06, 0.72, 8);
+  if (lod === 0) {
+    cyl(G, F, 'brass_gold', 0, 0.79, 0.12, 0.04, 0.03, 8);
+    cyl(G, F, 'light', 0, 0.86, 0.12, 0.025, 0.09, 8);
+    cyl(G, F, 'restaurant_linen', -0.32, 0.78, 0.12, 0.11, 0.012, 8);
+    cyl(G, F, 'restaurant_linen', 0.32, 0.78, 0.12, 0.11, 0.012, 8);
+  }
+  chairAt(G, F, -0.55, 0.9, T0(it, 0, 'fabric_red'), 0, 0.12, lod);
+  chairAt(G, F, 0.55, 0.9, T0(it, 0, 'fabric_red'), 0, 0.12, lod);
 };
 FAC.lounge_set = (G, F, it, p, lod) => {
   const { w, d } = p, t = T0(it, 0, 'fabric_blue');
@@ -335,20 +474,249 @@ FAC.stool_row = (G, F, it, p, lod) => {
   const n = Math.max(1, Math.round(p.w / 0.85));
   for (let i = 0; i < n; i++) { const x = -p.w / 2 + (p.w * (i + 0.5)) / n; cyl(G, F, 'leather', x, 0.72, 0, 0.18, 0.07, 8); if (lod === 0) cyl(G, F, 'metal_brushed', x, 0.36, 0, 0.03, 0.7, 5, { caps: false }); }
 };
-FAC.piano_bar = (G, F, it, p, lod) => {
+FAC.piano_bar = (G, F, it, p, lod = 0) => {
   const { w } = p, r = w / 2;
-  cyl(G, F, T0(it, 0, 'veneer_dark'), 0, 0.55, 0, r * 0.6, 1.1, 14, { caps: false }); cyl(G, F, T0(it, 1, 'stone'), 0, 1.12, 0, r * 0.62, 0.05, 14);
-  box(G, F, 'leather', 0, 0.55, 0, 1.5, 0.9, 1.2, { faces: 'tsew' });
-  if (lod === 0) for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; cyl(G, F, 'leather', Math.sin(a) * r * 0.82, 0.7, Math.cos(a) * r * 0.82, 0.17, 0.06, 8); }
+  cyl(G, F, T0(it, 0, 'veneer_dark'), 0, 0.55, 0, r * 0.6, 1.1, 16, { caps: false });
+  cyl(G, F, T0(it, 1, 'stone'), 0, 1.12, 0, r * 0.64, 0.06, 16);
+  box(G, F, 'leather', 0, 0.58, 0, 1.6, 0.95, 1.3, { faces: 'tsew' });
+  rod(G, 'brass_gold', W(F, 0, 1.15, -0.4), W(F, 0, 1.55, 0), 0.02, 4);
+  if (lod === 0) {
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      const bx = Math.sin(a) * r * 0.82, bz = Math.cos(a) * r * 0.82;
+      cyl(G, F, 'leather', bx, 0.72, bz, 0.18, 0.07, 8);
+      cyl(G, F, 'metal_brushed', bx, 0.36, bz, 0.03, 0.7, 5, { caps: false });
+      cyl(G, F, 'brass_gold', bx, 0.24, bz, 0.16, 0.02, 6, { caps: false });
+    }
+  }
 };
 FAC.dance_floor = (G, F, it, p, lod) => {
   const n = lod ? 2 : 6, cw = p.w / n, cd = p.d / n;
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) box(G, F, (i + j) % 2 ? 'light' : 'rubber_black', -p.w / 2 + cw * (i + 0.5), 0.015, -p.d / 2 + cd * (j + 0.5), cw, 0.03, cd, { faces: 't' });
 };
-FAC.piano = (G, F, it, p) => { const { w, d } = p; box(G, F, 'leather', 0, 0.7, 0, w, 0.12, d, { faces: 'tbsewn' }); for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * w * 0.38, 0.33, 0, 0.04, 0.66, 5, { caps: false }); box(G, F, 'paint_white', 0, 0.78, d / 2 - 0.2, w * 0.7, 0.04, 0.3, { faces: 't' }); };
-FAC.roulette = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 1, 'veneer_dark'), 0, 0.4, 0, w, 0.8, d, { noBottom: true }); box(G, F, 'felt', 0.35, 0.86, 0.2, w * 0.6, 0.04, d * 0.6, { faces: 't' }); cyl(G, F, 'veneer_dark', -w * 0.32, 0.88, -0.05, 0.38, 0.06, 12); if (lod === 0) cyl(G, F, 'metal_brushed', -w * 0.32, 0.93, -0.05, 0.15, 0.04, 8); };
-FAC.blackjack = (G, F, it, p, lod) => { const { w, d, h } = p; box(G, F, T0(it, 1, 'veneer_dark'), 0, h / 2 - 0.02, 0, w, h - 0.04, d, { noBottom: true }); box(G, F, 'felt', 0, h + 0.005, 0.05, w - 0.15, 0.03, d - 0.2, { faces: 't' }); if (lod === 0) for (const sx of [-0.8, 0, 0.8]) box(G, F, 'paint_white', sx, h + 0.03, 0.3, 0.1, 0.02, 0.14, { faces: 't' }); };
-FAC.cage = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, 0.5, 0, w, 1.0, d, { noBottom: true }); box(G, F, 'metal_brushed', 0, 1.25, d / 2 - 0.05, w, 0.5, 0.04, { faces: 'sn' }); box(G, F, 'metal_brushed', 0, h - 0.02, 0, w, 0.04, d, { faces: 'tb' }); };
+FAC.piano = (G, F, it, p) => {
+  const { w, d } = p;
+  box(G, F, 'leather', 0, 0.72, 0, w, 0.18, d, { faces: 'tbsewn' });
+  box(G, F, 'leather', 0, 1.05, -d * 0.12, w * 0.95, 0.03, d * 0.95, { faces: 'tbsewn', rx: 0.42 });
+  rod(G, 'brass_gold', W(F, w * 0.35, 0.80, 0), W(F, w * 0.35, 1.25, 0), 0.015, 4);
+  box(G, F, 'brass_gold', 0, 0.74, -0.05, w * 0.75, 0.02, d * 0.7, { faces: 't' });
+  box(G, F, 'paint_white', 0, 0.78, d / 2 - 0.15, w * 0.72, 0.04, 0.22, { faces: 'tse' });
+  box(G, F, 'rubber_black', 0, 0.80, d / 2 - 0.20, w * 0.65, 0.03, 0.12, { faces: 't' });
+  for (const sx of [-w * 0.38, w * 0.38]) cyl(G, F, 'veneer_dark', sx, 0.34, 0, 0.05, 0.68, 6, { caps: false });
+  cyl(G, F, 'veneer_dark', 0, 0.34, -d * 0.38, 0.05, 0.68, 6, { caps: false });
+};
+FAC.roulette = (G, F, it, p, lod = 0) => {
+  const { w, d } = p, h = 0.88;
+  const wx = -w * 0.30;
+  // 1. Table body & brass footrail
+  box(G, F, T0(it, 1, "veneer_dark"), 0, h / 2 - 0.02, 0, w, h - 0.04, d * 0.9, { noBottom: true });
+  cyl(G, F, "veneer_dark", wx, 0.38, 0, 0.26, 0.76, 12);
+  cyl(G, F, "brass_gold", wx, 0.03, 0, 0.44, 0.05, 14);
+  rod(G, "brass_gold", W(F, -w * 0.46, 0.15, d * 0.48), W(F, w * 0.46, 0.15, d * 0.48), 0.025, 6);
+  // 2. Authentic Mahogany Roulette Wheel Bowl
+  cyl(G, F, "veneer_dark", wx, h + 0.02, 0, 0.48, 0.14, 18);
+  cyl(G, F, "brass_gold", wx, h + 0.08, 0, 0.49, 0.03, 18, { caps: false });
+  cyl(G, F, "brass_gold", wx, h + 0.04, 0, 0.42, 0.06, 16);
+  cyl(G, F, "hazard", wx, h + 0.06, 0, 0.35, 0.04, 18);
+  cyl(G, F, "brass_gold", wx, h + 0.10, 0, 0.08, 0.10, 10);
+  rod(G, "brass_gold", W(F, wx - 0.16, h + 0.14, 0), W(F, wx + 0.16, h + 0.14, 0), 0.014, 4);
+  rod(G, "brass_gold", W(F, wx, h + 0.14, -0.16), W(F, wx, h + 0.14, 0.16), 0.014, 4);
+  cyl(G, F, "paint_white", wx + 0.26, h + 0.07, 0.14, 0.015, 0.02, 6); // Ivory ball
+  // 3. Padded Leather Player Armrest
+  box(G, F, "leather", w * 0.12, h + 0.03, d * 0.44, w * 0.72, 0.05, 0.14, { faces: "tsew" });
+  box(G, F, "leather", w / 2 - 0.04, h + 0.03, 0, 0.14, 0.05, d * 0.88, { faces: "tsew" });
+  // 4. Sunken Green Felt with Printed 1-36 Betting Grid
+  box(G, F, "felt", w * 0.14, h + 0.01, 0, w * 0.64, 0.02, d * 0.74, { faces: "t" });
+  // 5. Acrylic/Brass Dolly Win Marker & Chip Tray
+  box(G, F, "chips_tray", wx, h + 0.02, d * 0.32, 0.45, 0.025, 0.18, { faces: "tsew" });
+  cyl(G, F, "brass_gold", w * 0.18, h + 0.045, 0.06, 0.028, 0.07, 8); // Dolly marker
+  if (lod === 0) {
+    const chipCols = ["paint_red", "paint_green", "rubber_black", "paint_blue"];
+    for (let c = 0; c < 4; c++) cyl(G, F, chipCols[c], wx - 0.12 + c * 0.08, h + 0.038, d * 0.32, 0.024, 0.03, 8);
+  }
+  // 6. Suspended Casino Pendant Lamp
+  casinoPendant(G, F, w * 0.14, 0, 2.8, 2.15, 0.38, "veneer_dark");
+};
+
+FAC.blackjack = (G, F, it, p, lod = 0, opts = {}) => {
+  const { w, d } = p, h = p.h || 0.86;
+  const z0 = -d * 0.22;
+  const rx = w / 2 - 0.06, rz = d * 0.70;
+  const feltTile = opts.felt || (p.item === "baccarat_table" ? "felt_red" : "felt");
+
+  // 1. Semicircular wooden base & modesty skirt
+  arcWall(G, F, "veneer_dark", 0, (h - 0.06) / 2 + 0.12, z0, rx - 0.06, rz - 0.06, h - 0.28, 0, Math.PI, 14);
+  box(G, F, "veneer_dark", 0, (h - 0.06) / 2 + 0.12, z0, (rx - 0.06) * 2, h - 0.28, 0.04, { faces: "sn" });
+  arcWall(G, F, "veneer_dark", 0, h - 0.03, z0, rx, rz, 0.06, 0, Math.PI, 16);
+  box(G, F, "veneer_dark", 0, h - 0.03, z0, rx * 2, 0.06, 0.05, { faces: "sn" });
+
+  // 2. Twin carved walnut pedestals with brass collars
+  for (const px of [-0.62, 0.62]) {
+    cyl(G, F, "brass_gold", px, 0.03, z0 + 0.24, 0.26, 0.06, 12);
+    cyl(G, F, "veneer_dark", px, 0.38, z0 + 0.24, 0.16, 0.64, 12);
+    cyl(G, F, "brass_gold", px, 0.68, z0 + 0.24, 0.22, 0.05, 12);
+  }
+
+  // 3. Curved brass footrail for players
+  if (lod === 0) {
+    const fSeg = 8;
+    for (let k = 0; k < fSeg; k++) {
+      const a0 = (k / fSeg) * Math.PI, a1 = ((k + 1) / fSeg) * Math.PI;
+      rod(G, "brass_gold",
+        W(F, Math.cos(a0) * (rx * 0.76), 0.15, z0 + Math.sin(a0) * (rz * 0.76)),
+        W(F, Math.cos(a1) * (rx * 0.76), 0.15, z0 + Math.sin(a1) * (rz * 0.76)),
+        0.022, 6);
+    }
+  }
+
+  // 4. Padded leather bolster (curved player armrest)
+  arcWall(G, F, "leather", 0, h + 0.02, z0, rx, rz, 0.04, 0, Math.PI, 16);
+  arcBand(G, F, "leather", 0, h + 0.04, z0, rx - 0.12, rx, rz - 0.12, rz, 0, Math.PI, 16);
+  arcBand(G, F, "leather", 0, h + 0.025, z0, rx - 0.14, rx - 0.12, rz - 0.14, rz - 0.12, 0, Math.PI, 14);
+  box(G, F, "leather", rx - 0.07, h + 0.025, z0, 0.14, 0.05, 0.08, { faces: "tsew" });
+  box(G, F, "leather", -rx + 0.07, h + 0.025, z0, 0.14, 0.05, 0.08, { faces: "tsew" });
+
+  // 5. Wooden racetrack with inlaid brass cup holders
+  const rFeltX = rx - 0.24, rFeltZ = rz - 0.24;
+  arcBand(G, F, "veneer_dark", 0, h + 0.012, z0, rFeltX, rx - 0.14, rFeltZ, rz - 0.14, 0, Math.PI, 16);
+  for (const frac of [0.16, 0.33, 0.50, 0.67, 0.84]) {
+    const th = frac * Math.PI;
+    const cx = Math.cos(th) * (rx - 0.19), cz = z0 + Math.sin(th) * (rz - 0.19);
+    cyl(G, F, "brass_gold", cx, h + 0.016, cz, 0.042, 0.016, 10);
+    cyl(G, F, "rubber_black", cx, h + 0.022, cz, 0.030, 0.008, 8);
+  }
+
+  // 6. Sunken Felt (Trapezoidal slices from straight dealer edge to curved racetrack)
+  const nFeltSeg = 14, nrmUp = WN(F, 0, 1, 0);
+  for (let i = 0; i < nFeltSeg; i++) {
+    const th0 = (i / nFeltSeg) * Math.PI, th1 = ((i + 1) / nFeltSeg) * Math.PI;
+    const x0 = Math.cos(th0) * rFeltX, x1 = Math.cos(th1) * rFeltX;
+    const zf0 = z0 + Math.sin(th0) * rFeltZ, zf1 = z0 + Math.sin(th1) * rFeltZ;
+    const b0 = W(F, x0, h + 0.008, z0), b1 = W(F, x1, h + 0.008, z0);
+    const f0 = W(F, x0, h + 0.008, zf0), f1 = W(F, x1, h + 0.008, zf1);
+    G.quad(feltTile, b1, b0, f0, f1, nrmUp, x1, z0, x0, zf0);
+  }
+
+  // 7. Dealer Accessories & 3D Dressing
+  box(G, F, "brass_gold", 0, h + 0.014, z0 + 0.10, 0.52, 0.022, 0.20, { faces: "tsew" });
+  box(G, F, "chips_tray", 0, h + 0.026, z0 + 0.10, 0.48, 0.022, 0.16, { faces: "tsew" });
+  const chipCols = ["paint_red", "paint_red", "paint_green", "rubber_black", "paint_blue", "brass_gold"];
+  for (let c = 0; c < 6; c++) {
+    const chX = -0.18 + c * 0.072, chH = 0.022 + (c % 3) * 0.012;
+    cyl(G, F, chipCols[c], chX, h + 0.01 + chH / 2, z0 + 0.24, 0.023, chH, 10);
+  }
+  // Dealing shoe & discard rack
+  box(G, F, "stainless", 0.40, h + 0.038, z0 + 0.12, 0.11, 0.07, 0.22, { faces: "tsewn", rx: -0.25 });
+  box(G, F, "paint_white", 0.40, h + 0.058, z0 + 0.10, 0.08, 0.04, 0.14, { faces: "t", rx: -0.25 });
+  box(G, F, "glass_tile", -0.40, h + 0.048, z0 + 0.12, 0.10, 0.09, 0.14, { faces: "tsewn" });
+  box(G, F, "paint_red", -0.40, h + 0.032, z0 + 0.12, 0.08, 0.05, 0.11, { faces: "t" });
+  box(G, F, "brass_gold", 0.20, h + 0.012, z0 + 0.06, 0.09, 0.005, 0.05, { faces: "t" });
+
+  // 8. Dedicated Suspended Casino Pendant Lamp
+  casinoPendant(G, F, 0, z0 + rz * 0.38, 2.8, 2.15, 0.38, "veneer_dark");
+
+  // 9. High-Roller Casino Stools
+  for (const sp of it.spots || []) {
+    if (sp[0] === "sit") casinoStool(G, F, sp[1], sp[2], lod);
+  }
+};
+
+FAC.baccarat_table = (G, F, it, p, lod = 0) => FAC.blackjack(G, F, it, p, lod, { felt: "felt_red" });
+
+FAC.poker_table = (G, F, it, p, lod = 0) => {
+  const { w, d } = p, h = p.h || 0.82;
+  const rad = d / 2 - 0.06, cxL = -(w - d) / 2, cxR = (w - d) / 2;
+
+  // 1. Heavy twin pedestals with horizontal stretcher footrail
+  for (const px of [cxL, cxR]) {
+    cyl(G, F, "brass_gold", px, 0.03, 0, 0.28, 0.06, 12);
+    cyl(G, F, "veneer_dark", px, 0.36, 0, 0.16, 0.62, 12);
+    cyl(G, F, "brass_gold", px, 0.65, 0, 0.22, 0.05, 12);
+  }
+  rod(G, "brass_gold", W(F, cxL, 0.15, 0), W(F, cxR, 0.15, 0), 0.028, 6);
+
+  // 2. Oval table subtop & modesty skirt
+  box(G, F, "veneer_dark", 0, 0.38, 0, w - d, 0.54, d - 0.28, { noBottom: true });
+  cyl(G, F, "veneer_dark", cxL, 0.38, 0, rad - 0.08, 0.54, 14, { caps: false });
+  cyl(G, F, "veneer_dark", cxR, 0.38, 0, rad - 0.08, 0.54, 14, { caps: false });
+  box(G, F, "veneer_dark", 0, h - 0.03, 0, w - d, 0.06, d - 0.12, { faces: "tbsew" });
+  cyl(G, F, "veneer_dark", cxL, h - 0.03, 0, rad, 0.06, 16);
+  cyl(G, F, "veneer_dark", cxR, h - 0.03, 0, rad, 0.06, 16);
+
+  // 3. Continuous 360° Padded Leather Bolster
+  box(G, F, "leather", 0, h + 0.035, -rad + 0.06, w - d, 0.05, 0.12, { faces: "tbsew" });
+  box(G, F, "leather", 0, h + 0.035, rad - 0.06, w - d, 0.05, 0.12, { faces: "tbsew" });
+  arcBand(G, F, "leather", cxL, h + 0.035, 0, rad - 0.12, rad, rad - 0.12, rad, Math.PI / 2, 1.5 * Math.PI, 14);
+  arcWall(G, F, "leather", cxL, h + 0.018, 0, rad, rad, 0.036, Math.PI / 2, 1.5 * Math.PI, 14);
+  arcBand(G, F, "leather", cxR, h + 0.035, 0, rad - 0.12, rad, rad - 0.12, rad, -Math.PI / 2, Math.PI / 2, 14);
+  arcWall(G, F, "leather", cxR, h + 0.018, 0, rad, rad, 0.036, -Math.PI / 2, Math.PI / 2, 14);
+
+  // 4. Wooden Racetrack with Inlaid Brass Cup Holders
+  box(G, F, "veneer_dark", 0, h + 0.01, -rad + 0.17, w - d, 0.02, 0.10, { faces: "t" });
+  box(G, F, "veneer_dark", 0, h + 0.01, rad - 0.17, w - d, 0.02, 0.10, { faces: "t" });
+  arcBand(G, F, "veneer_dark", cxL, h + 0.01, 0, rad - 0.22, rad - 0.12, rad - 0.22, rad - 0.12, Math.PI / 2, 1.5 * Math.PI, 12);
+  arcBand(G, F, "veneer_dark", cxR, h + 0.01, 0, rad - 0.22, rad - 0.12, rad - 0.22, rad - 0.12, -Math.PI / 2, Math.PI / 2, 12);
+  for (const sx of [-0.85, -0.42, 0, 0.42, 0.85]) {
+    for (const sz of [-rad + 0.17, rad - 0.17]) {
+      cyl(G, F, "brass_gold", sx, h + 0.016, sz, 0.042, 0.016, 10);
+      cyl(G, F, "rubber_black", sx, h + 0.022, sz, 0.030, 0.008, 8);
+    }
+  }
+
+  // 5. Sunken Felt (Oval stadium surface)
+  const fRad = rad - 0.22;
+  box(G, F, "felt", 0, h + 0.008, 0, w - d, 0.015, fRad * 2, { faces: "t" });
+  cyl(G, F, "felt", cxL, h + 0.008, 0, fRad, 0.015, 14, { caps: true, noBottom: true });
+  cyl(G, F, "felt", cxR, h + 0.008, 0, fRad, 0.015, 14, { caps: true, noBottom: true });
+
+  // 6. Community Card Boxes & 3D Pot in center
+  for (let k = -2; k <= 2; k++) {
+    box(G, F, "felt", k * 0.11, h + 0.009, 0, 0.09, 0.002, 0.13, { faces: "t" });
+    box(G, F, "brass_gold", k * 0.11, h + 0.010, 0, 0.095, 0.001, 0.135, { faces: "t" });
+  }
+  cyl(G, F, "paint_red", -0.08, h + 0.024, 0.14, 0.024, 0.035, 10);
+  cyl(G, F, "paint_blue", 0.0, h + 0.030, 0.15, 0.024, 0.045, 10);
+  cyl(G, F, "rubber_black", 0.08, h + 0.024, 0.14, 0.024, 0.035, 10);
+  box(G, F, "brass_gold", 0, h + 0.014, -rad + 0.32, 0.46, 0.022, 0.18, { faces: "tsew" });
+  box(G, F, "chips_tray", 0, h + 0.026, -rad + 0.32, 0.42, 0.022, 0.15, { faces: "tsew" });
+
+  // 7. Twin Suspended Casino Pendant Lamps
+  casinoPendant(G, F, cxL * 0.7, 0, 2.8, 2.15, 0.36, "veneer_dark");
+  casinoPendant(G, F, cxR * 0.7, 0, 2.8, 2.15, 0.36, "veneer_dark");
+
+  // 8. Player Seats
+  for (const sp of it.spots || []) {
+    if (sp[0] === "sit") {
+      const C = subF(F, sp[1], sp[2], Math.atan2(0 - sp[1], 0 - sp[2]));
+      cyl(G, C, "leather", 0, 0.48, 0, 0.22, 0.08, 12);
+      box(G, C, "leather", 0, 0.78, -0.18, 0.38, 0.45, 0.06, { faces: "tsnew", rx: -0.1 });
+      if (lod === 0) {
+        cyl(G, C, "metal_brushed", 0, 0.24, 0, 0.035, 0.48, 6, { caps: false });
+        cyl(G, C, "brass_gold", 0, 0.15, 0, 0.18, 0.025, 8, { caps: false });
+        cyl(G, C, "brass_gold", 0, 0.03, 0, 0.24, 0.04, 8);
+      }
+    }
+  }
+};
+
+FAC.cage = (G, F, it, p) => {
+  const { w, d, h } = p;
+  box(G, F, T0(it, 0, "veneer_dark"), 0, 0.5, 0, w, 1.0, d, { noBottom: true });
+  box(G, F, "stone", 0, 1.02, 0, w + 0.08, 0.05, d + 0.1, { faces: "tbsewn" });
+  const bars = Math.round(w / 0.12);
+  for (let k = 0; k < bars; k++) {
+    const bx = -w / 2 + (w * (k + 0.5)) / bars;
+    const isPort = Math.abs(bx) < 0.35 || Math.abs(bx - 0.9) < 0.35 || Math.abs(bx + 0.9) < 0.35;
+    const yBot = isPort ? 1.35 : 1.04;
+    rod(G, "brass_gold", W(F, bx, yBot, d / 2 - 0.04), W(F, bx, h - 0.05, d / 2 - 0.04), 0.012, 4);
+    if (isPort && (k % 3 === 0)) {
+      cyl(G, F, "brass_gold", bx, 1.05, d / 2 - 0.08, 0.06, 0.02, 8);
+    }
+  }
+  rod(G, "brass_gold", W(F, -w / 2, h - 0.05, d / 2 - 0.04), W(F, w / 2, h - 0.05, d / 2 - 0.04), 0.02, 4);
+  box(G, F, "light", 0, h + 0.12, d / 2 - 0.04, w * 0.7, 0.22, 0.04, { faces: "s" });
+  box(G, F, "brass_gold", 0, h + 0.12, d / 2 - 0.04, w * 0.72, 0.24, 0.03, { faces: "tbew" });
+};
 FAC.seat_row = (G, F, it, p, lod) => {
   const { w, d } = p, n = Math.max(1, Math.floor(w / 0.55)), pw = w / n, t = T0(it, 0, 'fabric_red');
   for (let i = 0; i < n; i++) {
@@ -378,17 +746,68 @@ FAC.glass_lift = (G, F, it, p, lod) => {
   box(G, F, 'metal_brushed', 0, 0.1, 0, w, 0.2, w, { faces: 'tsew' }); box(G, F, 'metal_brushed', 0, h - 0.05, 0, w, 0.1, w, { faces: 'tbsew' });
   if (lod === 0) box(G, F, 'light', 0, 1.2, 0, 1.4, 2.2, 1.4, { faces: 'tsewn' });   // the car
 };
-FAC.grand_stair = (G, F, it, p, lod) => {
-  const { w, d, h } = p, n = lod ? 4 : 11, run = (d - 0.5) / n, rise = h / n;
-  for (let i = 0; i < n; i++) box(G, F, T0(it, 0, 'stone'), 0, rise * (i + 0.5), -d / 2 + 0.25 + run * (i + 0.5), w, rise, run, { faces: 'tsewn', noBottom: true });
-  for (const sx of [-1, 1]) { box(G, F, T0(it, 1, 'veneer_dark'), sx * (w / 2 - 0.05), h / 2 + 0.55, 0, 0.1, h + 0.2, d, { faces: 'ew' }); }
-  if (lod === 0) for (const sx of [-1, 1]) rod(G, 'metal_brushed', W(F, sx * (w / 2 - 0.05), 1.0, d / 2 - 0.2), W(F, sx * (w / 2 - 0.05), h + 1.0, -d / 2 + 0.3), 0.03, 5);
+FAC.grand_stair = (G, F, it, p, lod = 0) => {
+  const { w, d, h } = p, n = lod ? 4 : 12, run = (d - 0.5) / n, rise = h / n;
+  for (let i = 0; i < n; i++) {
+    const y = rise * (i + 0.5), z = -d / 2 + 0.25 + run * (i + 0.5);
+    box(G, F, 'stone', 0, y, z, w, rise, run, { faces: 'tsewn', noBottom: true });
+    box(G, F, 'carpet_pax', 0, y + rise * 0.5 + 0.005, z, w * 0.65, 0.015, run + 0.02, { faces: 't' });
+    if (lod === 0) rod(G, 'brass_gold', W(F, -w * 0.33, y + rise * 0.5 + 0.01, z - run * 0.4), W(F, w * 0.33, y + rise * 0.5 + 0.01, z - run * 0.4), 0.01, 4);
+  }
+  for (const sx of [-1, 1]) {
+    box(G, F, 'veneer_dark', sx * (w / 2 - 0.05), h / 2 + 0.55, 0, 0.1, h + 0.2, d, { faces: 'ew' });
+    if (lod === 0) {
+      rod(G, 'brass_gold', W(F, sx * (w / 2 - 0.05), 1.05, d / 2 - 0.2), W(F, sx * (w / 2 - 0.05), h + 1.05, -d / 2 + 0.3), 0.032, 6);
+      rod(G, 'brass_gold', W(F, sx * (w / 2 - 0.05), 0.55, d / 2 - 0.2), W(F, sx * (w / 2 - 0.05), h + 0.55, -d / 2 + 0.3), 0.020, 4);
+    }
+  }
 };
-FAC.chandelier = (G, F, it, p, lod) => { const { w } = p; cyl(G, F, 'metal_brushed', 0, 1.3, 0, 0.02, 2.6, 4, { caps: false }); for (const [y, r] of [[0.5, w / 2], [0.1, w / 3]]) cyl(G, F, 'light', 0, y, 0, r, 0.1, lod ? 8 : 14); if (lod === 0) for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; box(G, F, 'light', Math.sin(a) * w * 0.4, 0.3, Math.cos(a) * w * 0.4, 0.1, 0.3, 0.1, { faces: 'tsewn' }); } };
+FAC.chandelier = (G, F, it, p, lod = 0) => {
+  const { w } = p;
+  cyl(G, F, 'brass_gold', 0, 2.2, 0, 0.08, 0.06, 8);
+  cyl(G, F, 'brass_gold', 0, 1.3, 0, 0.025, 1.8, 4, { caps: false });
+  for (const [y, r] of [[0.6, w / 2], [0.25, w / 3], [-0.05, w / 5]]) {
+    cyl(G, F, 'brass_gold', 0, y, 0, r, 0.05, 16, { caps: false });
+    const count = lod ? 6 : Math.round(r * 28);
+    for (let k = 0; k < count; k++) {
+      const a = (k / count) * Math.PI * 2;
+      box(G, F, 'light', Math.sin(a) * r, y - 0.12, Math.cos(a) * r, 0.04, 0.22, 0.04, { faces: 'tsewn' });
+    }
+  }
+  cyl(G, F, 'light', 0, 0.28, 0, 0.14, 0.35, 8);
+};
 FAC.balcony_front = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'veneer_dark'), 0, 0.2, 0, w, 0.4, d, { faces: 'tbsew' }); box(G, F, T0(it, 1, 'glass_tile'), 0, 0.85, d / 2 - 0.03, w, 0.9, 0.04, { faces: 'sn' }); if (lod === 0) rod(G, 'metal_brushed', W(F, -w / 2, 1.32, d / 2 - 0.03), W(F, w / 2, 1.32, d / 2 - 0.03), 0.03, 4); };
 FAC.sculpture = (G, F, it, p) => { const { h } = p; box(G, F, 'stone', 0, 0.3, 0, 0.9, 0.6, 0.9, { faces: 'tsewn' }); cyl(G, F, T0(it, 0, 'metal_brushed'), 0, 0.6 + (h - 0.6) / 2, 0, 0.18, h - 0.6, 6, { rt: 0.5 }); cyl(G, F, T0(it, 1, 'paint_blue'), 0, h - 0.4, 0, 0.5, 0.5, 8); };
 FAC.fountain = (G, F, it, p, lod) => { const { w } = p; cyl(G, F, 'stone', 0, 0.3, 0, w / 2, 0.6, lod ? 8 : 14, { caps: false }); cyl(G, F, 'paint_lightblue', 0, 0.55, 0, w / 2 - 0.08, 0.05, lod ? 8 : 14); if (lod === 0) { cyl(G, F, 'stone', 0, 0.8, 0, 0.35, 0.5, 8); cyl(G, F, 'paint_lightblue', 0, 1.0, 0, 0.5, 0.04, 8); } };
-FAC.palm = (G, F, it, p, lod) => { const { h } = p; cyl(G, F, 'paint_white', 0, 0.2, 0, 0.4, 0.4, 8); cyl(G, F, 'wood_furn', 0, h * 0.45, 0, 0.07, h * 0.7, 5, { caps: false }); for (let k = 0; k < (lod ? 3 : 6); k++) { const a = (k / 6) * Math.PI * 2; box(G, subF(F, 0, 0, a), 'leaf', 0, h - 0.4, 0.6, 0.16, 0.05, 1.3, { faces: 'tb', rx: 0.5 }); } };
+FAC.palm = (G, F, it, p, lod = 0) => {
+  const { h } = p;
+  // 1. Luxurious Italian Fluted Marble & Polished Brass Urn Planter
+  cyl(G, F, "brass_gold", 0, 0.04, 0, 0.38, 0.08, 14);
+  cyl(G, F, "stone", 0, 0.36, 0, 0.34, 0.56, 16, { rt: 0.42 });
+  cyl(G, F, "brass_gold", 0, 0.66, 0, 0.44, 0.06, 14);
+  cyl(G, F, "leather", 0, 0.65, 0, 0.40, 0.02, 12);
+  // 2. Multi-stem Bamboo / Areca Palm Trunks
+  const stemAngles = [0.4, 2.5, 4.6];
+  for (let s = 0; s < stemAngles.length; s++) {
+    const sa = stemAngles[s];
+    const rStem0 = 0.08, rStem1 = 0.20;
+    const x0 = Math.cos(sa) * rStem0, z0 = Math.sin(sa) * rStem0;
+    const x1 = Math.cos(sa) * rStem1, z1 = Math.sin(sa) * rStem1;
+    rod(G, "wood_furn", W(F, x0, 0.66, z0), W(F, x1, h * 0.72, z1), 0.045, 6);
+  }
+  // 3. Gracefully Arching Layered Tropical Palm Fronds
+  const nFronds = lod ? 8 : 16;
+  for (let k = 0; k < nFronds; k++) {
+    const a = (k / nFronds) * Math.PI * 2 + (k % 2 ? 0.15 : 0);
+    const tier = k % 3;
+    const reach = 0.85 + tier * 0.25;
+    const droop = tier === 0 ? 0.45 : tier === 1 ? 0.28 : 0.15;
+    const yCrown = h * 0.72 + tier * 0.12;
+    const Sub = subF(F, 0, 0, a);
+    box(G, Sub, "leaf", 0, yCrown + 0.12, reach * 0.35, 0.22, 0.03, reach * 0.45, { faces: "tb", rx: 0.35 - tier * 0.1 });
+    box(G, Sub, "leaf", 0, yCrown - droop, reach * 0.78, 0.18, 0.02, reach * 0.50, { faces: "tb", rx: 0.75 + droop });
+  }
+};
 FAC.post_rope = (G, F, it, p) => { const { w } = p; for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * (w / 2 - 0.05), 0.5, 0, 0.03, 1.0, 5); rod(G, 'fabric_red', W(F, -w / 2 + 0.05, 0.85, 0), W(F, w / 2 - 0.05, 0.85, 0), 0.02, 4); };
 FAC.plinth = (G, F, it, p) => { const { w, h } = p; box(G, F, T0(it, 0, 'stone'), 0, h / 2, 0, w, h, w, { noBottom: true }); cyl(G, F, T0(it, 1, 'metal_brushed'), 0, h + 0.2, 0, 0.14, 0.4, 6); };
 FAC.sauna = (G, F, it, p) => { const { w, d, h } = p; box(G, F, T0(it, 0, 'veneer'), 0, h / 2, 0, w, h, d, { faces: 'tsewn' }); box(G, F, 'glass_tile', 0, 1.0, d / 2 + 0.01, 0.7, 1.9, 0.02, { faces: 's' }); box(G, F, 'light', 0, h - 0.05, 0, w - 0.3, 0.03, d - 0.3, { faces: 'b' }); };
@@ -431,7 +850,35 @@ FAC.rope_course = (G, F, it, p, lod) => {
 FAC.rink = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'tile_wet'), 0, 0.03, 0, w, 0.06, d, { faces: 't' }); box(G, F, T0(it, 1, 'paint_lightblue'), 0, 0.065, 0, w - 0.4, 0.004, d - 0.4, { faces: 't' }); for (const [cx, cz, bw, bd] of [[0, -d / 2 + 0.05, w, 0.1], [0, d / 2 - 0.05, w, 0.1], [-w / 2 + 0.05, 0, 0.1, d], [w / 2 - 0.05, 0, 0.1, d]]) box(G, F, 'paint_white', cx, 0.55, cz, bw, 1.1, bd, { faces: 'tsewn' }); if (lod === 0) cyl(G, F, 'paint_red', 0, 0.07, 0, 1.4, 0.004, 14); };
 FAC.dome = (G, F, it, p, lod) => { const { w, h } = p, n = lod ? 6 : 10; for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; rod(G, 'metal_brushed', W(F, Math.sin(a) * w / 2, 0.05, Math.cos(a) * w / 2), W(F, 0, h, 0), 0.04, 4); } cyl(G, F, 'metal_brushed', 0, 0.03, 0, w / 2, 0.06, n, { caps: false }); };
 FAC.zip = (G, F, it, p) => { const { w, h } = p; rod(G, 'metal_brushed', W(F, -w / 2, h, 0), W(F, w / 2, 1.8, 0), 0.015, 3); for (const sx of [-1, 1]) cyl(G, F, 'metal_brushed', sx * (w / 2 - 0.1), h / 2, 0, 0.08, h, 5, { caps: false }); };
-FAC.buffet_line = (G, F, it, p, lod) => { const { w, d } = p; box(G, F, T0(it, 0, 'stainless'), 0, 0.45, 0, w, 0.9, d - 0.2, { noBottom: true }); box(G, F, T0(it, 1, 'veneer'), 0, 0.93, 0, w + 0.05, 0.05, d - 0.15, { faces: 'tbsewn' }); const n = Math.floor(w / 0.8); for (let k = 0; k < n; k++) { const x = -w / 2 + 0.5 + k * ((w - 1) / Math.max(1, n - 1)); box(G, F, 'metal_brushed', x, 1.0, 0, 0.5, 0.08, 0.5, { faces: 'tsewn' }); if (lod === 0) box(G, F, 'light', x, 1.5, 0, 0.5, 0.04, 0.5, { faces: 'b' }); } if (lod === 0) rod(G, 'metal_brushed', W(F, -w / 2, 1.5, 0), W(F, w / 2, 1.5, 0), 0.02, 4); };
+FAC.buffet_line = (G, F, it, p, lod = 0) => {
+  const { w, d } = p;
+  box(G, F, T0(it, 1, 'veneer_dark'), 0, 0.45, 0, w, 0.9, d - 0.2, { noBottom: true });
+  box(G, F, 'stone', 0, 0.92, 0, w + 0.08, 0.05, d - 0.12, { faces: 'tbsewn' });
+  const n = Math.max(2, Math.floor(w / 1.1));
+  for (let k = 0; k < n; k++) {
+    const x = -w / 2 + 0.6 + k * ((w - 1.2) / Math.max(1, n - 1));
+    box(G, F, 'stainless', x, 0.98, 0, 0.55, 0.09, 0.45, { faces: 'tbsewn' });
+    cyl(G, F, 'metal_brushed', x, 1.06, 0, 0.24, 0.52, 10, { axis: 'x' });
+    box(G, F, 'brass_gold', x, 1.12, 0.18, 0.18, 0.025, 0.025);
+    if (lod === 0) box(G, F, 'light', x, 1.55, 0, 0.45, 0.03, 0.25, { faces: 'b' });
+  }
+  if (lod === 0) {
+    box(G, F, 'glass_tile', 0, 1.38, 0.16, w - 0.2, 0.35, 0.02, { faces: 'sn', rx: -0.3 });
+    rod(G, 'brass_gold', W(F, -w / 2 + 0.15, 0.95, 0), W(F, -w / 2 + 0.15, 1.55, 0), 0.02, 4);
+    rod(G, 'brass_gold', W(F, w / 2 - 0.15, 0.95, 0), W(F, w / 2 - 0.15, 1.55, 0), 0.02, 4);
+    rod(G, 'brass_gold', W(F, -w / 2 + 0.15, 1.55, 0), W(F, w / 2 - 0.15, 1.55, 0), 0.02, 4);
+  }
+};
+FAC.host_stand = (G, F, it, p, lod = 0) => {
+  const { w, d, h } = p;
+  box(G, F, 'veneer_dark', 0, h / 2 - 0.05, 0, w, h - 0.1, d, { noBottom: true });
+  box(G, F, 'veneer_dark', 0, h + 0.02, -0.04, w + 0.08, 0.06, d + 0.08, { faces: 'tbsewn', rx: 0.15 });
+  if (lod === 0) {
+    rod(G, 'brass_gold', W(F, -w * 0.25, h + 0.04, -d * 0.2), W(F, -w * 0.25, h + 0.22, -d * 0.05), 0.012, 4);
+    box(G, F, 'light', -w * 0.25, h + 0.22, 0, 0.08, 0.03, 0.05);
+    box(G, F, 'leather', 0.08, h + 0.06, 0, 0.32, 0.02, 0.24, { faces: 't', rx: 0.15 });
+  }
+};
 FAC.desk_set = (G, F, it, p, lod) => { FAC.desk(G, subF(F, 0, -0.3, 0), { tiles: it.tiles }, { w: 1.4, d: 0.7, h: 0.76 }, lod); chairAt(G, F, 0, 0.5, 'fabric_grey', 0, 0, lod); };
 FAC.pelorus = (G, F, it, p) => { cyl(G, F, 'metal_brushed', 0, 0.6, 0, 0.06, 1.2, 6, { caps: false }); cyl(G, F, 'paint_white', 0, 1.25, 0, 0.18, 0.1, 10); };
 FAC.chain_block = (G, F, it, p) => { rod(G, 'paint_yellow', W(F, 0, 0, 0), W(F, 0, -0.8, 0), 0.02, 4); box(G, F, 'paint_yellow', 0, -0.4, 0, 0.2, 0.25, 0.15, { faces: 'tsew' }); };
@@ -711,16 +1158,152 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
       shell.room = roomIndex.get(r.id);
       const mat = r.mat || { floor: 'lino_grey', wall: 'laminate', ceil: 'ceil_panel' };
       for (const w of r.windows || []) push(r.id, w.side, { from: w.from, to: w.to, bottom: w.bottom, top: w.top, glass: true });
-      if (r.drawFloor !== false && !(r.open && !r.drawFloor)) for (const q of rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles)) shell.quad(mat.floor, [q.x0, r.y, q.z1], [q.x1, r.y, q.z1], [q.x1, r.y, q.z0], [q.x0, r.y, q.z0], [0, 1, 0], q.x0, q.z1, q.x1, q.z0);
+      const isCasino = r.space === 'casino' || (r.name && r.name.toLowerCase().includes('casino')) || r.mat?.floor === 'carpet_pax';
+      if (isCasino) {
+        applyCasinoEnvironment(I.app?.scene, I.app?.renderer);
+        const pbrMats = getPBRMaterials();
+        const midX = (r.x0 + r.x1) / 2, midZ = (r.z0 + r.z1) / 2;
+
+        // Warm Ambient Casino Lighting (Zero glare, rich atmosphere)
+        const casinoHemi = new THREE.HemisphereLight(0xffebd0, 0x22120a, 0.95);
+        zg.add(casinoHemi);
+        const pitLight1 = new THREE.PointLight(0xffedd0, 1.8, 18, 1.2);
+        pitLight1.position.set(midX - 4.0, r.y + r.h - 0.3, midZ);
+        const pitLight2 = new THREE.PointLight(0xffedd0, 1.8, 18, 1.2);
+        pitLight2.position.set(midX + 4.0, r.y + r.h - 0.3, midZ);
+        zg.add(pitLight1, pitLight2);
+
+        // Real Royal Casino Damask Carpet floor mesh with World-Scale UV mapping (1 repeat per 2.6 meters)
+        if (r.drawFloor !== false && !(r.open && !r.drawFloor)) {
+          const carpetMat = getCasinoCarpetMat();
+          for (const q of rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles)) {
+            const fw = q.x1 - q.x0, fd = q.z1 - q.z0;
+            const floorGeo = new THREE.PlaneGeometry(fw, fd);
+            floorGeo.rotateX(-Math.PI / 2);
+            const uvAttr = floorGeo.attributes.uv;
+            for (let i = 0; i < uvAttr.count; i++) {
+              const u = uvAttr.getX(i);
+              const v = uvAttr.getY(i);
+              uvAttr.setXY(i, (u * fw) / 2.6, (v * fd) / 2.6);
+            }
+            uvAttr.needsUpdate = true;
+            const floorMesh = new THREE.Mesh(floorGeo, carpetMat);
+            floorMesh.position.set((q.x0 + q.x1) / 2, r.y + 0.003, (q.z0 + q.z1) / 2);
+            floorMesh.receiveShadow = true;
+            zg.add(floorMesh);
+          }
+        }
+        // Luxury Coffered Casino Ceiling with Gold Recessed Trays & Warm Cove Glow
+        if (r.ceiling !== false) {
+          zg.add(createPBRCasinoCeiling(r, pbrMats));
+        }
+        // Marble columns with brass capitals
+        const colPositions = [
+          [r.x0 + 1.2, r.z0 + 1.2], [r.x1 - 1.2, r.z0 + 1.2],
+          [r.x0 + 1.2, r.z1 - 1.2], [r.x1 - 1.2, r.z1 - 1.2],
+          [(r.x0 + r.x1) / 2, r.z0 + 1.2], [(r.x0 + r.x1) / 2, r.z1 - 1.2]
+        ];
+        for (const [cx, cz] of colPositions) {
+          const col = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, r.h, 24), pbrMats.marble);
+          col.position.set(cx, r.y + r.h / 2, cz);
+          const baseM = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.35, 0.16, 24), pbrMats.brass);
+          baseM.position.set(cx, r.y + 0.08, cz);
+          const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.26, 0.18, 24), pbrMats.brass);
+          cap.position.set(cx, r.y + r.h - 0.09, cz);
+          zg.add(col, baseM, cap);
+        }
+        // Chandeliers
+        for (const ox of [-5.5, 5.5]) {
+          for (const oz of [-4.0, 4.0]) {
+            loadGLTFProp('lantern_chandelier_01', (ch) => {
+              ch.position.set(midX + ox, r.y + r.h - 0.75, midZ + oz);
+              ch.scale.setScalar(1.2);
+              zg.add(ch);
+            });
+          }
+        }
+      } else {
+        if (r.drawFloor !== false && !(r.open && !r.drawFloor)) for (const q of rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles)) shell.quad(mat.floor, [q.x0, r.y, q.z1], [q.x1, r.y, q.z1], [q.x1, r.y, q.z0], [q.x0, r.y, q.z0], [0, 1, 0], q.x0, q.z1, q.x1, q.z0);
+      }
       if (r.open) continue;
       const wallTop = r.lined && r.deckH ? Math.max(r.h, r.deckH - 0.12) : r.h;
-      if (r.ceiling !== false) {
+      if (r.ceiling !== false && !isCasino) {
         for (const q of rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.ceilHoles)) shell.quad(mat.ceil, [q.x0, r.y + r.h, q.z0], [q.x1, r.y + r.h, q.z0], [q.x1, r.y + r.h, q.z1], [q.x0, r.y + r.h, q.z1], [0, -1, 0], q.x0, q.z0, q.x1, q.z1);
       }
       const sides = { n: [r.z0 + 0.05, r.x0, r.x1], s: [r.z1 - 0.05, r.x0, r.x1], w: [r.x0 + 0.05, r.z0, r.z1], e: [r.x1 - 0.05, r.z0, r.z1] };
       for (const [side, [c, from, to]] of Object.entries(sides)) {
         if (!r.walls[side]) continue;
         wallFace(shell, r, side, c, from, to, r.y, wallTop + 0.06, ops.get(r.id + ':' + side), mat.wall, r.lined ? 'rubber_black' : null);
+        if (isCasino) {
+          const pbrMats = getPBRMaterials();
+          const wlen = Math.abs(to - from), wh = wallTop + 0.06 - r.y;
+
+          // Two-tier luxury architectural casino wall:
+          // Lower: Rich Dark American Walnut Wainscot Paneling with Boiserie Frame
+          const wainscotH = Math.min(1.25, wh * 0.45);
+          const wainscotGeo = new THREE.PlaneGeometry(wlen, wainscotH);
+          const wainscotMesh = new THREE.Mesh(wainscotGeo, pbrMats.walnut);
+          wainscotMesh.receiveShadow = true;
+
+          // Upper: Royal Ruby & Gold Damask Fabric Wall Tapestry
+          const upperH = wh - wainscotH;
+          const upperGeo = new THREE.PlaneGeometry(wlen, upperH);
+          const uUv = upperGeo.attributes.uv;
+          for (let i = 0; i < uUv.count; i++) {
+            uUv.setXY(i, (uUv.getX(i) * wlen) / 1.8, (uUv.getY(i) * upperH) / 1.8);
+          }
+          uUv.needsUpdate = true;
+          const upperMesh = new THREE.Mesh(upperGeo, getCasinoDamaskMat());
+          upperMesh.receiveShadow = true;
+
+          // Raised Boiserie Frames on Wainscot
+          const nFrames = Math.max(1, Math.floor(wlen / 2.2));
+          const fW = (wlen - 0.4) / nFrames;
+          const framesGroup = new THREE.Group();
+          for (let f = 0; f < nFrames; f++) {
+            const fx = -wlen / 2 + 0.2 + (f + 0.5) * fW;
+            const bFrame = new THREE.Mesh(new THREE.BoxGeometry(fW - 0.24, wainscotH - 0.26, 0.025), pbrMats.brass);
+            bFrame.position.set(fx, r.y + wainscotH / 2, 0.012);
+            framesGroup.add(bFrame);
+          }
+
+          // Middle: Protruding Polished Brass Chair Rail
+          const railGeo = new THREE.BoxGeometry(wlen, 0.06, 0.05);
+          const railMesh = new THREE.Mesh(railGeo, pbrMats.brass);
+
+          // Top: Polished Brass Crown Molding
+          const crownGeo = new THREE.BoxGeometry(wlen, 0.05, 0.04);
+          const crownMesh = new THREE.Mesh(crownGeo, pbrMats.brass);
+
+          const wallGroup = new THREE.Group();
+          wainscotMesh.position.set(0, r.y + wainscotH / 2, 0);
+          upperMesh.position.set(0, r.y + wainscotH + upperH / 2, 0);
+          railMesh.position.set(0, r.y + wainscotH, 0.02);
+          crownMesh.position.set(0, r.y + wh - 0.025, 0.02);
+          wallGroup.add(wainscotMesh, upperMesh, railMesh, crownMesh, framesGroup);
+
+          // Sconces along walls
+          const numSconces = Math.max(1, Math.floor(wlen / 4.5));
+          for (let s = 0; s < numSconces; s++) {
+            const sx = -wlen / 2 + (s + 0.5) * (wlen / numSconces);
+            const sconce = new THREE.Group();
+            const sBack = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.28, 0.02), pbrMats.brass);
+            const sArm = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.14, 8), pbrMats.brass);
+            sArm.rotation.x = Math.PI / 2;
+            sArm.position.set(0, 0, 0.08);
+            const sGlobe = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 12), pbrMats.light);
+            sGlobe.position.set(0, 0.04, 0.15);
+            sconce.add(sBack, sArm, sGlobe);
+            sconce.position.set(sx, r.y + wainscotH + 0.45, 0.02);
+            wallGroup.add(sconce);
+          }
+
+          if (side === 'n') { wallGroup.position.set((from + to) / 2, 0, c + 0.01); wallGroup.rotation.y = 0; }
+          else if (side === 's') { wallGroup.position.set((from + to) / 2, 0, c - 0.01); wallGroup.rotation.y = Math.PI; }
+          else if (side === 'w') { wallGroup.position.set(c + 0.01, 0, (from + to) / 2); wallGroup.rotation.y = Math.PI / 2; }
+          else if (side === 'e') { wallGroup.position.set(c - 0.01, 0, (from + to) / 2); wallGroup.rotation.y = -Math.PI / 2; }
+          zg.add(wallGroup);
+        }
       }
       // window frames and glass; rails round floor openings
       for (const w of r.windows || []) windowFrame(shell, r, w);
@@ -742,7 +1325,54 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
         const [hi, lo] = chunkOf(cid);
         const ri = p.room ? roomIndex.get(p.room) ?? -1 : -1;
         hi.room = ri; lo.room = ri; zoneLo.room = ri;
-        if (p.t === 'k2') { drawItem(hi, p, 0); const it = ITEMS[p.item]; if (it && (p.h ?? it.h) >= (phone ? 1.0 : 0.7) && !it.over) { drawItem(lo, p, 1); if ((p.h ?? it.h) >= 1.2) drawItem(zoneLo, p, 1); } }
+        if (p.t === 'k2') {
+        const it = ITEMS[p.item];
+        let pbrMesh = null;
+        if (p.item === 'poker_table') {
+          pbrMesh = createPBRTable('poker');
+        } else if (p.item === 'blackjack') {
+          pbrMesh = createPBRBlackjackTable(false);
+        } else if (p.item === 'baccarat_table') {
+          pbrMesh = createPBRBlackjackTable(true);
+        } else if (p.item === 'roulette') {
+          pbrMesh = createPBRRouletteTable();
+        } else if (p.item === 'slot_island') {
+          pbrMesh = createPBRSlotIsland(p.w || 3.2, p.d || 1.8, p.h || 1.65);
+        } else if (p.item === 'bar_counter' || p.item === 'bar_island') {
+          pbrMesh = createPBRBarCounter(p.w || 5.0, p.d || 1.1, p.h || 1.15);
+        } else if (p.item === 'palm') {
+          loadGLTFProp('potted_plant_01', (mesh) => {
+            mesh.position.set(p.x, p.y, p.z);
+            mesh.rotation.y = p.rotY || 0;
+            mesh.scale.setScalar(1.4);
+            zg.add(mesh);
+          });
+          continue;
+        }
+        if (pbrMesh) {
+          pbrMesh.position.set(p.x, p.y, p.z);
+          pbrMesh.rotation.y = p.rotY || 0;
+          zg.add(pbrMesh);
+          // Place realistic chairs around table
+          if (it?.spots) {
+            for (const sp of it.spots) {
+              if (sp[0] === 'sit' || (p.item === 'roulette' && sp[0] === 'stand')) {
+                loadGLTFProp('modern_arm_chair_01', (chair) => {
+                  const rad = p.rotY || 0, c = Math.cos(rad), s = Math.sin(rad);
+                  const lx = sp[1], lz = sp[2];
+                  const wx = p.x + lx * c + lz * s;
+                  const wz = p.z - lx * s + lz * c;
+                  chair.position.set(wx, p.y, wz);
+                  chair.rotation.y = rad + (sp[3] || Math.atan2(-lx, -lz));
+                  chair.scale.setScalar(0.92);
+                  zg.add(chair);
+                });
+              }
+            }
+          }
+          continue;
+        }
+        drawItem(hi, p, 0); if (it && (p.h ?? it.h) >= (phone ? 1.0 : 0.7) && !it.over) { drawItem(lo, p, 1); if ((p.h ?? it.h) >= 1.2) drawItem(zoneLo, p, 1); } }
         else { const room = byId.get(p.room); drawRun(hi, p, room, 0); drawRun(lo, p, room, 1); if (p.kind !== 'frame') drawRun(zoneLo, p, room, 1); }
         if (p.anim === 'wiper') ctrl.wipers.push(p);
         continue;

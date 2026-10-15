@@ -177,7 +177,7 @@ export function createWorldTiles(opts = {}) {
   const freeBytes = opts.freeBytes || ((dir) => { try { const s = fs.statfsSync(dir); return s.bavail * s.bsize; } catch { return Infinity; } });
   let capBytes = capCfg;
   const fetchConc = Math.max(1, opts.fetchConc ?? 4);
-  const waitMs = opts.waitMs ?? 6000;
+  const waitMs = opts.waitMs ?? 10000;
   const st = { requests: 0, memHits: 0, diskHits: 0, built: 0, buildFailed: 0, uniformSkips: 0, swaps: 0, evicted: 0, convertMs: 0, overlays: 0, memEvicted: 0, shed: 0, denied: 0, dropped: 0, convertBackoff: 0 };
 
   // Decoded tiles, bounded in BYTES (raw SLWT incl. the vector bytes + gzip bytes + SDF): least recently requested

@@ -258,7 +258,7 @@ export class Hud {
     on('radarHU', () => { this.headingUp = !this.headingUp; $('radarHU').textContent = this.headingUp ? 'H↑' : 'N↑'; $('radarHU').classList.toggle('on', this.headingUp); });
     on('warpDown', () => this.stepWarp(-1));
     on('warpUp', () => this.stepWarp(1));
-    document.querySelectorAll('#radarCtl button[data-r]').forEach((b) => { b.onclick = () => { this.rangeIdx = Math.max(0, Math.min(RANGES_KM.length - 1, this.rangeIdx + (b.dataset.r === '+' ? 1 : -1))); $('radarRange').textContent = RANGES_KM[this.rangeIdx] + ' km'; }; });
+    document.querySelectorAll('#radarCtl button[data-r]').forEach((b) => { b.onclick = () => { this.rangeIdx = Math.max(0, Math.min(RANGES_KM.length - 1, this.rangeIdx + (b.dataset.r === '+' ? 1 : -1))); $('radarRange').textContent = RANGES_KM[this.rangeIdx] + ' km'; setText($('radarMiniRange'), RANGES_KM[this.rangeIdx] + 'k'); }; });
     $('chatInput').onkeydown = (e) => {
       if (e.key === 'Enter') { const t = $('chatInput').value.trim(); if (t) a.net.chat(t); $('chatInput').value = ''; $('chatInput').blur(); }
       if (e.key === 'Escape') $('chatInput').blur();
@@ -280,6 +280,68 @@ export class Hud {
       }
     }
     for (const [id, t] of [['btnChart', 'Chart'], ['btnShips', 'Ships'], ['btnInterior', 'Walk'], ['btnCamera', 'Camera'], ['btnFish', 'Fish'], ['btnAuto', 'Autopilot'], ['btnHelp', 'Help'], ['btnWeather', 'Weather'], ['btnDeck', 'Stop walking'], ['btnAboard', 'Back aboard'], ['btnAshore', 'Ashore'], ['btnPatch', 'Kit'], ['btnCastOff', 'Cast off']]) setLbl(id, t);
+
+    // Mobile nav drawer & pill bindings
+    const toggleNavDrawer = (open) => {
+      const b = document.body;
+      const willOpen = open !== undefined ? !!open : !b.classList.contains('navDrawerOpen');
+      b.classList.toggle('navDrawerOpen', willOpen);
+      $('navDrawerScrim')?.classList.toggle('hidden', !willOpen);
+      $('navPill')?.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) $('pillMsg')?.classList.add('hidden');
+    };
+    $('navPill')?.addEventListener('click', (e) => {
+      if (e.target.closest('#pillMoorBtn')) return;
+      toggleNavDrawer();
+    });
+    $('pillMoorBtn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.app.toggleDock();
+    });
+    $('ctxDrawerClose')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleNavDrawer(false);
+    });
+    $('navDrawerScrim')?.addEventListener('click', () => toggleNavDrawer(false));
+    $('radarMiniBtn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      $('radarWrap')?.classList.toggle('minimized');
+    });
+    $('radarWrap')?.addEventListener('click', (e) => {
+      if ($('radarWrap')?.classList.contains('minimized')) {
+        $('radarWrap')?.classList.remove('minimized');
+      }
+    });
+    $('btnClearLogs')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dl = $('drawerLogsList');
+      if (dl) dl.innerHTML = '';
+      $('pillMsg')?.classList.add('hidden');
+      this.updateNavPill();
+    });
+  }
+  updateNavPill() {
+    if (!this.touch) return;
+    const hasBerth = !$('pillBerth')?.classList.contains('hidden');
+    const hasJob = !$('pillJob')?.classList.contains('hidden');
+    const hasMsg = !$('pillMsg')?.classList.contains('hidden');
+    $('navPill')?.classList.toggle('hidden', !(hasBerth || hasJob || hasMsg));
+  }
+  updateBerthPill(on, nb = null, inRange = false) {
+    if (!this.touch) return;
+    const pB = $('pillBerth'), pTxt = $('pillBerthText'), pMoor = $('pillMoorBtn');
+    if (!pB) return;
+    if (!on || !nb) {
+      pB.classList.add('hidden');
+      pMoor?.classList.add('hidden');
+    } else {
+      pB.classList.remove('hidden');
+      const d = nb.distM ?? 0;
+      const dTxt = d >= 1000 ? (d / 1000).toFixed(1) + 'km' : Math.round(d) + 'm';
+      setText(pTxt, `${nb.name || 'Berth'} · ${dTxt}`);
+      pMoor?.classList.toggle('hidden', !inRange);
+    }
+    this.updateNavPill();
   }
   /** Use main.js's TouchHelm when it exists (one helm, one DOM); otherwise build our own. */
   adoptHelm() {
@@ -385,10 +447,26 @@ export class Hud {
   event(ev) {
     const d = document.createElement('div');
     d.className = `ev ${ev.kind === 'risk' ? 'warn risk' : ev.kind || 'info'}`; d.textContent = ev.text;   // world politics: `risk` is amber like warn
+    d.onclick = () => { d.remove(); const idx = this.logEntries.findIndex((x) => x.el === d); if (idx >= 0) this.logEntries.splice(idx, 1); };
     $('log').appendChild(d);
     this.logEntries.push({ el: d, t: performance.now() });
-    const max = this.touch ? 3 : 7;
+    const max = this.touch ? 1 : 7;
     while (this.logEntries.length > max) this.logEntries.shift().el.remove();
+    if (this.touch) {
+      const dl = $('drawerLogsList');
+      if (dl) {
+        const row = document.createElement('div');
+        row.className = `drawerLogItem ${ev.kind === 'risk' || ev.kind === 'warn' ? 'warn' : ''}`;
+        row.textContent = ev.text;
+        dl.insertBefore(row, dl.firstChild);
+        while (dl.children.length > 25) dl.lastChild.remove();
+        if (!document.body.classList.contains('navDrawerOpen')) {
+          $('pillMsg')?.classList.remove('hidden');
+          setText($('pillMsgText'), String(Math.min(9, dl.children.length)));
+          this.updateNavPill();
+        }
+      }
+    }
   }
   /** World detail tiles (docs/WORLD-STREAMING-CLIENT-HOOKS.md): map-data credit + an amber "coast detail loading" dot. */
   setWorldDetail(attribution, loading) {
@@ -405,9 +483,12 @@ export class Hud {
     if (html !== this.wdHtml) { this.wdHtml = html; this.wdEl.innerHTML = html; }
   }
   tickLog(now) {
+    const maxAge = this.touch ? 5500 : 25000;
+    const fadeAge = this.touch ? 4200 : 24000;
     for (const e of [...this.logEntries]) {
       const age = now - e.t;
-      if (age > 25000) { e.el.remove(); this.logEntries.splice(this.logEntries.indexOf(e), 1); } else if (age > 24000) e.el.classList.add('fade');
+      if (age > maxAge) { e.el.remove(); this.logEntries.splice(this.logEntries.indexOf(e), 1); }
+      else if (age > fadeAge) e.el.classList.add('fade');
     }
   }
   chat(m) {
@@ -676,7 +757,7 @@ export class Hud {
     const you = this.app.you;
     const on = !!(this.jobTargets.length && you && !you.docked && !you.assist && !you.rescue && !this.ashoreOn);
     el.classList.toggle('hidden', !on); document.body.classList.toggle('jobOn', on);
-    if (!on) { this.jobShown = null; return; }
+    if (!on) { this.jobShown = null; if (this.touch) { $('pillJob')?.classList.add('hidden'); this.updateNavPill(); } return; }
     // an action that is possible right now takes the card unless the skipper picked a contract a moment ago
     const ts = this.jobTargets, act = ts.find((t) => t.action?.enabled);
     let t = ts.find((x) => x.job.id === this.jobFocus);
@@ -689,6 +770,14 @@ export class Hud {
     setText($('jobPay'), `${fmt(t.job.pay)} cr`);
     setText($('jobStep'), t.step);
     setText($('jobWhere'), jobWhere(t));
+    if (this.touch) {
+      const pJ = $('pillJob'), pTxt = $('pillJobText');
+      if (pJ) {
+        pJ.classList.remove('hidden');
+        setText(pTxt, `${t.title || 'Contract'}${t.where ? ' · ' + t.where : ''}`);
+        this.updateNavPill();
+      }
+    }
     const leftS = t.leftS ?? t.deadlineS; const left = fmtLeft(leftS, this.app.warp || 1); setText($('jobLeft'), left); $('jobLeft').classList.toggle('late', leftS < 0); // V6 item 5: ship time
     $('jobNav').classList.toggle('hidden', ts.length < 2); setText($('jobIdx'), `${i + 1}/${ts.length}`);
     const b = $('btnJobAct');
@@ -728,7 +817,33 @@ export class Hud {
       if (tide.nextHigh) tile('clock', 'High / low water', `HW ${fmtClock(tide.nextHigh)} · LW ${fmtClock(tide.nextLow)}`, `in ${fmtDur(tide.nextHigh - now)} / ${fmtDur(tide.nextLow - now)}`, true);
       if (tide.stream) { const kn = Math.hypot(tide.stream.u, tide.stream.v) / GEO.KN_TO_MS; const set = ((Math.atan2(tide.stream.u, tide.stream.v) * 180) / Math.PI + 360) % 360; tile('compass', 'Tidal stream', kn > 0.05 ? `${kn.toFixed(1)} kn` : 'slack', kn > 0.05 ? `setting ${pad3(set)}°` : ''); }
     }
-    el.innerHTML = `<div class="wxGrid">${tiles.join('')}</div><div class="wxSrc">${wx?.source === 'open-meteo' ? 'Open-Meteo live observation' : 'Simulated weather (no live data here)'}</div>`;
+    const astro = typeof window.saltlineAstro === 'function' ? window.saltlineAstro() : null;
+    if (astro && astro.sun) {
+      const sunElev = Math.round(astro.sun.elevDeg);
+      const sunAz = Math.round(astro.sun.azDeg);
+      const sunState = astro.sun.elevDeg > 0 ? (astro.sun.elevDeg < 6 ? 'Sunrise / Sunset' : 'Day') : (astro.sun.elevDeg > -12 ? 'Twilight' : 'Night');
+      tile('sun', 'Sun & daylight', `${sunState} · ${sunElev}°`, `azimuth ${pad3(sunAz)}° · ${astro.sun.day > 0.8 ? 'full day' : astro.sun.day > 0 ? 'twilight' : 'dark'}`);
+
+      if (astro.moon) {
+        const moonElev = Math.round(astro.moon.elevDeg);
+        const moonIllum = Math.round(astro.moon.illumination * 100);
+        tile('moon', 'Moon', `${astro.moon.phaseName} · ${moonIllum}%`, `alt ${moonElev}°${moonElev > 0 ? ' (visible)' : ' (below horizon)'}`);
+      }
+
+      const starStatus = astro.starsVisible ? `visible (opacity ${Math.round(astro.starOpacity * 100)} %)` : (astro.sun.day > 0.2 ? 'hidden by daylight' : `overcast (cloud ${Math.round((astro.cloud || 0) * 100)} %)`);
+      tile('stars', 'Celestial Sphere', astro.starsVisible ? 'Stars & Planets clear' : 'Stars hidden', `${starStatus} · Venus, Mars, Jupiter, Saturn`, true);
+    }
+    const forced = !!this.app.forcedTime;
+    const btnHtml = `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding:6px 8px; background:rgba(20,30,45,0.7); border-radius:6px; font-size:12px;"><span><b>Celestial Mode:</b> ${forced ? 'Night Preview' : 'Real-time GPS / UTC'}</span><button id="btnToggleNightPreview" style="padding:4px 10px; font-size:12px; border-radius:4px; border:1px solid #557; background:#293b54; color:#d8e8ff; cursor:pointer;">${forced ? 'Return to Real-Time Sky' : 'Preview Night Sky (Stars & Moon)'}</button></div>`;
+    el.innerHTML = `<div class="wxGrid">${tiles.join('')}</div>${btnHtml}<div class="wxSrc">${wx?.source === 'open-meteo' ? 'Open-Meteo live observation' : 'Simulated weather (no live data here)'}</div>`;
+    const toggleBtn = $('btnToggleNightPreview');
+    if (toggleBtn) {
+      toggleBtn.onclick = () => {
+        if (this.app.forcedTime) this.app.forcedTime = null;
+        else this.app.forcedTime = Date.parse('2026-10-13T23:00:00Z') / 1000;
+        this.renderWeather(this.app.you?.weather || this.app.wx, this.app.you?.tide || this.app.tide);
+      };
+    }
   }
   showRescue(r) {
     const el = $('rescueWrap'); if (!el) return;
@@ -747,16 +862,17 @@ export class Hud {
     const txt = $('berthText'), moor = $('btnMoor'), tugs = $('btnTugs');
     // guide: the berth the guidance card (berthguide.js renderCard: distance / steer / depth / advice / mini plan) leads to
     const show = (on, guide = null) => { el.classList.toggle('hidden', !on); document.body.classList.toggle('berthOn', !!on); this.app.berthGuide?.renderCard?.(el, guide); };
-    if (this.ashoreOn) { show(false); return; }
-    if (assist) { show(true); setText(txt, `Tugs bringing you alongside ${assist.berthName || (assist.berthId ? 'berth ' + String(assist.berthId).split('-b')[1] : 'the berth')}…`); moor.classList.add('hidden'); tugs.classList.add('hidden'); return; }
-    if (berth || you?.docked) { show(false); return; }
-    if (!nearBerth || this.app.berthGuide?.wants?.(nearBerth) === false) { show(false); return; } // sailing past a harbour: no card
+    if (this.ashoreOn) { show(false); this.updateBerthPill(false); return; }
+    if (assist) { show(true); setText(txt, `Tugs bringing you alongside ${assist.berthName || (assist.berthId ? 'berth ' + String(assist.berthId).split('-b')[1] : 'the berth')}…`); moor.classList.add('hidden'); tugs.classList.add('hidden'); this.updateBerthPill(true, assist, false); return; }
+    if (berth || you?.docked) { show(false); this.updateBerthPill(false); return; }
+    if (!nearBerth || this.app.berthGuide?.wants?.(nearBerth) === false) { show(false); this.updateBerthPill(false); return; } // sailing past a harbour: no card
     show(true, nearBerth);
     const spd = s ? Math.abs(s.spd) : 99;
     const inRange = nearBerth.distM <= (INTERACT.BERTH_RANGE_U || 60) && spd <= 2, tugRange = nearBerth.distM <= (INTERACT.TUG_RANGE_U || 1500) && spd <= 6;
     setText(txt, `${nearBerth.name || nearBerth.id} · ${nearBerth.distM >= 1000 ? (nearBerth.distM / 1000).toFixed(1) + ' km' : Math.round(nearBerth.distM) + ' m'} · ${pad3(nearBerth.brg ?? 0)}° · depth ${Number.isFinite(nearBerth.depth) ? nearBerth.depth.toFixed(0) + ' m' : '—'}${Number.isFinite(nearBerth.length) ? ` · ${Math.round(nearBerth.length)} m quay` : ''}`);
     moor.classList.remove('hidden'); moor.disabled = !inRange; moor.title = inRange ? 'Make fast at this berth' : 'Within 60 m and under 2 kn';
     setText(moor, this.touch ? 'Moor' : 'Moor (T)');
+    this.updateBerthPill(true, nearBerth, inRange);
     if (nearBerth.mh) { tugs.classList.add('hidden'); moor.title = inRange ? `Make fast${nearBerth.fee ? ` · ${fmt(nearBerth.fee)} cr per night` : ''}` : 'Within 60 m of the berth and under 2 kn'; return; }   // inland harbours: no tugs, you moor yourself
     tugs.classList.remove('hidden'); tugs.disabled = !tugRange || !!you?.hail; setText(tugs, `Tugs · ${fmt(tugCost)} cr`); tugs.title = tugRange ? 'Tugs take you alongside in 45 s' : 'Within 1.5 km of the harbour, under 6 kn';
   }

@@ -138,10 +138,21 @@ export function quayDockNearest(game, p) {
   if (!f || p.docked || p.assist || p.hail || p.flooding >= 1) return false;
   const o = fitOpts(game, p);
   let res; try { res = queryQuays(f, shipOf(p), { ...o, radiusM: 150 }); } catch { return false; }
+  let lastWhy = null;
   for (const c of res.list) {
     if (!c.fits) continue;
     const r = dockCheck(f, shipOf(p), c.id, o);
     if (r.ok && p.money >= c.perDay) { quayDock(game, p, { id: c.id }); return !!p.docked; }
+    if (!r.ok && r.why) lastWhy = r.why;
+  }
+  const isSmall = (SHIP_CLASSES[p.ship?.cls]?.length || 30) <= 25;
+  if (isSmall && Math.abs(p.ship?.spd || 0) <= 3.5) {
+    for (const c of res.list) {
+      if (c.fits && c.distM <= 70 && p.money >= c.perDay) {
+        quayDock(game, p, { id: c.id });
+        if (p.docked) return true;
+      }
+    }
   }
   return false;
 }

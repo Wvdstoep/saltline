@@ -862,7 +862,7 @@ export class Game {
     if (p.assist) return this.event(p, 'info', 'The tugs have you. Hold on.');
     if (this.mh) { try { if (mhDock(this, p)) return; } catch (e) { this.log(`[mh] dock failed: ${e.stack || e}`); } }   // a box / visitor berth of an inland harbour within 60 m
     const { harbor, units } = this.nearestHarbor(p.ship.lat, p.ship.lon);
-    if (!harbor || units > DOCK_SEARCH_RANGE_U) { if (quayDockNearest(this, p)) return; return this.event(p, 'warn', 'No harbour within docking range. Quays near you: Q.'); }
+    if (!harbor || units > DOCK_SEARCH_RANGE_U) { if (quayDockNearest(this, p)) return; return this.event(p, 'warn', 'No harbour within range. Come alongside a quay or press Q to select a berth.'); }
     const geom = this.harborGeom(harbor.id);
     let berth = null;
     if (geom && (geom.berths || []).length) {
@@ -1971,7 +1971,7 @@ export class Game {
       const st = this.ww.state(o.id); if (!st) continue;
       if (seen.get(o.id) === st.rev) continue;
       seen.set(o.id, st.rev);
-      if (st.rev > 0 || o.type === 'lock') this.send(p, { t: 'ww', ...st });
+      if (st.rev >= 0 || o.type === 'lock') this.send(p, { t: 'ww', ...st });
     }
     for (const id of seen.keys()) if (!ids.has(id)) seen.delete(id);
   }

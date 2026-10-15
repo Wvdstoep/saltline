@@ -399,6 +399,38 @@ export class WwMesh {
     return clrNowLocal(e.o, i, { h, frac, off });
   }
   /** Raycast pick: the waterworks object id under a THREE.Raycaster, or null. */
+  entryNear(lat, lon, m = 100) {
+    for (const e of this.objs.values()) {
+      const a = e.anchor; if (!a) continue;
+      const [ox, oz] = llToLocal(a, lat, lon);
+      if (Math.hypot(ox, oz) <= m + 150) return true;
+    }
+    return false;
+  }
+  sdfAt(lat, lon) {
+    let best = null;
+    for (const e of this.objs.values()) {
+      const obs = e.built?.r?.obstacles;
+      if (!obs || !obs.length) continue;
+      const a = e.anchor; if (!a) continue;
+      const [ox, oz] = llToLocal(a, lat, lon);
+      if (Math.hypot(ox, oz) > 200) continue;
+      for (const ob of obs) {
+        const dx = ob.x1 - ob.x0, dz = ob.z1 - ob.z0;
+        const L2 = dx * dx + dz * dz;
+        let t = L2 > 1e-6 ? ((ox - ob.x0) * dx + (oz - ob.z0) * dz) / L2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const cx = ob.x0 + t * dx, cz = ob.z0 + t * dz;
+        const d = Math.hypot(ox - cx, oz - cz) - ob.r;
+        if (d < 4.0 && (!best || d < best.d)) {
+          const dist = Math.max(1e-4, Math.hypot(ox - cx, oz - cz));
+          const gx = (ox - cx) / dist, gz = (oz - cz) / dist;
+          best = { d, gx, gz, mask: 2 };
+        }
+      }
+    }
+    return best;
+  }
   pick(raycaster) {
     const hits = raycaster.intersectObjects(this.group.children, true);
     for (const h of hits) { let o = h.object; while (o && !o.userData.wwId) o = o.parent; if (o?.userData.wwId) return { id: o.userData.wwId, point: h.point, dist: h.distance }; }

@@ -20,9 +20,11 @@ import * as ShipMod from './ship.js';
 import * as HarborMod from './harbor.js';
 import { Hud } from './hud.js';
 import { HarborGeomSet } from './harborgeom.js';
-import { resolveShip } from './collision.js';
+import { resolveShip, setWaterworks } from './collision.js';
 import { Interior } from './interior.js';
 import { WeatherFX } from './weather.js';
+import { CelestialSphere } from './celestial.js';
+import { solarPosition } from '/shared/astro.js';
 import { seaForBeaufort, douglas } from '/shared/seastate.js';   // debug sea-state forcing (?bft=0..12)
 import { TouchHelm, isTouch } from './touch.js';
 import { Telegraph } from './telegraph.js';
@@ -92,12 +94,33 @@ class App {
     this.terrain = new Terrain(this.scene);
     this.geoms = new HarborGeomSet(); this.geomState = new Map(); // harbour id -> { state: 'loading'|'loaded'|'failed', t }
     this.weatherFx = new WeatherFX(this.scene, this.camera);
+    this.celestial = new CelestialSphere(this.scene, this.camera);
     this.weatherFx.onThunder = (k, delayS) => setTimeout(() => this.sound?.event('thunder', k), delayS * 1000);   // light first, then the sound
     // Debug / screenshots: ?bft=0..12 (or window.saltlineSea(n), null = real weather) forces this client's sea state,
     // visuals and HUD only (the server's SALTLINE_DEBUG=1 action 'debug_sea' {bft} does the same server-side).
     this.forceBft = null; this.camJolt = 0;
     try { const q = new URLSearchParams(location.search).get('bft') ?? new URLSearchParams(location.search).get('sea'); if (q !== null && q !== '' && Number.isFinite(+q)) this.forceBft = Math.max(0, Math.min(12, Math.round(+q))); } catch { /* no URL API */ }
     this.iv2 = true; try { if (new URLSearchParams(location.search).get('iv2') === '0') { globalThis.__iv2 = false; this.iv2 = false; } } catch { /* no URL API */ }   // IV2 HV9: ?iv2=0 → v1 interiors
+    this.forcedTime = null;
+    window.saltlineTime = (t) => {
+      if (t === null || t === undefined || t === '') this.forcedTime = null;
+      else if (typeof t === 'string') this.forcedTime = Date.parse(t) / 1000;
+      else if (Number.isFinite(+t)) this.forcedTime = +t;
+      return this.forcedTime ? new Date(this.forcedTime * 1000).toISOString() : 'real-time (' + new Date((this.simTime || Date.now() / 1000) * 1000).toISOString() + ')';
+    };
+    window.saltlineAstro = () => {
+      const lat = this.ship?.lat ?? (this.origin?.lat || 51.92);
+      const lon = this.ship?.lon ?? (this.origin?.lon || 4.25);
+      const nowS = this.forcedTime || ((this.simTime && this.simTime > 1000000000) ? this.simTime : (Date.now() / 1000));
+      return {
+        lat, lon, timeUtc: new Date(nowS * 1000).toISOString(),
+        sun: solarPosition(lat, lon, nowS),
+        moon: this.celestial?.lastMoon || null,
+        starsVisible: (this.celestial?.lastStarOpacity || 0) > 0.05,
+        starOpacity: this.celestial?.lastStarOpacity || 0,
+        cloud: this.wx?.cloud ?? 0,
+      };
+    };
     window.saltlineSea = (n) => { this.forceBft = n === null || n === undefined || !Number.isFinite(+n) ? null : Math.max(0, Math.min(12, Math.round(+n))); if (this.you?.weather) { const w = this.forceBft != null ? this.forcedWeather(this.you.weather) : this.you.weather; this.applyWeather(w); this.ocean.snapSea?.(); } return this.forceBft; };
     try { this.sound = new SoundEngine(); } catch (e) { console.warn('[sound] unavailable', e); this.sound = null; }
     this.soundState = { view: 'deck', room: null, shipCls: 'coaster', throttle: 0, rpmFrac: 0, speedKn: 0, windSpd: 0, windRelDeg: 0, waveH: 0, rain: 0, storm: 0, night: 0, nearHarborM: null, nearShips: [], underway: false, docked: true, towing: false, warp: 1 };
@@ -117,7 +140,7 @@ class App {
     this.route = []; this.autopilot = false;
     // time warp: `warp` mirrors you.warp (the client follows a server drop at once and lowers it itself on manual helm)
     this.warp = 1; this.warpHold = null; this.warpReq = null;
-    this.lastGrounding = 0; this.lastCollision = 0; this.clock = new THREE.Clock(); this.time = 0; this.started = false; this.lastSend = 0;
+    this.lastGrounding = 0; this.lastCollision = 0; this.clock = new THREE.Clock(); this.time = 0; this.started = false; this.lastSend = 0; this.cloudOffset = new THREE.Vector2(0, 0);
     this.lastTerrainUpdate = 0; this.lastRadar = 0; this.lastTelemetry = 0; this.lastSails = 0; this.ready = false;
     this.interior = new Interior(this);
     this.jobLayer = new JobLayer(this); this.jobTargets = [];
@@ -171,6 +194,7 @@ class App {
     try {   // bridges & locks: own scene group (not cut by harbour patches), AIR chip + cards
       this.wwMesh = new WwMesh({ parent: this.scene, origin: this.origin, phone: isTouch(), now: () => Date.now() + (this.clockOffset || 0),
         heightAt: (lat, lon) => this.terrain.heightAt(lat, lon), meanWater: 0 });
+      setWaterworks(this.wwMesh);
       this.wwHud = new WwHud({ ww: this.wwMesh, net: this.net, phone: isTouch(), vhf: () => this.vhf, clock: () => Date.now() + (this.clockOffset || 0),
         lengthOf: (c) => SHIP_CLASSES[c]?.length, shipKind: (c) => (rigOf(c) ? 'sail' : SHIP_CLASSES[c]?.cat === 'cargo' ? 'cargo' : 'motor') });
       import('/shared/waterworks.js').then((m) => this.wwMesh?.setRules(m)).catch(() => {});                       // lane A rules (optional)
@@ -183,19 +207,76 @@ class App {
   }
   resize() { const w = innerWidth, h = innerHeight; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
   makeSky() {
-    const geo = new THREE.SphereGeometry(30000, 24, 12);
+    const geo = new THREE.SphereGeometry(30000, 32, 16);
     const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false, fog: false,
-      uniforms: { top: { value: new THREE.Color(0x3f7fc9) }, horizon: { value: new THREE.Color(0xbfd9ee) }, sunDir: { value: new THREE.Vector3(0, 1, 0) }, sunCol: { value: new THREE.Color(0xfff0c0) } },
+      uniforms: {
+        top: { value: new THREE.Color(0x3f7fc9) },
+        horizon: { value: new THREE.Color(0xbfd9ee) },
+        sunDir: { value: new THREE.Vector3(0, 1, 0) },
+        sunCol: { value: new THREE.Color(0xfff0c0) },
+        cloudOffset: { value: new THREE.Vector2(0, 0) },
+        cloudCover: { value: 0.5 },
+        storm: { value: 0 },
+      },
       vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol; varying vec3 vDir;
-        void main(){ float t = clamp(vDir.y, -0.1, 1.0); vec3 c = mix(horizon, top, pow(max(0.0,t), 0.55)); float s = max(0.0, dot(normalize(vDir), sunDir));
-        c += sunCol * (pow(s, 600.0) * 1.5 + pow(s, 8.0) * 0.12); if (vDir.y < 0.0) c = mix(c, horizon * 0.55, min(1.0, -vDir.y * 8.0)); gl_FragColor = vec4(c, 1.0);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
+      fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol;
+        uniform vec2 cloudOffset; uniform float cloudCover; uniform float storm;
+        varying vec3 vDir;
+        float hash12(vec2 p) {
+          vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
+        }
+        float cloudNoise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash12(i);
+          float b = hash12(i + vec2(1.0, 0.0));
+          float c = hash12(i + vec2(0.0, 1.0));
+          float d = hash12(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+        float cloudFbm(vec2 p) {
+          float f = 0.5000 * cloudNoise(p);
+          f += 0.2500 * cloudNoise(p * 2.03 + vec2(1.7, 4.3));
+          f += 0.1250 * cloudNoise(p * 4.07 + vec2(8.1, 2.9));
+          f += 0.0625 * cloudNoise(p * 8.15 + vec2(3.5, 7.2));
+          return f / 0.9375;
+        }
+        void main(){
+          float t = clamp(vDir.y, -0.1, 1.0);
+          vec3 c = mix(horizon, top, pow(max(0.0, t), 0.55));
+          float s = max(0.0, dot(normalize(vDir), sunDir));
+          c += sunCol * (pow(s, 600.0) * 1.5 + pow(s, 8.0) * 0.18);
+
+          // 3D Procedural Volumetric Clouds with continuous seamless flow
+          if (vDir.y > 0.02) {
+            vec2 cUv = (vDir.xz / max(vDir.y, 0.055)) * 0.32 + cloudOffset;
+            vec2 warp = vec2(cloudFbm(cUv * 0.5), cloudFbm(cUv * 0.5 + 4.2)) * 0.35;
+            float n = cloudFbm(cUv + warp);
+            float cov = clamp(0.32 + cloudCover * 0.42 + storm * 0.28, 0.2, 0.95);
+            float density = smoothstep(1.0 - cov, 1.25 - cov * 0.5, n);
+            float horFade = smoothstep(0.02, 0.16, vDir.y);
+            density *= horFade;
+
+            if (density > 0.005) {
+              float sunFacing = max(0.0, dot(sunDir, normalize(vec3(vDir.x, 0.35, vDir.z))));
+              float rim = pow(max(0.0, s), 4.0) * (1.0 - density * 0.65);
+              vec3 cloudLit = mix(vec3(0.95, 0.96, 0.98), sunCol, 0.35 * sunFacing) + sunCol * rim * 1.6;
+              vec3 cloudDark = mix(vec3(0.42, 0.46, 0.54), vec3(0.10, 0.12, 0.16), storm * 0.85);
+              vec3 cloudColor = mix(cloudDark, cloudLit, smoothstep(0.1, 0.85, n) * (1.0 - storm * 0.45));
+              c = mix(c, cloudColor, density * 0.92);
+            }
+          }
+
+          if (vDir.y < 0.0) c = mix(c, horizon * 0.55, min(1.0, -vDir.y * 8.0));
+          gl_FragColor = vec4(c, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }`,
     });
-    const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; this.scene.add(m); return m;
+    const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = -10; this.scene.add(m); return m;
   }
   // The single waypoint API of v0.2 maps onto the head of the route (chart, radar and old callers keep working).
   get waypoint() { return this.route[0] || null; }
@@ -750,9 +831,13 @@ class App {
         return;
       }
       const dx = e.clientX - pt.x, dy = e.clientY - pt.y;
-      if (this.cam.mode === 2) this.cam.look = (this.cam.look || 0) + dx * 0.006; // bridge view: look around relative to the bow
-      else this.cam.yaw -= dx * 0.006;
-      this.cam.pitch = THREE.MathUtils.clamp(this.cam.pitch + dy * 0.004, 0.05, 1.3); this.cam.free = true; this.cam.lastDrag = performance.now();
+      if (this.cam.mode === 2) {
+        this.cam.look = (this.cam.look || 0) + dx * 0.006;
+        this.cam.lookY = THREE.MathUtils.clamp((this.cam.lookY || -0.05) - dy * 0.004, -0.4, 0.95);
+      } else {
+        this.cam.yaw -= dx * 0.006;
+      }
+      this.cam.pitch = THREE.MathUtils.clamp(this.cam.pitch + dy * 0.004, -0.45, 1.3); this.cam.free = true; this.cam.lastDrag = performance.now();
       pt.x = e.clientX; pt.y = e.clientY;
     });
     const tap = { x: 0, y: 0, t: 0 };
@@ -1301,12 +1386,19 @@ class App {
       pitch += (Math.max(pitch, 0.55) - pitch) * this.camLift;
     }
     if (this.cam.mode === 1) { dist = dist * 2.2; pitch = 1.1; }
-    const pos = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist + 6, Math.cos(yaw) * Math.cos(pitch) * dist).add(target);
+    const camY = Math.sin(pitch) * dist + 6;
+    const pos = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch) * dist, camY, Math.cos(yaw) * Math.cos(pitch) * dist).add(target);
+    pos.y = Math.max(this.ocean.heightAt(pos.x, pos.z, this.time) + 2.0, pos.y);
     if (this.cam.mode === 2) { // bridge view: look azimuth = heading + the mouse yaw offset (which eases back to dead ahead)
       const L = this.myMesh.userData.length; const bp = new THREE.Vector3(0, this.myMesh.userData.freeboard + 16, L * 0.35).applyMatrix4(this.myMesh.matrixWorld);
-      if (!this.cam.free) this.cam.look = (this.cam.look || 0) * Math.max(0, 1 - dt * 1.5);
+      if (!this.cam.free) {
+        this.cam.look = (this.cam.look || 0) * Math.max(0, 1 - dt * 1.5);
+        this.cam.lookY = ((this.cam.lookY || -0.05) - (-0.05)) * Math.max(0, 1 - dt * 1.5) + (-0.05);
+      }
       const la = h + (this.cam.look || 0);
-      this.camera.position.copy(bp); const look = new THREE.Vector3(Math.sin(la), -0.05, -Math.cos(la)).add(bp); this.camera.lookAt(look); this.shakeCamera(dt); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
+      const py = this.cam.lookY || -0.05;
+      const cp = Math.cos(py);
+      this.camera.position.copy(bp); const look = new THREE.Vector3(Math.sin(la) * cp, Math.sin(py), -Math.cos(la) * cp).add(bp); this.camera.lookAt(look); this.shakeCamera(dt); if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false; return;
     }
     if (this.myMesh.userData.label) this.myMesh.userData.label.visible = true;
     const wave = this.ocean.heightAt(pos.x, pos.z, this.time);
@@ -1330,14 +1422,16 @@ class App {
     if (this.myMesh.userData.label) this.myMesh.userData.label.visible = false;
   }
   updateDayNight(dt) {
-    const dayFrac = (this.simTime % 86400) / 86400; // 0 = midnight
-    const elev = Math.sin((dayFrac - 0.25) * Math.PI * 2);
-    // azimuth from north through east (x = east, -z = north): east at 06:00, south (+z) at noon, west at 18:00
-    const az = dayFrac * Math.PI * 2;
+    const lat = this.ship?.lat ?? (this.origin?.lat || 51.92);
+    const lon = this.ship?.lon ?? (this.origin?.lon || 4.25);
+    const nowS = this.forcedTime || ((this.simTime && this.simTime > 1000000000) ? this.simTime : (Date.now() / 1000));
+    const astro = solarPosition(lat, lon, nowS);
+    const elev = astro.elev;
+    const az = astro.az;
     const cosE = Math.cos(Math.asin(THREE.MathUtils.clamp(elev, -1, 1)));
     const dir = new THREE.Vector3(Math.sin(az) * cosE, Math.max(-0.2, elev), -Math.cos(az) * cosE).normalize();
-    const day = THREE.MathUtils.smoothstep(elev, -0.08, 0.25);
-    const dusk = Math.exp(-Math.pow((elev - 0.02) / 0.12, 2));
+    const day = astro.day;
+    const dusk = astro.dusk;
     const storm = this.wx?.storm || 0, cloud = this.wx?.cloud ?? 0;
     const rainW = Number(this.wx?.rain) || 0, gale = THREE.MathUtils.smoothstep(Number(this.wx?.windSpd) || 0, 10, 26);
     // overcast and storm darkening: a gale sky is low and grey, a storm at noon is dusk-dark
@@ -1356,12 +1450,33 @@ class App {
     this.hemi.intensity = (0.45 + 0.6 * day) * (1 - 0.6 * gloom) + bolt * 2.5;
     if (bolt > 0) { top.lerp(new THREE.Color(0xe8f0ff), bolt * 0.7); hor.lerp(new THREE.Color(0xf4f8ff), bolt * 0.7); }
     this.sky.material.uniforms.top.value.copy(top); this.sky.material.uniforms.horizon.value.copy(hor); this.sky.material.uniforms.sunDir.value.copy(dir); this.sky.material.uniforms.sunCol.value.copy(sunCol).multiplyScalar(day * (1 - gloom));
+    if (this.sky?.material?.uniforms?.cloudOffset) {
+      const wspd = this.localWind?.spd ?? this.wind?.spd ?? 5;
+      const wdir = this.localWind?.dir ?? this.wind?.dir ?? 240;
+      const wRad = (wdir + 180) * Math.PI / 180;
+      const rate = 0.006 + wspd * 0.0012;
+      this.cloudOffset.x += Math.sin(wRad) * rate * dt;
+      this.cloudOffset.y += Math.cos(wRad) * rate * dt;
+      this.sky.material.uniforms.cloudOffset.value.copy(this.cloudOffset);
+      this.sky.material.uniforms.cloudCover.value = this.wx?.cloud ?? 0.5;
+      this.sky.material.uniforms.storm.value = this.storm || 0;
+    }
     this.scene.fog.color.copy(hor);
     const far = this.fogFar, near = far * 0.22;
     const kf = Math.min(1, dt * 0.5);
     this.scene.fog.far += (far - this.scene.fog.far) * kf; this.scene.fog.near += (near - this.scene.fog.near) * kf;
-    this.ocean.setSun(dir, sunCol, 1 - day, top, hor);
+
+    const cel = this.celestial?.update(lat, lon, nowS, this.wx, day, gloom);
+    if (day < 0.25 && cel?.moon?.elev > 0) {
+      const moonCol = new THREE.Color(0x9cc2eb).multiplyScalar(Math.max(0.15, cel.moon.illumination));
+      const mDir = new THREE.Vector3(...cel.moon.dir);
+      this.ocean.setSun(mDir, moonCol, 1 - day, top, hor);
+    } else {
+      this.ocean.setSun(dir, sunCol, 1 - day, top, hor);
+    }
+
     const night = 1 - day; this.night = night;
+    if (this.weatherFx?.state) this.weatherFx.state.night = night;
     this.wwMesh?.setNight(night);                                                            // signal glow size
     for (const m of this.harborMeshes.values()) m.userData.setNight?.(night, this.time);
     for (const m of this.platformMeshes.values()) m?.userData.setNight?.(night, this.time);

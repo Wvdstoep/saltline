@@ -110,16 +110,19 @@ export class WwHud {
     const main = spans.find((s) => s.mov !== 'fixed') || spans.find((s) => s.rec) || spans[0];
     const air = this.you?.air;
     const rows = spans.map((s) => {
-      const cn = this.ww.clrNow(o.id, s.i, h), ss = (st.spans || []).find((x) => x.i === s.i);
+      const ss = (st.spans || []).find((x) => x.i === s.i) || (st.spans || [])[s.i] || st.span0 || null;
+      const cn = this.ww.clrNow(o.id, s.i, h);
       const off = datumOffset(o, { datumOffset: this.ww.opts.datumOffset });
-      const open = s.mov === 'fixed' ? '' : s.clrO == null ? ' · open: unlimited' : ` · open ${f1(Number(s.clrO) + off - h)} m`;
+      const openVal = (s.clrO == null || s.clrO <= 0 || s.clrO === Infinity) ? null : Number(s.clrO) + off - h;
+      const open = s.mov === 'fixed' ? '' : openVal == null ? ' · open: unlimited' : ` · open ${f1(openVal)} m`;
       const stTxt = s.mov === 'fixed' ? '' : ` <span class="ww-st ${ss?.st || 'closed'}">${esc(spanStText(ss, now))}</span>`;
       return `<li><b>${esc(MOV_TEXT[s.mov] || s.mov)}${s.rec ? ' ★' : ''}</b> ${f1(cn)} m now${open} · ↔ ${f1(s.w)} m${stTxt}<br><small>${esc(datumNote(o, s, h - off, cn))}</small></li>`;
     }).join('');
     let side = '';
     if (main) {
       const cn = this.ww.clrNow(o.id, main.i, h), off = datumOffset(o, { datumOffset: this.ww.opts.datumOffset });
-      side = sideViewSvg({ clrNow: cn, clrOpenNow: main.clrO == null ? null : Number(main.clrO) + off - h, th: deckThickness(o.kind, main.b - main.a), deckW: o.deckW, mov: main.mov,
+      const openMain = (main.clrO == null || main.clrO <= 0 || main.clrO === Infinity) ? null : Number(main.clrO) + off - h;
+      side = sideViewSvg({ clrNow: cn, clrOpenNow: openMain, th: deckThickness(o.kind, main.b - main.a), deckW: o.deckW, mov: main.mov,
         ship: air ? { ad: air.ad, need: air.need ?? air.ad + 0.3, L: this.o.lengthOf?.(this.you?.ship?.cls) ?? 20, kind: this.o.shipKind?.(this.you?.ship?.cls) || 'motor', tiers: air.deckTiers || 0 } : { ad: 0 } });
     }
     const ahead = this.ahead.find((a) => a.id === o.id);

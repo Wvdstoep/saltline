@@ -633,7 +633,8 @@ function reduceCells(ws, ss, lockS, fairS, W, SW, cls) {
       }
     }
     const c = j * W + i;
-    if (nW >= half) {
+    const isWw = cnt[5] > 0 || cnt[3] > 0;
+    if (nW >= half || (isWw && nW >= 1)) {
       let best = 4, bc = cnt[4];
       if (cnt[5] > bc) { best = 5; bc = cnt[5]; }
       if (cnt[3] > bc) { best = 3; bc = cnt[3]; }
@@ -661,7 +662,7 @@ function fillSpecks(mask, W) {
     while (head < tail) {
       const c = queue[head++], ci = c % W, cj = (c - ci) / W;
       if (ci === 0 || cj === 0 || ci === W - 1 || cj === W - 1) edge = true;
-      if (wet ? mask[c] === M.DOCK || mask[c] === M.LOCK : mask[c] !== M.LAND) keep = true;
+      if (wet ? mask[c] === M.DOCK || mask[c] === M.LOCK || mask[c] === M.RIVER : mask[c] !== M.LAND) keep = true;
       if (ci > 0 && !seen[c - 1] && WT_NAVIGABLE[mask[c - 1]] === wet) { seen[c - 1] = 1; queue[tail++] = c - 1; }
       if (ci < W - 1 && !seen[c + 1] && WT_NAVIGABLE[mask[c + 1]] === wet) { seen[c + 1] = 1; queue[tail++] = c + 1; }
       if (cj > 0 && !seen[c - W] && WT_NAVIGABLE[mask[c - W]] === wet) { seen[c - W] = 1; queue[tail++] = c - W; }

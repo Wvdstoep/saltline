@@ -17,15 +17,25 @@ const states = new WeakMap(); // ship object -> per-ship contact bookkeeping
 // World detail tiles (docs/WORLD-DETAIL-STREAMING.md §3.6.3): outside every harbour patch the D14 tile under the hull
 // answers (quays, piers, breakwaters, buildings and the real coast). wtiles.js registers its WorldTileSet here.
 let worldTiles = null;
+let wwProvider = null;
 /** Register (or clear with null) the WorldTileSet whose sdfAt / entryNear back up the harbour patches. */
 export function setWorldTiles(ws) { worldTiles = ws && typeof ws.sdfAt === 'function' ? ws : null; }
-/** geoms.sdfAt(…) ?? worldTiles.sdfAt(…) — patches keep precedence inside their footprint. */
+export function setWaterworks(ww) { wwProvider = ww && typeof ww.sdfAt === 'function' ? ww : null; }
+/** geoms.sdfAt(…) ?? worldTiles.sdfAt(…) ?? wwProvider.sdfAt(…) — patches keep precedence inside their footprint. */
 function withTiles(geoms) {
-  if (!worldTiles) return geoms;
+  if (!worldTiles && !wwProvider) return geoms;
   return {
-    size: (geoms?.size || 0) + 1,
-    entryNear: (lat, lon, m) => geoms?.entryNear?.(lat, lon, m) || worldTiles.entryNear(lat, lon, m),
-    sdfAt: (lat, lon) => geoms?.sdfAt?.(lat, lon) ?? worldTiles.sdfAt(lat, lon),
+    size: (geoms?.size || 0) + (worldTiles ? 1 : 0) + (wwProvider ? 1 : 0),
+    entryNear: (lat, lon, m) => geoms?.entryNear?.(lat, lon, m) || worldTiles?.entryNear(lat, lon, m) || (wwProvider?.entryNear?.(lat, lon, m) ?? false),
+    sdfAt: (lat, lon) => {
+      const sw = wwProvider?.sdfAt?.(lat, lon);
+      if (sw && sw.d < 0) return sw;
+      const sg = geoms?.sdfAt?.(lat, lon);
+      if (sg && sg.d < 0) return sg;
+      const st = worldTiles?.sdfAt?.(lat, lon);
+      if (st && st.d < 0) return st;
+      return sw ?? sg ?? st ?? null;
+    },
   };
 }
 

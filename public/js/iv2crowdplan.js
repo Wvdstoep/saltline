@@ -375,7 +375,8 @@ export function selectAgents(agents, poses, px, pz, py, budget) {
   return cand.slice(0, budget.max).map((c) => c[1]);
 }
 /** Triangle estimate of `n` people on a desktop / phone build (≈ 100 per person). */
-export const crowdTris = (n) => n * 100;
+export const TRIS_PER_PERSON = 610;   // an average pose (sculpted head, hair, tapered torso and limbs; see TRIS_OF_PART)
+export const crowdTris = (n) => n * TRIS_PER_PERSON;
 /** The local hour on the ship from the world clock (UTC seconds) and longitude (°). */
 export function localHour(simTime, lon = 0) { return ((((simTime || 0) / 3600 + lon / 15) % 24) + 24) % 24; }
 
@@ -402,10 +403,12 @@ export const PARTS = Object.freeze({
     BX(0, 0.2, 0.22, 0.24, 0, LY + 0.14, -0.57), BX(1, 0.22, 0.1, 0.1, 0, LY + 0.2, -0.64), BX(4, 0.1, 0.1, 0.55, -0.27, LY + 0.1, -0.1), BX(4, 0.1, 0.1, 0.55, 0.27, LY + 0.1, -0.1)],
   swim: [BX(2, 0.42, 0.22, 0.55, 0, 0.0, -0.05), BX(0, 0.2, 0.22, 0.22, 0, 0.12, 0.34), BX(1, 0.22, 0.1, 0.22, 0, 0.2, 0.34), BX(4, 0.1, 0.1, 0.6, -0.27, 0.0, 0.42), BX(4, 0.1, 0.1, 0.5, 0.27, 0.05, -0.3)],
 });
-/** Boxes (hence 12 triangles each) in a pose mesh. */
+/** Parts (head, hair, torso, legs, arms, other boxes) in a pose mesh. */
 export const poseBoxes = (pose) => (PARTS[pose] || PARTS.stand).length;
+/** Triangles of one part kind in iv2crowd.js poseGeometry: head sphere 12x10, hair cap 12x8 (open top), tapered cylinders (12 / 10 / 10 sides, capped), else a box. */
+export const TRIS_OF_PART = Object.freeze([216, 180, 48, 40, 40, 12]);
 /** Triangles of a person in `pose`. */
-export const poseTris = (pose) => poseBoxes(pose) * 12;
+export const poseTris = (pose) => (PARTS[pose] || PARTS.stand).reduce((n, b) => n + (TRIS_OF_PART[b[0]] ?? 12), 0);
 /** The pose meshes a build draws: all of POSES on a desktop, the aliased subset on a phone. */
 export const posesFor = (phone) => (phone ? POSES.filter((p) => !PHONE_ALIAS[p]) : POSES.slice());
 /** The pose to draw for an agent (clapping on its feet means cheering with the arms up). */

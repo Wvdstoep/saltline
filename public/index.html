@@ -9,15 +9,15 @@
 <title>Saltline — open-world sailing sim</title>
 <meta name="description" content="Multiplayer 3D maritime survival, trade and navigation on the real globe, in real time.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230b2a4a'/%3E%3Cpath d='M6 20h20l-3 5H9z' fill='%23e8e8e8'/%3E%3Cpath d='M15 6v14h8z' fill='%23f2b134'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/berthguide.css">
+<link rel="stylesheet" href="css/style.css?v=20261011mob">
+<link rel="stylesheet" href="css/berthguide.css?v=20261011mob">
 <link rel="stylesheet" href="css/sail.css">
 <link rel="stylesheet" href="css/yard.css">
 <link rel="stylesheet" href="css/econ.css">
-<link rel="stylesheet" href="css/vhf.css">
-<link rel="stylesheet" href="css/ww.css">
+<link rel="stylesheet" href="css/vhf.css?v=20261011mob">
+<link rel="stylesheet" href="css/ww.css?v=20261011mob">
 <link rel="stylesheet" href="css/politics.css" id="polCss">
-<script type="importmap">{ "imports": { "three": "/vendor/three.module.min.js" } }</script>
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.min.js", "three/addons/": "/vendor/three/addons/" } }</script>
 </head>
 <body>
 <canvas id="view"></canvas>
@@ -80,8 +80,23 @@
   <div id="log" aria-live="polite"></div>
   <div id="alerts"></div>
 
-  <!-- navigation cards (left column on desktop, under the top bar on phones): contract + berth guidance -->
+  <!-- Mobile navigation pill (compact toggle for navigation & harbour cards) -->
+  <div id="navPill" class="glass hidden" role="button" aria-expanded="false" aria-label="Toggle navigation drawer">
+    <div class="navPillContent" id="navPillContent">
+      <span id="pillBerth" class="pillItem hidden"><span class="si" data-icon="pier"></span><span id="pillBerthText">Berth</span><button id="pillMoorBtn" class="pillAction primary hidden">Moor</button></span>
+      <span id="pillJob" class="pillItem hidden"><span class="si" data-icon="contract"></span><span id="pillJobText">Contract</span></span>
+      <span id="pillMsg" class="pillItem hidden"><span class="si" data-icon="chat"></span><span id="pillMsgText">1</span></span>
+    </div>
+    <button id="navPillToggle" class="iconBtn" aria-label="Open navigation drawer"><span class="si" data-icon="chevronDown"></span></button>
+  </div>
+  <div id="navDrawerScrim" class="drawerScrim hidden"></div>
+
+  <!-- navigation cards (left column on desktop, collapsible drawer on phones): contract + berth guidance -->
   <div id="ctxLeft">
+    <div id="ctxDrawerHead" class="drawerHead mobileOnly">
+      <div class="drawerTitle"><span class="si" data-icon="route"></span><b>Navigation &amp; Harbour</b></div>
+      <button id="ctxDrawerClose" class="iconBtn" aria-label="Close navigation drawer"><span class="si" data-icon="close"></span></button>
+    </div>
     <div id="jobLine" class="glass ctxCard hidden" aria-live="polite">
       <div class="jobHead"><span class="si jobIc" id="jobIc" data-icon="contract"></span><b id="jobTitle"></b><span id="jobPay" class="jobPay"></span></div>
       <div class="jobStep"><span id="jobStep"></span></div>
@@ -91,6 +106,10 @@
     <div id="berthLine" class="glass ctxCard hidden">
       <div class="berthInfo"><span class="si" data-icon="pier"></span><span id="berthText"></span></div>
       <span class="berthBtns"><button id="btnMoor" class="primary">Moor (T)</button><button id="btnTugs">Request tugs</button></span>
+    </div>
+    <div id="ctxDrawerLogs" class="drawerLogs mobileOnly">
+      <div class="drawerLogsHead"><span class="si" data-icon="chat"></span><b>Recent Messages</b><button id="btnClearLogs" class="miniBtn" type="button">Clear</button></div>
+      <div id="drawerLogsList" class="drawerLogsList"></div>
     </div>
   </div>
 
@@ -155,6 +174,7 @@
   </section>
 
   <div id="radarWrap" class="glass">
+    <button id="radarMiniBtn" class="radarMiniBtn mobileOnly" title="Toggle radar size" aria-label="Toggle radar size"><span class="si" data-icon="compass"></span><span id="radarMiniRange" class="miniRange">10k</span></button>
     <canvas id="radar" width="260" height="260"></canvas>
     <div id="radarCtl">
       <button data-r="-" aria-label="Shorter range"><span class="si" data-icon="minus"></span></button>
@@ -331,6 +351,6 @@
 <div id="hail" class="hidden" role="alert"></div>
 <div id="prompts"></div>
 
-<script type="module" src="js/main.js"></script>
+<script type="module" src="js/main.js?v=20261014wavefix4"></script>
 </body>
 </html>

@@ -156,6 +156,7 @@ if (process.env.SALTLINE_PREFETCH === '1') harborgeom.prefetchAll({ delayMs: 150
 const app = express();
 app.disable('x-powered-by');
 app.use((req, res, next) => { res.setHeader('Cache-Control', req.path.startsWith('/api/tile') || req.path.startsWith('/api/chart') ? 'public, max-age=3600' : 'no-cache'); next(); });
+app.use('/vendor/three/addons', express.static(path.join(__dirname, 'node_modules', 'three', 'examples', 'jsm')));
 app.use('/vendor', express.static(path.join(__dirname, 'node_modules', 'three', 'build')));
 app.use('/shared', express.static(path.join(__dirname, 'shared'), { extensions: ['js'] }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -212,7 +213,7 @@ app.get('/api/ais/:mmsi', (req, res) => {
 // v0.4: cached map tile proxy (OSM raster + OpenSeaMap seamarks) for the chart and the street-level terrain drape
 app.get('/api/maptile/:layer/:z/:x/:y.png', async (req, res) => {
   const { layer } = req.params; const [z, x, y] = [req.params.z, req.params.x, req.params.y].map((v) => (/^\d{1,7}$/.test(v) ? +v : NaN));
-  if (!['osm', 'seamark'].includes(layer) || ![z, x, y].every(Number.isInteger) || z < 2 || z > 18 || x >= 2 ** z || y >= 2 ** z) return res.status(400).end();
+  if (!['osm', 'seamark', 'sat'].includes(layer) || ![z, x, y].every(Number.isInteger) || z < 2 || z > 19 || x >= 2 ** z || y >= 2 ** z) return res.status(400).end();
   try {
     const t = await getTile(layer, z, x, y);
     // Not available right now (upstream unreachable / backing off, or no such tile): 204 + no-store, so the browser

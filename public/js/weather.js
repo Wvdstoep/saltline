@@ -11,13 +11,13 @@
 import * as THREE from 'three';
 
 const CLOUD_VERT = /* glsl */`
-varying vec2 vUv; varying vec3 vWorld;
-void main() { vUv = uv; vec4 wp = modelMatrix * vec4(position, 1.0); vWorld = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }`;
+varying vec2 vUv; varying vec3 vWorld; varying vec2 vLocalPos;
+void main() { vUv = uv; vLocalPos = position.xz; vec4 wp = modelMatrix * vec4(position, 1.0); vWorld = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }`;
 
 const CLOUD_FRAG = /* glsl */`
 uniform float uTime; uniform vec2 uOffset; uniform float uCover; uniform float uFlash; uniform float uStorm; uniform float uNight;
 uniform vec3 uColor; uniform vec3 uShade; uniform float uScale; uniform float uSoft; uniform float uAlpha; uniform int uOct;
-varying vec2 vUv; varying vec3 vWorld;
+varying vec2 vUv; varying vec3 vWorld; varying vec2 vLocalPos;
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
@@ -27,9 +27,9 @@ float fbm(vec2 p) {
   return v;
 }
 void main() {
-  vec2 p = (vWorld.xz + uOffset) * uScale;
-  float n = fbm(p + 0.08 * uTime * vec2(0.3, 0.2));
-  n = n * 0.6 + 0.4 * fbm(p * 2.3 - vec2(uTime * 0.05, 0.0)) * 0.6;
+  vec2 p = (vLocalPos + uOffset) * uScale;
+  float n = fbm(p);
+  n = n * 0.6 + 0.4 * fbm(p * 2.3 + 5.7) * 0.6;
   float th = 1.0 - uCover;
   float a = smoothstep(th - uSoft * 0.5, th + uSoft, n);
   // fade with distance from the camera (the plane is huge; the far edge must dissolve)
@@ -82,14 +82,14 @@ varying float vA;
 void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vA = clamp(aLife, 0.0, 1.0);
-  gl_PointSize = aSize * uScale / max(1.0, -mv.z);
+  gl_PointSize = clamp(aSize * uScale / max(1.0, -mv.z), 1.0, 36.0);
   gl_Position = projectionMatrix * mv;
 }`;
 const SPRAY_FRAG = /* glsl */`
 uniform vec3 uCol; varying float vA;
 void main() {
   vec2 d = gl_PointCoord - 0.5; float r = dot(d, d) * 4.0;
-  float a = (1.0 - smoothstep(0.0, 1.0, r)) * vA * 0.5;    // soft mist puffs, not snowballs
+  float a = (1.0 - smoothstep(0.0, 1.0, r)) * vA * 0.22;    // translucent fine mist, never an opaque wall
   if (a < 0.01) discard;
   gl_FragColor = vec4(uCol, a);
 }`;
@@ -154,13 +154,13 @@ class LensDrops {
   /** n drops; big = spray sheet (bigger, runs) instead of rain specks. */
   hit(n, big = false) {
     if (!this.cv) return;
-    for (let i = 0; i < n && this.drops.length < 140; i++) {
-      const r = big ? 4 + Math.random() * 10 : 1.5 + Math.random() * 4;
-      this.drops.push({ x: Math.random(), y: Math.random() * 0.9, r, life: big ? 2.5 + Math.random() * 3 : 1 + Math.random() * 2, run: big && Math.random() < 0.5 ? 0.02 + Math.random() * 0.06 : 0 });
+    for (let i = 0; i < n && this.drops.length < 90; i++) {
+      const r = big ? 1.8 + Math.random() * 2.2 : 0.9 + Math.random() * 1.5;
+      this.drops.push({ x: Math.random(), y: Math.random() * 0.9, r, life: big ? 1.8 + Math.random() * 2.0 : 0.8 + Math.random() * 1.4, run: big && Math.random() < 0.35 ? 0.02 + Math.random() * 0.04 : 0 });
       this.drops[this.drops.length - 1].max = this.drops[this.drops.length - 1].life;
     }
   }
-  splash(k) { this.veil = Math.max(this.veil, Math.min(0.35, k * 0.7)); this.hit(Math.round(10 + 30 * k), true); }
+  splash(k) { this.veil = Math.max(this.veil, Math.min(0.14, k * 0.25)); this.hit(Math.round(4 + 10 * k), true); }
   clear() { this.drops.length = 0; this.veil = 0; if (this.cv && this.drawn) { this.ctx.clearRect(0, 0, this.cv.width, this.cv.height); this.drawn = false; } }
   update(dt) {
     if (!this.cv) return;
@@ -174,13 +174,13 @@ class LensDrops {
       const d = this.drops[i];
       d.life -= dt; if (d.life <= 0) { this.drops.splice(i, 1); continue; }
       if (d.run) d.y += d.run * dt;
-      const a = Math.min(1, d.life / d.max * 2) * 0.5, x = d.x * W, y = d.y * H, r = d.r * k * 2;
-      // a lens drop: clear body, a dark refracted rim below, a bright glint top-left
-      const g = c.createRadialGradient(x, y, r * 0.55, x, y + r * 0.1, r);
-      g.addColorStop(0, `rgba(200,215,225,${a * 0.08})`); g.addColorStop(0.75, `rgba(30,42,50,${a * 0.28})`); g.addColorStop(1, 'rgba(30,42,50,0)');
+      const a = Math.min(1, d.life / d.max * 2) * 0.35, x = d.x * W, y = d.y * H, r = d.r * k * 1.2;
+      // a lens drop: subtle realistic water bead, delicate refraction
+      const g = c.createRadialGradient(x, y, r * 0.5, x, y + r * 0.1, r);
+      g.addColorStop(0, `rgba(200,215,225,${a * 0.04})`); g.addColorStop(0.8, `rgba(40,55,70,${a * 0.12})`); g.addColorStop(1, 'rgba(40,55,70,0)');
       c.fillStyle = g; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
-      c.fillStyle = `rgba(255,255,255,${a * 0.55})`; c.beginPath(); c.arc(x - r * 0.35, y - r * 0.4, Math.max(0.6, r * 0.16), 0, Math.PI * 2); c.fill();
-      if (d.run) { c.strokeStyle = `rgba(200,215,225,${a * 0.35})`; c.lineWidth = Math.max(1, r * 0.35); c.beginPath(); c.moveTo(x, y - r * 4); c.lineTo(x, y); c.stroke(); }
+      c.fillStyle = `rgba(255,255,255,${a * 0.4})`; c.beginPath(); c.arc(x - r * 0.35, y - r * 0.4, Math.max(0.4, r * 0.12), 0, Math.PI * 2); c.fill();
+      if (d.run) { c.strokeStyle = `rgba(200,215,225,${a * 0.2})`; c.lineWidth = Math.max(0.8, r * 0.25); c.beginPath(); c.moveTo(x, y - r * 3); c.lineTo(x, y); c.stroke(); }
     }
   }
 }

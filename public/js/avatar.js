@@ -16,31 +16,131 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
  * opts: { jacket, trousers, skin, cap, boots, stripe (bool, reflective band), scale }
  */
 export function makeAvatar(opts = {}) {
-  const o = { jacket: 0xff7a1a, trousers: 0x1f2a3a, skin: 0xe0b48f, cap: 0x14305a, boots: 0x222222, stripe: true, scale: 1, ...opts };
-  const g = new THREE.Group(); g.name = 'crew';
+  const o = { jacket: 0x0c1524, trousers: 0x0c1524, skin: 0xdfb490, cap: 0x0c1524, boots: 0x111114, gold: 0xf2d060, scale: 1, ...opts };
+  const g = new THREE.Group(); g.name = 'captain';
   const mats = [];
   const mat = (color, extra = {}) => { const m = new THREE.MeshStandardMaterial({ color, roughness: 0.75, ...extra }); mats.push(m); return m; };
-  const jacket = mat(o.jacket, { roughness: 0.7 }), trousers = mat(o.trousers, { roughness: 0.8 }), skin = mat(o.skin, { roughness: 0.8 }), boots = mat(o.boots, { roughness: 0.9 });
+
+  const jacketMat = mat(o.jacket, { roughness: 0.65 });
+  const trousersMat = mat(o.trousers, { roughness: 0.70 });
+  const skinMat = mat(o.skin, { roughness: 0.75 });
+  const shoesMat = mat(o.boots, { roughness: 0.30, metalness: 0.15 });
+  const goldMat = mat(o.gold, { metalness: 0.95, roughness: 0.25 });
+  const whiteMat = mat(0xf8f8fc, { roughness: 0.60 });
+  const blackMat = mat(0x141416, { roughness: 0.40 });
+
   const body = new THREE.Group(); body.name = 'body'; g.add(body);
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.42, 4, 10), jacket); torso.position.y = 1.2; body.add(torso);
-  if (o.stripe) {
-    const stripe = mat(0xd8e0e6, { roughness: 0.4, metalness: 0.4, emissive: 0x333333 });
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.205, 0.05, 14), stripe); band.position.y = 1.12; body.add(band);
+
+  // 1. Tailored Naval Double-Breasted Officer Jacket
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.19, 0.58, 16), jacketMat);
+  torso.scale.set(1.0, 1.0, 0.72);
+  torso.position.y = 1.18;
+  body.add(torso);
+
+  // White collared shirt & black tie insert
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.10, 0.08, 12), whiteMat);
+  collar.position.set(0, 1.45, 0.02);
+  body.add(collar);
+  const tie = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.22, 0.015), blackMat);
+  tie.position.set(0, 1.34, 0.10);
+  body.add(tie);
+
+  // Double-breasted gold anchor buttons (2 rows of 3 buttons)
+  for (const bx of [-0.065, 0.065]) {
+    for (let by = 0; by < 3; by++) {
+      const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.008, 10), goldMat);
+      btn.rotation.x = Math.PI / 2;
+      btn.position.set(bx, 1.08 + by * 0.10, 0.13);
+      body.add(btn);
+    }
   }
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 14, 10), skin); head.position.y = 1.62; body.add(head);
-  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.125, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat(o.cap, { roughness: 0.8 })); cap.position.y = 1.66; body.add(cap);
-  const peak = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.015, 0.09), cap.material); peak.position.set(0, 1.665, -0.13); body.add(peak);
-  const limb = (r, len, m, x, y) => { const pivot = new THREE.Group(); pivot.position.set(x, y, 0); const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 3, 8), m); mesh.position.y = -len / 2 - r; pivot.add(mesh); body.add(pivot); return pivot; };
-  const legL = limb(0.085, 0.62, trousers, -0.1, 0.86), legR = limb(0.085, 0.62, trousers, 0.1, 0.86);
-  const armL = limb(0.06, 0.48, jacket, -0.27, 1.43), armR = limb(0.06, 0.48, jacket, 0.27, 1.43);
-  for (const leg of [legL, legR]) { const b = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.08, 0.24), boots); b.position.set(0, -0.85, -0.05); leg.add(b); }
-  for (const arm of [armL, armR]) { const h = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), skin); h.position.y = -0.64; arm.add(h); }
-  g.traverse((m) => { if (m.isMesh) { m.castShadow = false; m.receiveShadow = false; } });
+
+  // Gold Bullion Epaulettes on shoulders
+  for (const sx of [-0.23, 0.23]) {
+    const ep = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.025, 0.065), goldMat);
+    ep.position.set(sx, 1.45, 0);
+    body.add(ep);
+  }
+
+  // 2. Sculpted Head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.115, 16, 12), skinMat);
+  head.scale.set(0.95, 1.08, 0.98);
+  head.position.y = 1.62;
+  body.add(head);
+
+  // 3. Officer Peaked Service Cap
+  const capGroup = new THREE.Group();
+  capGroup.position.set(0, 1.67, 0);
+  // Cap crown (navy flare)
+  const capCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.12, 0.07, 16), jacketMat);
+  capCrown.position.y = 0.035;
+  capGroup.add(capCrown);
+  // Gold cap band
+  const capBand = new THREE.Mesh(new THREE.CylinderGeometry(0.122, 0.122, 0.025, 16, 1, true), goldMat);
+  capBand.position.y = 0.01;
+  capGroup.add(capBand);
+  // Gold naval crest/badge
+  const capBadge = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.008, 10), goldMat);
+  capBadge.rotation.x = Math.PI / 2;
+  capBadge.position.set(0, 0.035, 0.14);
+  capGroup.add(capBadge);
+  // Polished black visor with gold oak leaf embroidery (scrambled eggs)
+  const visor = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.015, 16, 1, false, 0, Math.PI), blackMat);
+  visor.rotation.x = 0.35;
+  visor.position.set(0, -0.01, 0.06);
+  capGroup.add(visor);
+  const visorOak = new THREE.Mesh(new THREE.CylinderGeometry(0.138, 0.138, 0.018, 16, 1, true, 0.2, Math.PI - 0.4), goldMat);
+  visorOak.rotation.x = 0.35;
+  visorOak.position.set(0, -0.008, 0.06);
+  capGroup.add(visorOak);
+  body.add(capGroup);
+
+  // 4. Limbs & Rank Braid (4 Gold stripes on sleeves)
+  const limb = (r, len, m, x, y) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(x, y, 0);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.95, r * 0.85, len, 12), m);
+    mesh.position.y = -len / 2;
+    pivot.add(mesh);
+    body.add(pivot);
+    return pivot;
+  };
+
+  const legL = limb(0.088, 0.62, trousersMat, -0.11, 0.88);
+  const legR = limb(0.088, 0.62, trousersMat, 0.11, 0.88);
+  const armL = limb(0.065, 0.48, jacketMat, -0.26, 1.42);
+  const armR = limb(0.065, 0.48, jacketMat, 0.26, 1.42);
+
+  // Shoes (Polished leather oxfords)
+  for (const leg of [legL, legR]) {
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.075, 0.22), shoesMat);
+    shoe.position.set(0, -0.63, 0.02);
+    leg.add(shoe);
+  }
+
+  // Arms: White cuffs, Hands, and 4 Gold Captain Rank Stripes
+  for (const arm of [armL, armR]) {
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), skinMat);
+    hand.position.set(0, -0.52, 0);
+    arm.add(hand);
+    // White shirt cuff peek
+    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.056, 0.056, 0.015, 12), whiteMat);
+    cuff.position.set(0, -0.47, 0);
+    arm.add(cuff);
+    // 4 Gold Captain Stripes
+    for (let s = 0; s < 4; s++) {
+      const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.058, 0.058, 0.008, 12, 1, true), goldMat);
+      stripe.position.set(0, -0.44 + s * 0.016, 0);
+      arm.add(stripe);
+    }
+  }
+
+  g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
   if (o.scale !== 1) g.scale.setScalar(o.scale);
+
   let walkT = 0;
   g.userData = {
     legL, legR, armL, armR, body,
-    /** Advance the gait; returns the bob (m) to add to the group's y. Limbs ease back to rest when standing. */
     animate(dt, moving, running) {
       dt = clamp(Number(dt) || 0, 0, 0.25);
       walkT += moving ? dt * (running ? 11 : 7) : 0;
@@ -48,7 +148,7 @@ export function makeAvatar(opts = {}) {
       const k = Math.min(1, dt * 12);
       legL.rotation.x += (swing - legL.rotation.x) * k; legR.rotation.x += (-swing - legR.rotation.x) * k;
       armL.rotation.x += (-swing * 0.8 - armL.rotation.x) * k; armR.rotation.x += (swing * 0.8 - armR.rotation.x) * k;
-      body.rotation.x += ((moving && running ? 0.12 : 0) - body.rotation.x) * k;   // lean into a run
+      body.rotation.x += ((moving && running ? 0.12 : 0) - body.rotation.x) * k;
       return moving ? Math.abs(Math.sin(walkT)) * (running ? 0.05 : 0.03) : 0;
     },
     dispose() {

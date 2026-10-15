@@ -789,7 +789,8 @@ export class AisLayer {
     this._fresh();
     const ship = this.app?.ship, range = opts.rangeM ?? 1500, out = [];
     for (const v of this.vessels.values()) {
-      if (v.mode === 'moored' && !opts.includeMoored) continue;
+      const isStopped = v.mode === 'moored' || v.mode === 'drifting' || v.mode === 'anchored' || (v.sogNow ?? 0) < 0.5 || (v.spd ?? 0) < 0.5;
+      if (isStopped && !opts.includeMoored) continue;
       if (ship && range > 0 && Number.isFinite(ship.lat) && flatDist(ship.lat, ship.lon, v.pos.lat, v.pos.lon) > range + v.len) continue;
       out.push({ id: v.id, lat: v.pos.lat, lon: v.pos.lon, hdg: v.lod > 0 ? v.hdg : v.hdgT, spd: v.mode === 'underway' ? v.sogNow : 0, length: v.len, beam: v.beam });
     }

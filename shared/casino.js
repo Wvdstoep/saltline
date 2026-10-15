@@ -282,13 +282,18 @@ const strengthOf = (s, seat) => {
 export function pokerOptions(s) {
   if (s.phase !== 'play') return [];
   const need = s.round.bet - s.round.put[0];
-  return need > 0 ? ['fold', 'call'].concat(s.raised ? [] : ['raise']) : ['check', 'bet'];
+  const raises = s.round.raises || (s.raised ? 1 : 0); return need > 0 ? ['fold', 'call'].concat(raises < 4 ? ['raise'] : []) : ['check', 'bet'];
 }
 export const pokerBetSize = (s) => (s.stage >= 2 ? 2 : 1) * s.u;
 /** Chips the player must add for `action` now (0 for check / fold). */
-export function pokerCost(s, action) {
-  const need = s.round.bet - s.round.put[0], b = pokerBetSize(s);
-  if (action === 'call') return need; if (action === 'bet') return b; if (action === 'raise') return need + b; return 0;
+export function pokerCost(s, action, customAmt = null) {
+  const need = s.round.bet - s.round.put[0];
+  const minB = pokerBetSize(s);
+  const b = (typeof customAmt === 'number' && Number.isSafeInteger(customAmt) && customAmt >= minB) ? customAmt : minB;
+  if (action === 'call') return need;
+  if (action === 'bet') return b;
+  if (action === 'raise') return need + b;
+  return 0;
 }
 function put(s, seat, amt) { s.round.put[seat] += amt; s.inn[seat] += amt; s.pot += amt; }
 function aiAct(s, seat, rnd) {
@@ -296,21 +301,23 @@ function aiAct(s, seat, rnd) {
   if (need > 0) {
     const call = st + (r - 0.5) * 0.18 > (s.stage === 0 ? 0.32 : 0.36) - (need / s.pot) * 0.0;
     if (!call) { s.folded[seat] = true; s.log.push({ seat, a: 'fold' }); return; }
-    if (!s.raised && st > 0.72 && r > 0.35) { put(s, seat, need + b); s.round.bet += b; s.raised = true; s.round.acted.fill(false); s.round.acted[seat] = true; s.log.push({ seat, a: 'raise' }); return; }
+    const raises = s.round.raises || (s.raised ? 1 : 0); if (raises < 4 && st > 0.72 && r > 0.35) { put(s, seat, need + b); s.round.bet += b; s.raised = true; s.round.raises = raises + 1; s.round.acted.fill(false); s.round.acted[seat] = true; s.log.push({ seat, a: 'raise' }); return; }
     put(s, seat, need); s.log.push({ seat, a: 'call' });
   } else if (st > 0.55 && r > 0.4) { put(s, seat, b); s.round.bet = s.round.put[seat]; s.round.acted.fill(false); s.round.acted[seat] = true; s.log.push({ seat, a: 'bet' }); }
   else s.log.push({ seat, a: 'check' });
 }
 /** The player's action; the guests answer; the street advances; at the end the pot is paid. Returns the new state (the old one is not modified). */
-export function pokerAct(s0, action, rnd, rakePct = 5) {
+export function pokerAct(s0, action, rnd, rakePct = 5, customAmt = null) {
   if (s0.phase !== 'play') return s0;
   if (!pokerOptions(s0).includes(action)) throw new Error(`poker: ${action} not allowed`);
-  const s = JSON.parse(JSON.stringify(s0)), b = pokerBetSize(s), need = s.round.bet - s.round.put[0];
+  const s = JSON.parse(JSON.stringify(s0)), minB = pokerBetSize(s);
+  const b = (typeof customAmt === 'number' && Number.isSafeInteger(customAmt) && customAmt >= minB) ? customAmt : minB;
+  const need = s.round.bet - s.round.put[0];
   s.log = [];
   if (action === 'fold') { s.folded[0] = true; s.paid = s.inn[0]; return settle(s, rnd, rakePct); }
   if (action === 'call') put(s, 0, need);
   else if (action === 'bet') { put(s, 0, b); s.round.bet = s.round.put[0]; s.round.acted.fill(false); }
-  else if (action === 'raise') { put(s, 0, need + b); s.round.bet += b; s.raised = true; s.round.acted.fill(false); }
+  else if (action === 'raise') { put(s, 0, need + b); s.round.bet += b; s.raised = true; s.round.raises = (s.round.raises || 0) + 1; s.round.acted.fill(false); }
   s.round.acted[0] = true;
   // the guests act in turn until everyone left has acted and matched the bet
   for (let guard = 0; guard < 12; guard++) {
@@ -331,7 +338,7 @@ function advance(s, rnd, rakePct) {
   if (s.stage >= 3) return settle(s, rnd, rakePct);
   const alive = s.folded.filter((f) => !f).length;
   if (alive <= 1) return settle(s, rnd, rakePct);
-  s.stage++; s.raised = false; s.round = { bet: 0, put: new Array(SEATS).fill(0), acted: new Array(SEATS).fill(false) };
+  s.stage++; s.raised = false; s.round = { bet: 0, put: new Array(SEATS).fill(0), acted: new Array(SEATS).fill(false), raises: 0 };
   return s;
 }
 function settle(s, rnd, rakePct) {

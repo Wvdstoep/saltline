@@ -159,27 +159,88 @@ function genBuilder(ctx, cls, opts = {}) {
 const WAKE_VERT = /* glsl */`
 attribute float aAlpha; varying vec2 vUv; varying float vA;
 #include <fog_pars_vertex>
-void main() { vUv = uv; vA = aAlpha; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mvPosition;
+void main() {
+  vUv = uv; vA = aAlpha;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 const WAKE_FRAG = /* glsl */`
-uniform sampler2D uMap; uniform vec3 uColor; uniform float uTime; uniform float uIntensity; uniform float uScroll;
+uniform sampler2D uMap; uniform vec3 uColor; uniform float uTime; uniform float uIntensity; uniform float uScroll; uniform float uIsBow;
 varying vec2 vUv; varying float vA;
 #include <fog_pars_fragment>
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float cellular(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p);
+  float minDist = 1.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 neighbor = vec2(float(x), float(y));
+      vec2 pt = vec2(hash12(i + neighbor), hash12(i + neighbor + 7.3));
+      vec2 diff = neighbor + pt - f;
+      minDist = min(minDist, length(diff));
+    }
+  }
+  return minDist;
+}
+
 void main() {
-  float t1 = texture2D(uMap, vUv * vec2(1.0, 0.6) + vec2(0.0, uTime * 0.012 + uScroll)).a;
-  float t2 = texture2D(uMap, vUv * vec2(2.3, 1.7) - vec2(uTime * 0.02, uScroll * 1.7)).a;
-  float edge = smoothstep(0.0, 0.3, vUv.x) * smoothstep(1.0, 0.7, vUv.x);
-  float a = vA * uIntensity * edge * clamp(t1 * 0.75 + t2 * 0.65, 0.0, 1.0);
-  if (a < 0.012) discard;
-  gl_FragColor = vec4(uColor, a);
+  vec2 uv = vUv;
+  // Domain warping for fluid eddies:
+  vec2 flow = vec2(0.0, uTime * 0.18 + uScroll * 1.2);
+  vec2 p = uv * vec2(3.5, 12.0) + flow;
+  float eddy = vnoise(p * 0.6) * 0.45;
+  p += vec2(eddy, -eddy);
+
+  // Cellular bubbly foam:
+  float cells = cellular(p * 2.2);
+  float bubbles = smoothstep(0.18, 0.65, cells);
+
+  // Noise octaves for marbled foam dissolving:
+  float n1 = vnoise(p * 1.2);
+  float n2 = vnoise(p * 2.8 + 11.3);
+  float foamNoise = clamp(n1 * 0.65 + n2 * 0.35, 0.0, 1.0);
+
+  // Propeller wash core in center (only for stern wake, removed for bow waves):
+  float centerDist = abs(uv.x - 0.5) * 2.0;
+  float propCore = (1.0 - uIsBow) * smoothstep(0.85, 0.0, centerDist);
+
+  // Edge falloff:
+  float edge = smoothstep(0.0, 0.18, uv.x) * smoothstep(1.0, 0.40, uv.x);
+
+  // Total foam density:
+  float foam = mix(bubbles * foamNoise * 1.2, (propCore * 0.6 + foamNoise * 0.45) * bubbles, 1.0 - uIsBow);
+  float a = vA * uIntensity * edge * smoothstep(0.08, 0.75, foam + propCore * 0.35);
+  if (a < 0.008) discard;
+
+  // Dual layer coloring: aerated water + crisp white froth
+  vec3 aerated = mix(vec3(0.04, 0.50, 0.48), vec3(0.06, 0.82, 0.72), 1.0 - uIsBow);
+  vec3 whiteFroth = vec3(0.96, 0.98, 1.0);
+  vec3 col = mix(aerated, whiteFroth, smoothstep(0.22, 0.78, foam));
+
+  // Bubble specular glint:
+  float glint = pow(max(0.0, 1.0 - cells), 6.0) * 0.6;
+  col += vec3(1.0, 1.0, 0.95) * glint;
+
+  gl_FragColor = vec4(col, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
-function wakeMaterial() {
+function wakeMaterial(isBow = false) {
   return new THREE.ShaderMaterial({
-    uniforms: { ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog), uMap: { value: noiseTexture() }, uColor: { value: new THREE.Color(0.9, 0.94, 0.97) }, uTime: { value: 0 }, uIntensity: { value: 1 }, uScroll: { value: 0 } },
+    uniforms: { ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog), uMap: { value: noiseTexture() }, uColor: { value: new THREE.Color(0.9, 0.94, 0.97) }, uTime: { value: 0 }, uIntensity: { value: 1 }, uScroll: { value: 0 }, uIsBow: { value: isBow ? 1.0 : 0.0 } },
     vertexShader: WAKE_VERT, fragmentShader: WAKE_FRAG, transparent: true, depthWrite: false, depthTest: true, fog: true, side: THREE.DoubleSide,
     polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
   });
@@ -199,14 +260,14 @@ function makeStrip(n, mat) {
   const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = 2;
   return m;
 }
-const WAKE_MAXP = 48, WAKE_LIFE = 25, WAKE_LIFT = 0.32, KELVIN_ANG = 19.47 * (Math.PI / 180);
+const WAKE_MAXP = 96, WAKE_LIFE = 55, WAKE_LIFT = 0.32, KELVIN_ANG = 19.47 * (Math.PI / 180);
 
 function makeWake(L, B) {
   const group = new THREE.Group(); group.name = 'wake';
-  const ribbonMat = wakeMaterial(), vMat = wakeMaterial();
+  const ribbonMat = wakeMaterial(false), vMat = wakeMaterial(true);
   vMat.uniforms.uColor.value.setRGB(0.85, 0.9, 0.95);
   const ribbon = makeStrip(WAKE_MAXP, ribbonMat);
-  const vLeft = makeStrip(8, vMat), vRight = makeStrip(8, vMat);
+  const vLeft = makeStrip(16, vMat), vRight = makeStrip(16, vMat);
   group.add(ribbon, vLeft, vRight);
   const pts = []; // oldest first: {x, z, t, px, pz, spd}
   let lastEmit = null, time = 0, lastPos = null, intensity = 1;
@@ -217,7 +278,7 @@ function makeWake(L, B) {
     attrA.setX(i * 2, a); attrA.setX(i * 2 + 1, a);
   };
   function updateArm(mesh, sx, sz, dx, dz, len, spdK, t) {
-    const p = mesh.geometry.attributes.position, a = mesh.geometry.attributes.aAlpha, n = 8;
+    const p = mesh.geometry.attributes.position, a = mesh.geometry.attributes.aAlpha, n = 16;
     const px = -dz, pz = dx;
     for (let i = 0; i < n; i++) {
       const s = i / (n - 1), x = sx + dx * len * s, z = sz + dz * len * s;
@@ -242,10 +303,10 @@ function makeWake(L, B) {
     }
     lastPos = { x: worldPos.x, z: worldPos.z };
     const sternX = worldPos.x - fx * L * 0.47, sternZ = worldPos.z - fz * L * 0.47;
-    const spdK = THREE.MathUtils.clamp((spd - 0.6) / 7, 0, 1);
+    const spdK = THREE.MathUtils.clamp((spd - 0.2) / 6, 0.15, 1);
     // emit a new section when the stern has moved far enough
     const spacing = Math.max(2.5, Math.min(L * 0.12, 14), spdMs * 0.5);
-    if (spd > 0.5 && (!lastEmit || Math.hypot(sternX - lastEmit.x, sternZ - lastEmit.z) >= spacing)) {
+    if (spd > 0.2 && (!lastEmit || Math.hypot(sternX - lastEmit.x, sternZ - lastEmit.z) >= spacing)) {
       pts.push({ x: sternX, z: sternZ, t: time, px, pz, spd: spdK });
       lastEmit = { x: sternX, z: sternZ };
       while (pts.length > WAKE_MAXP - 1) pts.shift();
@@ -257,7 +318,7 @@ function makeWake(L, B) {
     let n = 0;
     for (const q of pts) {
       const age = time - q.t, f = Math.min(1, age / WAKE_LIFE);
-      const w = B * (0.9 + 2.1 * Math.sqrt(f));
+      const w = B * (1.1 + 3.4 * Math.sqrt(f));
       const y = surfaceHeightAt(q.x, q.z, time) + WAKE_LIFT;
       writeVertex(pos, alp, n++, q.x, y, q.z, q.px, q.pz, w / 2, q.spd * Math.pow(1 - f, 1.6) * 0.9);
     }
@@ -286,13 +347,13 @@ function makeWake(L, B) {
 }
 /** Bow-wave foam strips along both sides of the stem, in the SHIP frame (they ride with pitch/roll). */
 function makeBowStrips(L, B, bowFrac, yWater = 0.25) {
-  const mat = wakeMaterial(); mat.uniforms.uIntensity.value = 0;
-  const n = 7, geos = [];
+  const mat = wakeMaterial(true); mat.uniforms.uIntensity.value = 0;
+  const n = 16, geos = [];
   for (const side of [-1, 1]) {
     const g = new THREE.BufferGeometry();
     const p = new Float32Array(n * 2 * 3), a = new Float32Array(n * 2), uv = new Float32Array(n * 2 * 2);
     // follow the quadratic bow curve from the stem (0, -L/2) to the shoulder (±B/2, -L/2 + L*bowFrac)
-    const x0 = 0, z0 = -L / 2, x1 = side * (B / 2), z1 = -L / 2 + L * bowFrac, cx = side * (B / 2) * 0.9, cz = -L / 2 + L * bowFrac * 0.35;
+    const x0 = 0, z0 = -L / 2, x1 = side * (B / 2), z1 = -L / 2 + L * bowFrac, cx = side * (B / 2) * 0.88, cz = -L / 2 + L * bowFrac * 0.35;
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
       const x = (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1, z = (1 - t) * (1 - t) * z0 + 2 * (1 - t) * t * cz + t * t * z1;
@@ -301,11 +362,11 @@ function makeBowStrips(L, B, bowFrac, yWater = 0.25) {
       const tl = Math.hypot(tx, tz) || 1;
       let ox = -tz / tl, oz = tx / tl;
       if (ox * side < 0) { ox = -ox; oz = -oz; }
-      const w = (0.5 + 1.8 * Math.sin(t * Math.PI)) * (0.5 + B / 20);
-      const inX = x - ox * 0.3, inZ = z - oz * 0.3, outX = x + ox * w, outZ = z + oz * w;
-      p.set([inX, yWater, inZ, outX, yWater + 0.1, outZ], i * 6);
-      const al = Math.sin(t * Math.PI) * 0.9; a[i * 2] = al; a[i * 2 + 1] = al * 0.5;
-      uv.set([0, t * 3, 1, t * 3], i * 4);
+      const w = (0.6 + 2.2 * Math.sin(t * Math.PI)) * (0.6 + Math.min(8.0, B * 0.2));
+      const inX = x - ox * 0.25, inZ = z - oz * 0.25, outX = x + ox * w, outZ = z + oz * w;
+      p.set([inX, yWater, inZ, outX, yWater + 0.12, outZ], i * 6);
+      const al = Math.sin(t * Math.PI) * 0.95; a[i * 2] = al; a[i * 2 + 1] = al * 0.35;
+      uv.set([0, t * 4, 1, t * 4], i * 4);
     }
     g.setAttribute('position', new THREE.BufferAttribute(p, 3)); g.setAttribute('aAlpha', new THREE.BufferAttribute(a, 1)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     const idx = []; for (let i = 0; i < n - 1; i++) { const q = i * 2; idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3); }

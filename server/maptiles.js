@@ -18,6 +18,7 @@ export const USER_AGENT = 'Saltline/0.4 (+https://github.com/Wvdstoep/saltline)'
 export const TILE_LAYERS = {
   osm: { url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`, transparent404: false },
   seamark: { url: (z, x, y) => `https://tiles.openseamap.org/seamark/${z}/${x}/${y}.png`, transparent404: true },
+  sat: { url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, transparent404: false },
 };
 export const Z_MIN = 2, Z_MAX = 18;
 const DAY_MS = 24 * 3600e3;
@@ -34,6 +35,11 @@ function pngChunk(type, data) {
   return Buffer.concat([len, td, crc]);
 }
 /** A valid 1×1 RGBA PNG whose only pixel is fully transparent. */
+// Esri World Imagery answers 200 + this one 2,521-byte JPEG ("Map data not yet available") for every tile it has no imagery for
+// (open sea at any zoom, the poles). Drawn on the drape it paints that text across the water, so it is treated as "no tile".
+import crypto from 'node:crypto';
+const ESRI_NO_DATA = { len: 2521, md5: 'f27d9de7f80c13501f470595e327aa6d' };
+export function isEsriNoData(buf) { return !!buf && buf.length === ESRI_NO_DATA.len && crypto.createHash('md5').update(buf).digest('hex') === ESRI_NO_DATA.md5; }
 export const TRANSPARENT_PNG = (() => {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
@@ -200,6 +206,7 @@ export function createTileService(opts = {}) {
       if (buf.length === 0 || buf.length > MAX_BYTES) return null;
       const type = sniffImage(buf);
       if (!type) return null;
+      if (a.layer === 'sat' && isEsriNoData(buf)) { st.upstreamOk++; return { empty: true }; }   // no imagery here: a transparent tile
       st.upstreamOk++;
       return { buf, type };
     } finally { release(); }
@@ -207,6 +214,7 @@ export function createTileService(opts = {}) {
 
   async function resolveTile(a, key) {
     const disk = await readDisk(a);
+    if (disk && a.layer === 'sat' && isEsriNoData(disk.buf)) { disk.buf = TRANSPARENT_PNG; disk.type = 'image/png'; }   // a placeholder cached before this fix
     if (disk && disk.fresh) { st.diskHits++; const v = { buf: disk.buf, type: disk.type, at: now() }; remember(key, v); return { buf: v.buf, type: v.type }; }
     if (negativeHit(key)) { if (disk) { st.stale++; return { buf: disk.buf, type: disk.type }; } return null; }
     st.misses++;
@@ -250,7 +258,7 @@ export function createTileService(opts = {}) {
 }
 
 let service = null;
-function defaultService() { if (!service) service = createTileService(); return service; }
+function defaultService() { if (!service) service = createTileService({ maxConcurrent: 6, maxQueue: 800 }); return service; }
 
 /** Contract entry point used by server.js: `{ buf, type }` or null. Never throws. */
 export async function getTile(layer, z, x, y) {

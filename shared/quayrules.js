@@ -188,10 +188,15 @@ export function quaySurcharge(tier, service, amount) {
 /** Approach check for quay_dock. slot: { lat, lon, hdg, s, len } in the run frame; ship: { lat, lon, hdg, spd }; along/lateral (m) precomputed. */
 export function approachWhy({ lateralM, alongM, hdgDiffDeg, spdKn, cls }) {
   const L = clsOf(cls).length;
-  if (Math.abs(spdKn) > QUAY.DOCK_MAX_KN) return `Slow below ${QUAY.DOCK_MAX_KN} kn to make fast.`;
-  if (!(Math.abs(lateralM) <= QUAY.DOCK_LATERAL_M)) return `Come alongside: you are ${Math.round(Math.abs(lateralM))} m off the berth line (≤ ${QUAY.DOCK_LATERAL_M} m).`;
-  if (!(Math.abs(alongM) <= Math.max(QUAY.DOCK_ALONG_MIN_M, L / 4))) return `The marked berth is ${Math.round(Math.abs(alongM))} m further along the quay — move up to it.`;
+  const isSmall = L <= 25;
+  const maxSpd = isSmall ? 3.5 : QUAY.DOCK_MAX_KN;
+  const maxLat = isSmall ? 65 : QUAY.DOCK_LATERAL_M;
+  const maxAlong = isSmall ? 60 : Math.max(QUAY.DOCK_ALONG_MIN_M, L / 4);
+  const maxAlign = isSmall ? 75 : QUAY.DOCK_ALIGN_DEG;
+  if (Math.abs(spdKn) > maxSpd) return `Slow below ${maxSpd} kn to make fast.`;
+  if (!(Math.abs(lateralM) <= maxLat)) return `Come alongside: you are ${Math.round(Math.abs(lateralM))} m off the berth line (≤ ${maxLat} m).`;
+  if (!(Math.abs(alongM) <= maxAlong)) return `The marked berth is ${Math.round(Math.abs(alongM))} m further along the quay — move up to it.`;
   const a = Math.abs(((hdgDiffDeg % 180) + 180) % 180); const off = Math.min(a, 180 - a);
-  if (off > QUAY.DOCK_ALIGN_DEG) return `Line up with the quay: you are ${Math.round(off)}° off (≤ ${QUAY.DOCK_ALIGN_DEG}°).`;
+  if (off > maxAlign) return `Line up with the quay: you are ${Math.round(off)}° off (≤ ${maxAlign}°).`;
   return null;
 }

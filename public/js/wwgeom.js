@@ -235,7 +235,7 @@ export function buildBridge(o, opts = {}) {
   };
   const sMin = profile[0][0], sMax = profile[profile.length - 1][0];
   const g = new Geo();
-  const parts = [], boards = [], gauges = [], signals = [];
+  const parts = [], boards = [], gauges = [], signals = [], obstacles = [];
   const partOf = new Map();   // span index → [part indices]
   const nrmAt = (s) => { const t = S.T(s); return [-t[1], t[0]]; };
   const X = (s, lat, y) => { const p = S.P(s), n = nrmAt(s); return [p[0] + n[0] * lat, y, p[1] + n[1] * lat]; };
@@ -338,6 +338,7 @@ export function buildBridge(o, opts = {}) {
     const [x, z] = S.P(s), t = S.T(s), { land, g: gr } = groundAt(s), u = uAt(s);
     const bot = land ? gr - 0.5 : Math.min(gr, water - 4);
     if (u - bot < 0.8) return;
+    if (!land) obstacles.push({ x0: x, z0: z, x1: x, z1: z, r: 1.5 * wide + 0.4, type: 'pier' });
     if (round) { cyl(g, x, z, hw + 1, bot, u, full ? 16 : 8, COL.concrete); return; }
     pbox(g, x, z, t, 1.25 * wide, hw + 0.5, bot, u, COL.concrete);
     if (full && !land) for (const sd of [-1, 1]) {   // cutwaters (pointed noses up- and downstream)
@@ -397,6 +398,8 @@ export function buildBridge(o, opts = {}) {
     if (!o.lockId) for (const s of [sp.a + 0.5, sp.b - 0.5]) for (const sd of [-1, 1]) {
       const top = water + 2.4, n0 = hw + 2.5;
       for (let d = 0; d <= 30; d += 3) { const [x, , z] = X(s, sd * (n0 + d), 0); pbox(g, x, z, S.T(s), 0.28, 0.28, bedY, top, COL.pile, ['-v']); }
+      const p0 = X(s, sd * n0, 0), p1 = X(s, sd * (n0 + 30), 0);
+      obstacles.push({ x0: p0[0], z0: p0[2], x1: p1[0], z1: p1[2], r: 0.8, type: 'remmingwerk' });
       beam(g, X(s, sd * n0, top - 0.4), X(s, sd * (n0 + 30), top - 0.4), 0.35, 0.5, COL.wood);
       beam(g, X(s, sd * n0, water + 0.4), X(s, sd * (n0 + 30), water + 0.4), 0.35, 0.5, COL.wood);
     }
@@ -459,7 +462,7 @@ export function buildBridge(o, opts = {}) {
 
   const moving = parts.map((p) => { const { g: G, ...rest } = p; return { ...rest, mesh: G.out() }; });
   const stat = g.out();
-  return { id: o.id, type: 'bridge', anchor, lod, static: stat, moving, boards, gauges, signals, query, cut: null,
+  return { id: o.id, type: 'bridge', anchor, lod, static: stat, moving, boards, gauges, signals, query, cut: null, obstacles,
     tris: stat.tris + moving.reduce((a, p) => a + p.mesh.tris, 0), piers: pierS.slice().sort((a, b) => a - b), spans: spans.map((s) => ({ i: s.i, a: s.a, b: s.b, mov: s.mov, u: s.u, uo: s.uo, th: s.th, travel: s.travel })), extent: [sMin, sMax] };
 }
 

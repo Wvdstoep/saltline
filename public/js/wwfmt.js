@@ -164,7 +164,7 @@ export const fmtMinSec = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 6
 /** clrNow(obj, i, {h, frac, off}) — §4.3; lift spans move continuously, others count as closed until fully open. */
 export function clrNowLocal(obj, i, { h = 0, frac = 0, off = 0 } = {}) {
   const s = obj?.spans?.[i]; if (!s) return null;
-  const clr = Number(s.clr), clrO = s.clrO == null ? null : Number(s.clrO);
+  const clr = Number(s.clr), clrO = (s.clrO == null || s.clrO <= 0 || s.clrO === Infinity) ? null : Number(s.clrO);
   let base = clr;
   if (s.mov === 'lift' && clrO != null) base = clr + (clrO - clr) * clamp(frac, 0, 1);
   else if (MOVABLE.has(s.mov) && frac >= 0.999) base = clrO == null ? Infinity : clrO;
@@ -178,7 +178,7 @@ export function verdictLocal(air, obj, i, ctx = {}) {
   const need = fin(air.need) ? Number(air.need) : Number(air.ad) + AD_MARGIN + 0.5 * (ctx.Hs || 0);
   const clrNow = clrNowLocal(obj, i, { h, frac: 0, off });
   const mov = MOVABLE.has(s.mov);
-  const clrOpenNow = mov ? (s.clrO == null ? Infinity : Number(s.clrO) + off - h) : null;
+  const clrOpenNow = mov ? ((s.clrO == null || s.clrO <= 0 || s.clrO === Infinity) ? Infinity : Number(s.clrO) + off - h) : null;
   if (fin(air.B) && fin(s.w) && Number(air.B) + 1.0 > Number(s.w)) return { verdict: 'never', need, clrNow, clrOpenNow, why: 'too wide' };
   if (need <= clrNow) return { verdict: clrNow - need < 1.0 ? 'tight' : 'under', need, clrNow, clrOpenNow, why: '' };
   const st = ctx.state?.st;
@@ -279,7 +279,7 @@ export function sideViewSvg(o) {
     out.push(`<rect x="${xb + deckW * k * 0.35}" y="${Y(clr)}" width="${deckW * k * 0.3}" height="${clr * k}" fill="rgba(143,138,130,0.25)"/>`);
     out.push(`<text x="${xb + deckW * k + 3}" y="${Y(clr) + 4}" class="ww-svg-t">${f1(clr)} m</text>`);
   }
-  if (clrO != null && (clr == null || Math.abs(clrO - clr) > 0.5)) out.push(`<rect x="${xb}" y="${Y(clrO + th)}" width="${deckW * k}" height="${th * k}" fill="none" stroke="#9fb5c8" stroke-dasharray="3 2"/>`, `<text x="${xb + deckW * k + 3}" y="${Y(clrO) + 4}" class="ww-svg-t">open ${f1(clrO)}</text>`);
+  if (clrO != null && clrO > 0 && (clr == null || Math.abs(clrO - clr) > 0.5)) out.push(`<rect x="${xb}" y="${Y(clrO + th)}" width="${deckW * k}" height="${th * k}" fill="none" stroke="#9fb5c8" stroke-dasharray="3 2"/>`, `<text x="${xb + deckW * k + 3}" y="${Y(clrO) + 4}" class="ww-svg-t">open ${f1(clrO)}</text>`);
   else if (o.mov && o.mov !== 'fixed' && o.mov !== 'lift') out.push(`<text x="${xb}" y="${pad + 4}" class="ww-svg-t">opens fully</text>`);
   // ship silhouette
   const hf = Math.min(Math.max(1, 0.08 * L), ad * 0.35), x = (m) => xs + m * k;

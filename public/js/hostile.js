@@ -174,7 +174,7 @@ export class HostileLayer {
       this.smokeT = 0;
       const L = me.userData.length || 60, hh = ((you.ship?.hdg ?? 0) * Math.PI) / 180, off = (Math.random() - 0.5) * L * 0.4;
       const fire = (you.cond ?? 100) < 45 || sinking;
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), new THREE.MeshBasicMaterial({ color: fire && Math.random() < 0.4 ? 0xff8a2a : 0x2b2b2b, transparent: true, opacity: 0.7, depthWrite: false, blending: fire && Math.random() < 0.3 ? THREE.AdditiveBlending : THREE.NormalBlending }));
+      const mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(1.2, 1), new THREE.MeshStandardMaterial({ color: fire && Math.random() < 0.4 ? 0xff7a18 : 0x5a5e66, roughness: 0.95, metalness: 0.05, transparent: true, opacity: 0.4, depthWrite: false, blending: fire ? THREE.AdditiveBlending : THREE.NormalBlending }));
       mesh.position.set(me.position.x + Math.sin(hh) * off, me.position.y + (me.userData.freeboard || 4) + 3, me.position.z - Math.cos(hh) * off);
       mesh.frustumCulled = false; a.scene.add(mesh); this.smoke.push({ mesh, t: 0, life: 3 + 3 * power, s0: 1 + 2 * power });
     }

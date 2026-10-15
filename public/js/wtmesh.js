@@ -317,9 +317,12 @@ export function buildTerrain(tile, opts = {}) {
           const h = sW / nW; hv[v] = h - off; setRGB(v, water(h), noise);
         } else if (wall) {
           hv[v] = minW - off; setRGB(v, water(minW), noise);       // under the quay wall mesh
+        } else if (nW >= nO) {
+          hv[v] = minW - off;                                      // majority water in channel: stay deep
+          setRGB(v, water(minW), noise);
         } else {
           const ho = sO / nO, hw = sW / nW;
-          hv[v] = clamp((ho + hw) * 0.5, -1.5, 0.8);               // the waterline: a beach / rubble slope
+          hv[v] = minW < -1.0 ? clamp((ho + minW) * 0.5, -2.5, 0.4) : clamp((ho + hw) * 0.5, -1.5, 0.8);
           setRGB(v, rubble ? RUBBLE : WET_SAND, noise);
         }
       }

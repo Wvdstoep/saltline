@@ -15,21 +15,75 @@ const WATER_ABOVE = (item) => Math.max(0.2, (ITEMS[item]?.h || 0.5) - 0.2);   //
 
 /** Geometry of one pose: a box per PARTS entry (positions, normals, indices, aPart). */
 export function poseGeometry(pose) {
-  const boxes = PARTS[pose] || PARTS.stand, n = boxes.length;
-  const pos = new Float32Array(n * 24 * 3), nor = new Float32Array(n * 24 * 3), part = new Float32Array(n * 24), idx = new Uint16Array(n * 36);
+  const boxes = PARTS[pose] || PARTS.stand;
+  const positions = [];
+  const normals = [];
+  const parts = [];
+  const indices = [];
+  let baseIndex = 0;
   const M = new THREE.Matrix4();
-  boxes.forEach(([p, w, h, d, x, y, z, rx, hang], b) => {
-    const bg = new THREE.BoxGeometry(w, h, d);
+
+  boxes.forEach(([p, w, h, d, x, y, z, rx, hang]) => {
+    let bg;
+    if (p === 0) {
+      // Head: Smooth sculpted oval head
+      bg = new THREE.SphereGeometry(Math.max(w, d) * 0.48, 12, 10);
+      bg.scale(w / (Math.max(w, d) * 0.96), h / (Math.max(w, d) * 0.96), d / (Math.max(w, d) * 0.96));
+    } else if (p === 1) {
+      // Hair: Sculpted hair cap
+      bg = new THREE.SphereGeometry(Math.max(w, d) * 0.52, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.7);
+      bg.scale(w / (Math.max(w, d) * 1.04), h / (Math.max(w, d) * 1.04), d / (Math.max(w, d) * 1.04));
+    } else if (p === 2) {
+      // Torso: Tapered curved torso with rounded shoulders
+      bg = new THREE.CylinderGeometry(w * 0.46, w * 0.38, h, 12);
+      bg.scale(1.0, 1.0, d / w);
+    } else if (p === 3) {
+      // Legs: Smooth tapered limbs
+      bg = new THREE.CylinderGeometry(w * 0.44, w * 0.38, h, 10);
+      bg.scale(1.0, 1.0, d / w);
+    } else if (p === 4) {
+      // Arms: Smooth tapered sleeves
+      bg = new THREE.CylinderGeometry(w * 0.46, w * 0.36, h, 10);
+      bg.scale(1.0, 1.0, d / w);
+    } else {
+      bg = new THREE.BoxGeometry(w, h, d);
+    }
+
     if (hang) bg.translate(0, -h / 2, 0);
-    M.makeRotationX(rx).setPosition(x, y, z); bg.applyMatrix4(M);
-    pos.set(bg.attributes.position.array, b * 72); nor.set(bg.attributes.normal.array, b * 72); part.fill(p, b * 24, b * 24 + 24);
-    for (let k = 0; k < 36; k++) idx[b * 36 + k] = bg.index.array[k] + b * 24;
+    M.makeRotationX(rx).setPosition(x, y, z);
+    bg.applyMatrix4(M);
+    bg.computeVertexNormals();
+
+    const posAttr = bg.attributes.position;
+    const norAttr = bg.attributes.normal;
+    const idxAttr = bg.index;
+    const vertCount = posAttr.count;
+
+    for (let i = 0; i < vertCount; i++) {
+      positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      normals.push(norAttr.getX(i), norAttr.getY(i), norAttr.getZ(i));
+      parts.push(p);
+    }
+
+    if (idxAttr) {
+      for (let i = 0; i < idxAttr.count; i++) {
+        indices.push(baseIndex + idxAttr.getX(i));
+      }
+    } else {
+      for (let i = 0; i < vertCount; i++) {
+        indices.push(baseIndex + i);
+      }
+    }
+    baseIndex += vertCount;
     bg.dispose();
   });
+
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.BufferAttribute(nor, 3)); g.setAttribute('aPart', new THREE.BufferAttribute(part, 1));
-  g.setIndex(new THREE.BufferAttribute(idx, 1));
-  g.userData.tris = n * 12;
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+  g.setAttribute('aPart', new THREE.BufferAttribute(new Float32Array(parts), 1));
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
+  g.userData.tris = indices.length / 3;
   return g;
 }
 

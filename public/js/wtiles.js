@@ -34,6 +34,12 @@ const SHORE_ID = 'wt-detail';        // ocean2 shore field: surf on natural D14 
 const SHORE_MS = 2500;
 const D2R = Math.PI / 180;
 
+let _blankTex = null;
+function blankTexture() {
+  if (!_blankTex) { _blankTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1, THREE.RGBAFormat); _blankTex.needsUpdate = true; }
+  return _blankTex;
+}
+
 // ------------------------------------------------------------------------------------------------ clip rectangles
 /**
  * A clip set: up to `max` sheared rectangles (see wtmesh placement()) in world x/z; fragments of a material using the
@@ -94,17 +100,40 @@ bool slClipped(vec2 p) {
 
 /** D14 / C11 terrain material: vertex colours, morph from the coarse heights (uMorph), pushed back in depth so the
  *  structures standing on it never z-fight, clipped by `clip`. One program, one material per mesh (own uMorph). */
-function makeTerrainMaterial(clip) {
+function makeTerrainMaterial(clip, detailUniforms = null) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 });
   const uMorph = { value: 1 };
   m.userData.uMorph = uMorph;
+  m.userData.detailUniforms = detailUniforms;
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uMorph = uMorph;
+    if (detailUniforms) {
+      sh.uniforms.uDetailDrape = detailUniforms.uDetailDrape;
+      sh.uniforms.uDetailOn = detailUniforms.uDetailOn;
+      sh.uniforms.uDetailBox = detailUniforms.uDetailBox;
+      sh.uniforms.uDetailTone = detailUniforms.uDetailTone;
+    }
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float morphY; uniform float uMorph;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  transformed.y = mix(morphY, transformed.y, uMorph);');
+      .replace('#include <common>', '#include <common>\nattribute float morphY; uniform float uMorph;\nvarying vec3 vWorldPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n  transformed.y = mix(morphY, transformed.y, uMorph);\n  vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    if (detailUniforms) {
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform sampler2D uDetailDrape; uniform float uDetailOn; uniform vec4 uDetailBox; uniform float uDetailTone; varying vec3 vWorldPos;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+  if (uDetailOn > 0.5) {
+    vec2 dUv = vec2((vWorldPos.x - uDetailBox.x) / (uDetailBox.z - uDetailBox.x), (vWorldPos.z - uDetailBox.y) / (uDetailBox.w - uDetailBox.y));
+    if (dUv.x >= 0.0 && dUv.x <= 1.0 && dUv.y >= 0.0 && dUv.y <= 1.0) {
+      vec4 detailTex = texture2D(uDetailDrape, vec2(dUv.x, 1.0 - dUv.y));
+      if (detailTex.a > 0.02 && max(detailTex.r, max(detailTex.g, detailTex.b)) > 0.015) {   // a texture that failed to upload samples as black: never paint it
+        float edge = smoothstep(0.0, 0.04, dUv.x) * smoothstep(1.0, 0.96, dUv.x) * smoothstep(0.0, 0.04, dUv.y) * smoothstep(1.0, 0.96, dUv.y);
+        vec3 detailRgb = detailTex.rgb / max(detailTex.a, 0.004);
+        diffuseColor.rgb = mix(diffuseColor.rgb, detailRgb * uDetailTone * 0.9, edge * 0.95);
+      }
+    }
+  }`);
+    }
   };
-  m.customProgramCacheKey = () => 'saltline-wt-terrain-1';
+  m.customProgramCacheKey = () => `saltline-wt-terrain-drape-${detailUniforms ? 1 : 0}`;
   return applyClip(m, clip);
 }
 
@@ -168,7 +197,13 @@ export class WorldTileSet {
       ? { near: 800, mid: 2200, far: 1600, c11: 18000, lodNear: LOD.MID, lodMid: LOD.FAR, lodFar: LOD.FAR, lodC11: LOD.C11_LOW }
       : { near: 1200, mid: 3500, far: 2500, c11: 30000, lodNear: LOD.NEAR, lodMid: LOD.MID, lodFar: LOD.FAR, lodC11: LOD.C11 };
     this.coarseAt = opts.coarseAt || (() => null);
-    this.shoreFn = opts.shoreField || null;      // (entry {n, res, mask}) → { tex } (terrain.js buildShoreField)
+    this.shoreFn = opts.shoreField || null;
+    this.detailUniforms = {
+      uDetailDrape: { value: blankTexture() },
+      uDetailOn: { value: 0 },
+      uDetailBox: { value: new THREE.Vector4(0, 0, 0, 0) },
+      uDetailTone: { value: 0.85 },
+    };      // (entry {n, res, mask}) → { tex } (terrain.js buildShoreField)
     this.shore = null; this.shoreDirty = false; this.shoreAt = 0;
     this.fetchFn = opts.fetch || ((u, o) => fetch(u, o));
     this.enabled = opts.enabled !== false;
@@ -413,7 +448,7 @@ export class WorldTileSet {
         e.missing = true; e.retryAt = performance.now() + (r.status === 400 ? 3600e3 : 120e3); e.stale = false; this.st.missing++;
         // the browser logs every 404: after 4 in a row at a zoom (e.g. no C11 source) only one probe per 5 min
         // (only a zoom that never answered 200 this session: a gap in coverage must not stall the tiles that exist)
-        if (++this.miss[e.z] >= 4 && !this.okZ[e.z]) { this.zPause[e.z] = performance.now() + 300e3; this.miss[e.z] = 3; }
+        if (++this.miss[e.z] >= 6 && !this.okZ[e.z]) { this.zPause[e.z] = performance.now() + 15e3; this.miss[e.z] = 5; }
       }
     } catch (err) {
       if (err?.name !== 'AbortError') {
@@ -519,7 +554,7 @@ export class WorldTileSet {
     g.setIndex(sharedIndex(tr.lod));
     for (const a of Object.values(g.attributes)) a.onUpload(freeArray);   // the GPU holds them: free the JS heap
     g.boundingSphere = sphereOf(tr.pos, tr.morph);
-    const mat = makeTerrainMaterial(e.z === WT.Z_DETAIL ? 'd14' : 'c11');
+    const mat = makeTerrainMaterial(e.z === WT.Z_DETAIL ? 'd14' : 'c11', this.detailUniforms);
     const terrain = new THREE.Mesh(g, mat);
     terrain.matrixAutoUpdate = false; terrain.name = `wt-${e.key}`;
     const m = { terrain, structures: null, inst: [], lod: job.lod, mode: job.mode, bytes: msg.bytes || 0, verts: tr.verts, tris: tr.lod * tr.lod * 2, t0: now, morph: first, base: new THREE.Matrix4() };
@@ -610,6 +645,20 @@ export class WorldTileSet {
     for (const im of m.inst) { this.group.remove(im); im.dispose?.(); }
   }
   /** Clip rectangles: patches → D14, D14 (+ patches) → C11, D14 + C11 → coarse. */
+  setDetailDrape(tex, boxVec) {
+    if (!this.detailUniforms) return;
+    this.detailUniforms.uDetailDrape.value = tex;
+    this.detailUniforms.uDetailOn.value = 1;
+    this.detailUniforms.uDetailBox.value.copy(boxVec);
+    for (const e of this.entries.values()) {
+      if (e.mesh?.terrain?.material?.userData?.detailUniforms) {
+        const u = e.mesh.terrain.material.userData.detailUniforms;
+        u.uDetailDrape.value = tex;
+        u.uDetailOn.value = 1;
+        u.uDetailBox.value.copy(boxVec);
+      }
+    }
+  }
   updateClips() {
     const o = this.origin;
     const d14 = [], c11 = [];

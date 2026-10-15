@@ -18,7 +18,8 @@ import { drawGAProp, GA_PROP_KINDS, buildZoned, gaInteract, gaZoneUpdate, openGo
 import { baseOf } from '/shared/ships/index.js';
 import { buildInteriorV2 } from './iv2draw.js';   // IV2 HV2 (docs/INTERIORS-V2-CONTRACT.md §9.5)
 import { iv2Interact, iv2Frame } from './iv2interact.js';   // IV2 HV3b, HV4
-import { CruiseCrowd, wantsCrowd } from './iv2crowd.js';   // cruise ships: living guests and crew (docs/CRUISE-CONTRACT.md §6)
+import { CruiseCrowd, wantsCrowd } from './iv2crowd.js';
+import { buildRealisticBridgeCockpit, updateBridgeCockpit, disposeBridgeCockpit } from './bridgeCockpit.js';   // cruise ships: living guests and crew (docs/CRUISE-CONTRACT.md §6)
 
 const EYE = 1.65;
 const WALK = 1.7, RUN = 3.3;
@@ -393,6 +394,7 @@ export class Interior {
     const now = performance.now();
     if (this.radarTex && app.lastRadar !== this.lastRadarT) { this.lastRadarT = app.lastRadar; this.radarTex.needsUpdate = true; }
     if (this.gauge && now - this.lastGauge > 250) { this.lastGauge = now; this.drawGauges(); }
+    updateBridgeCockpit(dt, app);
     if (this.isTouch && now - (this.lastHudT || 0) > 1000) { this.lastHudT = now; this.placeHud(); } // the bar re-wraps as its values change
     if (this.wheel) { const r = (app.ship?.rudder || 0) * 2.2; this.wheel.rotation.z += (r - this.wheel.rotation.z) * Math.min(1, dt * 6); }
     if (this.lever) { const t = app.ship?.throttle || 0; this.lever.rotation.x += (-t * 0.9 - this.lever.rotation.x) * Math.min(1, dt * 6); }
@@ -408,6 +410,7 @@ export class Interior {
     this.mats = null;
     this.avatar = null; this.plan = null; this.map = null;
     this.rooms = []; this.hotspots = []; this.gauge = null; this.radarTex = null; this.wheel = null; this.lever = null;
+    disposeBridgeCockpit();
     this.builtFor = null; this.builtCls = null; this.zoneGroups = null;
   }
   build() {
@@ -443,13 +446,50 @@ export class Interior {
   }
   makeMaterials(style) {
     const yacht = style === 'yacht';
-    // a faint emissive term stands in for the room lights, so cabins and passages never go pitch dark (or night-blue)
     const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.05, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.12, ...extra });
+    const TL = new THREE.TextureLoader();
+    const loadTex = (url, rep = [2, 2]) => {
+      try {
+        const t = TL.load(url);
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.repeat.set(rep[0], rep[1]);
+        return t;
+      } catch { return null; }
+    };
+
     return {
       wall: std(yacht ? 0xeae0cf : 0xdfe3e0), wallDark: std(0x8f969b, { roughness: 0.7, metalness: 0.2 }), wallWood: std(0x9b7650, { roughness: 0.6 }), wallSteel: std(0xb9bec2, { roughness: 0.6, metalness: 0.3 }),
-      ceil: std(0xf1f1ec), lino: std(0x5a6772, { roughness: 0.55 }), carpet: std(0x3f4f63, { roughness: 0.95 }), woodFloor: std(0x8a6a44, { roughness: 0.5 }),
+      ceil: std(0xf1f1ec), lino: std(0x5a6772, { roughness: 0.55 }), woodFloor: std(0x8a6a44, { roughness: 0.5 }),
+      carpet: (() => {
+        try {
+          const col = loadTex('/assets/casino/textures/CG_Carpet012/Carpet012_2K-JPG_Color.jpg', [6, 6]);
+          const nrm = loadTex('/assets/casino/textures/CG_Carpet012/Carpet012_2K-JPG_NormalGL.jpg', [6, 6]);
+          return new THREE.MeshStandardMaterial({ map: col, normalMap: nrm, roughness: 0.92, color: new THREE.Color(0x9a222e), emissive: new THREE.Color(0x180406), emissiveIntensity: 0.15 });
+        } catch { return std(0x7a2a32, { roughness: 0.95 }); }
+      })(),
+      marble: (() => {
+        try {
+          const col = loadTex('/assets/casino/textures/CG_Marble014/Marble014_2K-JPG_Color.jpg', [2, 4]);
+          const nrm = loadTex('/assets/casino/textures/CG_Marble014/Marble014_2K-JPG_NormalGL.jpg', [2, 4]);
+          return new THREE.MeshStandardMaterial({ map: col, normalMap: nrm, roughness: 0.32, metalness: 0.05 });
+        } catch { return std(0xd8d4cb, { roughness: 0.4 }); }
+      })(),
       grating: std(0x4b5154, { metalness: 0.45, roughness: 0.45 }), steelFloor: std(0x6d7377, { metalness: 0.3, roughness: 0.6 }),
-      deck: std(yacht ? 0xb48a5a : 0x5f6d63, { roughness: 0.8 }), teak: std(0xb48a5a, { roughness: 0.7 }),
+      deck: std(yacht ? 0xb48a5a : 0x5f6d63, { roughness: 0.8 }),
+      teak: (() => {
+        try {
+          const tColor = loadTex('/assets/casino/textures/CG_Wood051/Wood051_2K-JPG_Color.jpg', [2, 6]);
+          const tNorm = loadTex('/assets/casino/textures/CG_Wood051/Wood051_2K-JPG_NormalGL.jpg', [2, 6]);
+          return new THREE.MeshStandardMaterial({ map: tColor, normalMap: tNorm, roughness: 0.45, metalness: 0.05, color: new THREE.Color(0xa87c4f) });
+        } catch { return std(0xb48a5a, { roughness: 0.7 }); }
+      })(),
+      brass: (() => {
+        try {
+          const col = loadTex('/assets/casino/textures/CG_Metal048A/Metal048A_2K-JPG_Color.jpg', [2, 2]);
+          const nrm = loadTex('/assets/casino/textures/CG_Metal048A/Metal048A_2K-JPG_NormalGL.jpg', [2, 2]);
+          return new THREE.MeshStandardMaterial({ map: col, normalMap: nrm, metalness: 0.95, roughness: 0.25, color: new THREE.Color(0xf5d76e) });
+        } catch { return std(0xd4af37, { metalness: 0.9, roughness: 0.3 }); }
+      })(),
       steel: std(0x6b7378, { metalness: 0.6, roughness: 0.4 }), dark: std(0x23272b, { metalness: 0.3, roughness: 0.5 }), console: std(0x2c3238, { metalness: 0.2, roughness: 0.5 }),
       wood: std(0x7d5a36, { roughness: 0.5 }), fabric: std(0x2f4a7a), fabric2: std(0x7a3a3a), blanket: std(0x3a5a8a), pillow: std(0xf0f0ea), engine: std(0x2e7d4f, { metalness: 0.5, roughness: 0.45 }),
       yellow: std(0xe3b018), red: std(0xc0392b), white: std(0xf4f4f0), rail: std(0xbfc4c8, { metalness: 0.7, roughness: 0.3 }), hatch: std(0x3c5a3c, { metalness: 0.3 }),
@@ -460,7 +500,7 @@ export class Interior {
       boxes: BOX_COLORS.map((c) => std(c, { roughness: 0.7, metalness: 0.2 })),
     };
   }
-  floorMat(k) { const M = this.mats; return { lino: M.lino, carpet: M.carpet, wood: M.woodFloor, grating: M.grating, steel: M.steelFloor, deck: M.deck, teak: M.teak }[k] || M.lino; }
+  floorMat(k) { const M = this.mats; return { lino: M.lino, carpet: M.carpet, wood: M.woodFloor, grating: M.grating, steel: M.steelFloor, deck: M.deck, teak: M.teak, marble: M.marble, stone: M.marble }[k] || M.lino; }
   wallMat(k) { const M = this.mats; return { white: M.wall, dark: M.wallDark, wood: M.wallWood, steel: M.wallSteel }[k] || M.wall; }
 
   /** The main deck (replaces the hull's own deck cap while walking) with the stairwells cut out. */
@@ -494,7 +534,7 @@ export class Interior {
     }
     for (const r of plan.rooms) {
       for (const w of r.windows) push(r.id, w.side, { from: w.from, to: w.to, bottom: w.bottom, top: w.top, glass: true });
-      const fm = this.floorMat(r.floor);
+      const fm = (r.kind === 'bridge' || r.id === 'bridge') ? (M.teak || this.floorMat('teak')) : this.floorMat(r.floor);
       if (r.drawFloor !== false && !(r.open && !r.drawFloor)) {
         for (const q of rectMinusHoles({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles)) pb.box(q.x1 - q.x0, 0.06, q.z1 - q.z0, fm, (q.x0 + q.x1) / 2, r.y - 0.03, (q.z0 + q.z1) / 2);
       }
@@ -828,35 +868,15 @@ export class Interior {
     G.tex.needsUpdate = true;
   }
 
-  // ---- bridge furniture
+  // ---- bridge furniture (Realistic High-Detail Nautical Cockpit)
   helmConsole(ctx, x, y, z, w, facing = -1, windscreen = false) {
-    // console box at the front of the bridge (facing = -1: the player stands aft of it looking forward)
-    const { g, pb, M } = ctx;
-    const d = 0.8;
-    pb.box(w, 1.0, d, M.console, x, y + 0.5, z);
-    pb.box(w, 0.08, d + 0.1, M.dark, x, y + 1.04, z, facing * 0.18, 0, 0);
-    const wheel = new THREE.Group(); wheel.position.set(x, y + 1.25, z - facing * 0.5);
-    wheel.add(new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.025, 8, 24), M.wood));
-    for (let i = 0; i < 4; i++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.56, 0.03), M.wood); sp.rotation.z = (i * Math.PI) / 4; wheel.add(sp); }
-    wheel.rotation.x = facing * -0.35; g.add(wheel); this.wheel = wheel;
-    const lever = new THREE.Group(); lever.position.set(x + Math.min(0.9, w * 0.25), y + 1.08, z);
-    lever.add(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.3, 0.04), M.rail)); const knob = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.08), M.red); knob.position.y = 0.32; lever.children[0].position.y = 0.15; lever.add(knob);
-    g.add(lever); this.lever = lever;
-    pb.box(0.14, 0.04, 0.3, M.dark, lever.position.x, y + 1.06, z);
-    try { this.app.telegraph?.attachBridge?.(g, x + Math.min(w / 2 - 0.05, Math.min(0.9, w * 0.25) + 0.42), y + 1.36, z, facing); } catch (e) { console.warn('[interior] telegraph dial', e); }
-    const radarCv = document.getElementById('radar');
-    if (radarCv && w > 1.2) {
-      this.radarTex = new THREE.CanvasTexture(radarCv); this.radarTex.colorSpace = THREE.SRGBColorSpace;
-      const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: this.radarTex, side: THREE.DoubleSide }));
-      scr.position.set(x - Math.min(0.9, w * 0.25), y + 1.36, z - facing * 0.06); scr.rotation.x = facing * -0.35; if (facing > 0) scr.rotation.y = Math.PI; g.add(scr);
-      pb.box(0.6, 0.6, 0.06, M.dark, scr.position.x, scr.position.y, z, facing * -0.35, 0, 0);
+    try {
+      buildRealisticBridgeCockpit(this, ctx, { x, y, z, w, facing, windscreen });
+    } catch (e) {
+      console.warn('[interior] buildRealisticBridgeCockpit failed, fallback', e);
+      const { pb, M } = ctx;
+      pb.box(w, 1.0, 0.8, M.console, x, y + 0.5, z);
     }
-    pb.cyl(0.12, 0.06, M.white, x, y + 1.1, z + facing * 0.25, 0.12, 16);
-    pb.box(w * 0.6, 0.28, 0.04, M.dark, x, y + 1.3, z + facing * 0.36);
-    for (let i = 0; i < 5; i++) pb.box(0.05, 0.05, 0.02, i % 2 ? M.red : M.green, x - w * 0.25 + i * (w * 0.12), y + 1.3, z + facing * 0.385);
-    if (windscreen) pb.box(w + 0.2, 0.55, 0.04, M.glass, x, y + 1.35, z + facing * 0.45, -0.45, 0, 0);
-    // chair
-    pb.cyl(0.05, 0.6, M.rail, x, y + 0.3, z - facing * 1.6, 0.05, 8); pb.box(0.5, 0.08, 0.5, M.fabric, x, y + 0.62, z - facing * 1.6); pb.box(0.5, 0.5, 0.08, M.fabric, x, y + 0.9, z - facing * 1.6 - facing * -0.22);
   }
   upperHelm({ pb, M }, p) {
     pb.box(p.w, 1.0, 0.7, M.white, p.x, p.y + 0.5, p.z); pb.box(p.w, 0.06, 0.8, M.dark, p.x, p.y + 1.03, p.z, -0.18, 0, 0);

@@ -35,11 +35,11 @@ body.touch .bgSteer { font-size: 12.5px; }
 body.touch .bgArrow { width: 24px; height: 24px; }
 body.touch .bgFacts { display: none; }
 body.touch .bgAdvice { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-body.touch.berthOn #log, body.touch.berthOn #alerts { top: calc(var(--top-h) + var(--sat) + 132px); }
-body.touch.berthOn #fishPanel { top: calc(var(--top-h) + var(--sat) + 136px); }
+/* berthOn log handled by drawer & pill */
+
 @media (orientation: landscape) and (max-height: 520px) {
   body.touch #berthLine.bg { grid-template-columns: 54px minmax(0, 1fr) auto; }
   body.touch #berthLine.bg .bgPlan { width: 54px; height: 54px; }
   body.touch #berthLine.bg .berthBtns { grid-column: 3; grid-row: 1; }
-  body.touch.berthOn #log, body.touch.berthOn #alerts { top: calc(var(--top-h) + var(--sat) + 74px); }
+  
 }

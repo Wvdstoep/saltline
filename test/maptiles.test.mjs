@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { createTileService, getTile, parseTileArgs, sniffImage, TRANSPARENT_PNG, USER_AGENT, TILE_LAYERS } from '../server/maptiles.js';
+import { createTileService, getTile, parseTileArgs, sniffImage, isEsriNoData, TRANSPARENT_PNG, USER_AGENT, TILE_LAYERS } from '../server/maptiles.js';
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 /** a fake but sniffable PNG body, unique per tile */
@@ -252,4 +252,28 @@ test('request timeout aborts a hung upstream request', async () => {
   try { assert.equal(await svc.getTile('osm', 12, 7, 7), null); } finally { clearInterval(keepAlive); }
   assert.ok(Date.now() - t0 < 2000);
   assert.equal(svc.stats().active, 0, 'the slot was released');
+});
+
+// Esri World Imagery answers 200 + one fixed 2,521-byte JPEG ("Map data not yet available") for every tile it has no imagery for
+// (open sea at every zoom). Drawn on the terrain drape it printed that text over the water, so it must become a transparent tile.
+const ESRI_NO_DATA = fs.readFileSync(new URL('./fixtures/esri-no-data.jpg', import.meta.url));
+test('sat layer: Esri "no data" placeholder becomes a transparent PNG; a real tile is kept; other layers are not touched', async () => {
+  assert.equal(ESRI_NO_DATA.length, 2521);
+  assert.ok(isEsriNoData(ESRI_NO_DATA)); assert.ok(!isEsriNoData(Buffer.concat([ESRI_NO_DATA, Buffer.from([0])]))); assert.ok(!isEsriNoData(null));
+  const real = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('a real satellite tile '.repeat(40))]);
+  const f = mockFetch((url) => (url.includes('/tile/18/10/10') ? response(200, ESRI_NO_DATA, 'image/jpeg') : url.includes('/tile/18/11/11') ? response(200, real, 'image/jpeg') : null));
+  const svc = createTileService({ fetchImpl: f, cacheDir: null, log: silent });
+  const sea = await svc.getTile('sat', 18, 10, 10);
+  assert.equal(sea.type, 'image/png'); assert.deepEqual(sea.buf, TRANSPARENT_PNG);
+  const land = await svc.getTile('sat', 18, 11, 11);
+  assert.equal(land.type, 'image/jpeg'); assert.deepEqual(land.buf, real);
+});
+test('sat layer: a placeholder cached on disk before the fix is served as transparent', async () => {
+  const dir = tmpDir();
+  const f = mockFetch(() => response(200, ESRI_NO_DATA, 'image/jpeg'));
+  const a = createTileService({ fetchImpl: f, cacheDir: dir, log: silent });
+  await a.getTile('sat', 17, 5, 5); await a.flush?.();
+  const b = createTileService({ fetchImpl: mockFetch(() => new Error('offline')), cacheDir: dir, log: silent });
+  const t = await b.getTile('sat', 17, 5, 5);
+  assert.deepEqual(t?.buf, TRANSPARENT_PNG);
 });

@@ -8,8 +8,9 @@
 #radarOpts .ro-row button.on { color: var(--cyan, #5ad6ff); border-color: rgba(90, 214, 255, 0.4); }
 
 body.touch #radarOpts { position: static; }
-body.touch #radarOpts .ro-toggle { display: inline-flex; align-items: center; justify-content: center; position: absolute; top: 4px; left: 4px; padding: 0;
-  width: var(--tap, 40px); min-width: var(--tap, 40px); height: var(--tap, 40px); min-height: var(--tap, 40px); border-radius: 50%; background: var(--glass-strong, rgba(6, 20, 30, 0.9)); }
+body.touch #radarOpts .ro-toggle { display: inline-flex; align-items: center; justify-content: center; position: absolute; top: 5px; left: 5px; padding: 0;
+  width: 22px !important; min-width: 22px !important; height: 22px !important; min-height: 22px !important; border-radius: 50%; background: rgba(6, 20, 30, 0.88); border: 1px solid var(--line-2); font-size: 10px; }
+body.touch #radarOpts .ro-toggle .si { width: 13px; height: 13px; }
 body.touch #radarOpts.open .ro-toggle { color: var(--cyan, #5ad6ff); border-color: rgba(90, 214, 255, 0.5); }
 body.touch #radarOpts .ro-row { display: none; position: absolute; right: calc(100% + 6px); bottom: 0; flex-direction: column; gap: 6px; margin: 0; padding: 6px;
   border-radius: var(--r3, 12px); background: var(--glass-strong, rgba(6, 20, 30, 0.92)); border: 1px solid var(--line-2, rgba(255, 255, 255, 0.14)); z-index: 5; }

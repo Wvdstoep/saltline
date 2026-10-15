@@ -7,7 +7,8 @@ import { register } from 'node:module';
 const ROOT = new URL('../', import.meta.url).href;
 register('data:text/javascript,' + encodeURIComponent(`const ROOT=${JSON.stringify(ROOT)};export async function resolve(s,c,n){if(s.startsWith('/shared/'))return n(ROOT+s.slice(1),c);if(s.startsWith('/js/'))return n(ROOT+'public'+s,c);return n(s,c);}`));
 const ctx2d = new Proxy({}, { get: (t, k) => (k in t ? t[k] : k === 'measureText' ? () => ({ width: 10 }) : k === 'createLinearGradient' || k === 'createRadialGradient' ? () => ({ addColorStop() {} }) : k === 'getImageData' ? (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }) : () => {}), set: (t, k, v) => { t[k] = v; return true; } });
-if (!('document' in globalThis)) globalThis.document = { getElementById: () => null, createElement: () => ({ width: 0, height: 0, style: {}, getContext: () => ctx2d }) };
+if (!('document' in globalThis)) globalThis.document = { getElementById: () => null, createElement: () => ({ width: 0, height: 0, style: {}, getContext: () => ctx2d }),
+  createElementNS: () => ({ style: {}, addEventListener() {}, removeEventListener() {}, set src(v) {} }) };   // the casino PBR textures (iv2pbr.js) load images when imported
 
 const P = await import('../public/js/iv2crowdplan.js');
 const { planFromGA } = await import('../public/js/gaplan.js');
@@ -88,13 +89,13 @@ test('roamers: strollers on the street scale with the guests, waiters in dining 
   assert.equal(P.roamersFor({ id: 'x', space: 'cabin_cruise', x0: 0, x1: 4, z0: 0, z1: 4, y: 0 }, { seed: 1, hour: 12, guests: 3000, crew: 1000 }).length, 0);
 });
 
-test('budget: at most 110 people (32 on a phone) in at most 11 (6) pose meshes of ~100 triangles', () => {
+test('budget: at most 110 people (32 on a phone) in at most 11 (6) pose meshes of ~600 triangles', () => {
   assert.deepEqual([P.budgetFor(false).max, P.budgetFor(true).max], [110, 32]);
   assert.ok(P.budgetFor(false).calls <= 11 && P.budgetFor(true).calls <= 6);
   assert.equal(P.posesFor(false).length, 11); assert.ok(P.posesFor(true).length <= P.budgetFor(true).calls, `${P.posesFor(true)}`);
-  for (const pose of P.POSES) { assert.ok(P.PARTS[pose], pose); assert.ok(P.poseTris(pose) <= 120, `${pose} ${P.poseTris(pose)}`); }
+  for (const pose of P.POSES) { assert.ok(P.PARTS[pose], pose); assert.ok(P.poseTris(pose) <= 700, `${pose} ${P.poseTris(pose)}`); }   // sculpted guests (iv2crowd.js poseGeometry)
   for (const a of ['clapA', 'clapB', 'danceB', 'tray', 'walkB']) assert.ok(P.posesFor(true).indexOf(a) < 0 && P.posesFor(true).includes(P.PHONE_ALIAS[a]));
-  assert.ok(P.crowdTris(110) <= 12000);
+  assert.ok(P.crowdTris(110) <= 80000);   // sculpted guests: ~600 triangles each, 110 of them well inside the 160k desktop budget
   assert.equal(P.drawnPose({ mode: 'sit' }, 'clapA', false), 'clapA'); assert.equal(P.drawnPose({ mode: 'stand' }, 'clapA', false), 'danceA'); assert.equal(P.drawnPose({ mode: 'sit' }, 'clapB', true), 'sit');
 });
 
@@ -171,15 +172,15 @@ test('render: only cruise ships on v2 plans get a crowd', () => {
   assert.ok(wantsCrowd(plan)); assert.ok(!wantsCrowd({ v: 1, gen: 'cruise' })); assert.ok(!wantsCrowd(planFromGA('ultramax64'))); assert.ok(!wantsCrowd(null));
 });
 
-test('render: pose meshes are ~100 triangles of one geometry each, with a part per box', () => {
+test('render: pose meshes are ~600 triangles of one geometry each, with a part per box', () => {
   for (const pose of P.POSES) { const g = poseGeometry(pose); assert.equal(g.index.count / 3, P.poseTris(pose)); assert.ok(g.attributes.aPart.count === g.attributes.position.count); g.dispose(); }
 });
 
-test('render: theatre during the show on a desktop — people, within 110, ≤ 11 draw calls, ≤ 12k triangles', () => {
+test('render: theatre during the show on a desktop — people, within 110, ≤ 11 draw calls, ≤ 80k triangles', () => {
   const W = world('d4', false, 18.9); stand(W, 'theatre', 0.55);
   const c = run(W, false);
   assert.ok(c.stats.drawn > 40 && c.stats.drawn <= 110, `${c.stats.drawn}`);
-  assert.ok(c.stats.calls >= 2 && c.stats.calls <= 11, `${c.stats.calls}`); assert.ok(c.stats.tris <= 12000, `${c.stats.tris}`);
+  assert.ok(c.stats.calls >= 2 && c.stats.calls <= 11, `${c.stats.calls}`); assert.ok(c.stats.tris <= 80000, `${c.stats.tris}`);
   for (const m of c.meshes.values()) assert.ok(m.count <= 110);
   const sitting = c.meshes.get('sit').count + c.meshes.get('clapA').count + c.meshes.get('clapB').count; assert.ok(sitting > 30, `${sitting} seated`);
   c.dispose(); assert.equal(c.group.parent, null);
