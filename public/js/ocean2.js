@@ -2,8 +2,8 @@
 //
 // Spectrum: the wind sea is a JONSWAP spectrum (γ 3.3) from (waveH, wavePeriod, waveDir) with Mitsuyasu cos^2s
 // directional spreading; the swell is a narrow log-normal band from (swellH, swellPeriod, swellDir). Both are sampled
-// by 48 Gerstner components on FIXED wavelengths in three cascades — long 55–650 m (8 wind-sea + 8 swell slots), mid
-// 12–55 m, short 2–12 m — with fixed random phases. Spreading quantiles are stratified by energy rank (peak component
+// by 20 Gerstner components on FIXED wavelengths in three cascades — long 55–650 m (5 wind-sea + 5 swell slots), mid
+// 14–55 m, short 2.5–14 m — with fixed random phases. Spreading quantiles are stratified by energy rank (peak component
 // on the mean direction, the next ones at ±½σ, ±σ, …) so the dominant crests are 2–3 wavelengths long (short-crested).
 // A new forecast only moves amplitudes and directions (eased over ~20 s, directions ≤ 2.5°/s with the phase held at
 // the view centre): the field never slides or pops. Amplitudes come from band-integrated spectral energy normalised so
@@ -13,13 +13,29 @@
 // Geometry: a camera-centred clipmap of 7 nested square rings (2 m cells over ±128 m, doubling each ring out to ±8 km,
 // T-junction-free stitching) snapped to 4 cells, biased toward where the camera looks (the chase camera's ship sits in
 // the 2 m ring), plus a flat far ring to 30 km. Each component is faded out of the geometry where the local cell is too
-// coarse for it (no aliasing); whatever the vertices cannot carry is added back per pixel as analytic normals, itself
-// faded by the pixel footprint, and the unresolved slope variance goes into the sun-glitter roughness (Cox–Munk).
+// coarse for it (no aliasing). The vertices carry ONLY the displacement: every pixel re-evaluates all components (and
+// 12 capillary/short-gravity ripple waves, 0.3–6 m, around the wind) at its rest point, so the grid's sampling never
+// shows in the shading (interpolated vertex normals were what drew the calm sea as parallel stripes / moiré).
+// Anti-aliasing is per component and anisotropic: a wave is kept while it spans ≥ 5 pixel footprints measured ALONG
+// ITS OWN DIRECTION (the footprint stretches by 1/cos at grazing angles); what is filtered out goes, with its
+// direction, into a slope covariance (LEAN mapping) that is the sun-glitter roughness. Light air: cat's-paws — a slow,
+// drifting patch field modulates the ripple energy (glassy slicks between rippled patches).
 //
-// Shading: analytic Gerstner normals + short-cascade/capillary detail, Schlick fresnel with sky reflection from setSun's
-// colours, Beckmann sun glitter, subsurface light through thin crests, crest/trough shading that grows with Hs (a calm
-// stays glassy), depth colour (rebuildDepth contract unchanged), storm/overcast greying, night, rain rings, harbour
-// shore fields (setShoreField, unchanged) and the three.js fog tail.
+// Shading: Schlick fresnel with sky reflection from setSun's colours (blurred where the surface is rough), anisotropic
+// Beckmann glitter in slope space with Smith masking (Σ = Cox–Munk residual + unresolved slopes: sharp sparkles near
+// the camera, a soft glitter path far away, never bands), depth colour plus Beer–Lambert transmission to a sunlit sea
+// bed (turquoise over sand, deep blue offshore; caustics fade to their mean with distance), subsurface light through
+// thin crests that grows with the sea, crest/trough shading that grows with Hs (a calm stays glassy), storm/overcast
+// greying, night, rain rings, harbour shore fields (setShoreField, unchanged) and the three.js fog tail.
+// Ship wakes: feedShip() each frame; an analytic Kelvin wake per ship (stationary phase: transverse + divergent
+// systems inside the 19.47° wedge, cusp lines, Froude-scaled amplitude, a turbulent wash trail) for up to 4 ships, and
+// on desktop-class GPUs a local dispersive wave simulation around the player's ship (wakesim.js: bow wave, hull-side
+// trough, stern churn, foam that stays on the water, ripples settling after a stop) sampled for height, normal, foam.
+// GPU tiers (mobile): full / lite / basic shaders on the same uniforms; init(renderer) picks the highest one the GPU's
+// limits allow and the first frames self-test it (it must link AND draw a non-black sea, else the next one down is used
+// with a console.error naming the cause). Phones start at quality 0.6 (full shader, fewer ripples, no wake sim); the
+// frame-rate governor's lowest step is the lite shader. Cost per pixel (full): 20 spectral + 12 ripple sin/cos, ≤ 4
+// Kelvin wakes (only inside their wedge), 5 wake texture fetches (inside the sim domain) and the foam textures.
 // Foam: whitecaps where the Gerstner Jacobian folds below a wind-dependent threshold (Monahan coverage, Beaufort 4+),
 // broken into short crests by a drifting wave-group field and accumulated with persistence in a world-anchored render
 // target (decays over seconds; foam stays on the water it formed on while the crest runs on). Drawn as a bubbly,
@@ -30,6 +46,7 @@
 // displacement, table sin/cos) so ships ride the drawn waves; setShelter(fn) damps the sea inside harbours on both sides;
 // shiftOrigin(px, pz) keeps everything on the same water across a floating-origin shift.
 import * as THREE from 'three';
+import { WakeSim, WAKE_MAX_SHIPS } from './wakesim.js';
 
 const G = 9.81, TAU = Math.PI * 2, D2R = Math.PI / 180;
 const NL = 10, NM = 6, NS = 4, NLM = NL + NM, NW = NLM + NS;
@@ -63,6 +80,19 @@ const COMP = (() => {
   let gw = 0.5, gs = 0.5;
   for (const c of out) {
     if (c.family === 0) { c.u = 0.06 + 0.88 * gw; gw = (gw + 0.6180339887) % 1; } else { c.u = 0.12 + 0.76 * gs; gs = (gs + 0.6180339887) % 1; }
+  }
+  return out;
+})();
+
+// capillary / short-gravity ripples (fragment-only slope waves, 0.3–6 m): log-spaced lengths, directions spread around
+// the wind (fixed offsets + jitter), random phases, capillary-gravity dispersion ω² = g·k + (σ/ρ)·k³
+const NDET = 12, MAXKEL = 4;
+const DET = (() => {
+  const rnd = rng32(0xd37a11), out = [];
+  const offs = [0.0, -0.55, 0.62, -1.15, 1.05, -0.28, 0.33, 1.5, -1.45, 0.8, -0.85, 0.15];
+  for (let i = 0; i < NDET; i++) {
+    const len = 0.3 * Math.pow(6 / 0.3, (i + 0.5 + (rnd() - 0.5) * 0.6) / NDET), k = TAU / len;
+    out.push({ len, k, w: Math.sqrt(G * k + 7.4e-5 * k * k * k), off: offs[i] + (rnd() - 0.5) * 0.2, ph: rnd() * TAU });
   }
   return out;
 })();
@@ -127,6 +157,8 @@ const GLSL_COMMON = /* glsl */`
 #define NL 10
 #define NLM 16
 #define NW 20
+#define NDET 12
+#define MAXKEL 4
 uniform vec4 uWaveA[NW]; // dx, dz, amp, k
 uniform vec4 uWaveB[NW]; // phase (relative to uC, at uTime), Q, wavelength, omega
 `;
@@ -141,44 +173,262 @@ float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.y
 vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
 `;
 
+// Analytic Kelvin wakes (stationary phase) + turbulent wash trail, shared by the full and the lite sea shaders.
+const KELVIN_GLSL = /* glsl */`
+uniform vec4 uKelA[MAXKEL]; uniform vec4 uKelB[MAXKEL]; uniform vec4 uKelC[MAXKEL]; uniform float uKelN;
+// A: ship x, z (rel. uC), forward dir   B: k0 = g/U², amplitude, length, reach   C: beam, wash foam, sim-covered
+void kelvinWakes(vec2 rel, float fp, float simIn, inout vec2 sl, inout float h, inout vec3 sig, inout float kf) {
+  for (int i = 0; i < MAXKEL; i++) {
+    if (float(i) < uKelN) {
+      vec4 KA = uKelA[i]; vec4 KB = uKelB[i]; vec4 KC = uKelC[i];
+      vec2 d = rel - KA.xy;
+      float xb = KB.z * 0.5 - dot(d, KA.zw);                      // metres behind the bow
+      float yl = KA.z * d.y - KA.w * d.x;                          // lateral (signed)
+      float ay = abs(yl);
+      if (xb > 0.5 && xb < KB.w && ay < 0.4 * xb + KC.x) {
+        float cover = KC.z > 0.5 ? simIn : 0.0;                    // the simulation already draws this ship's near wake
+        float coverW = cover * (1.0 - smoothstep(1.0 * KB.z, 2.5 * KB.z, xb));   // ... and fades it out 1-2.5 lengths back
+        float wgt = (1.0 - coverW) * smoothstep(0.25 * KB.z, 1.1 * KB.z, xb) * (1.0 - smoothstep(0.6 * KB.w, KB.w, xb)) / sqrt(1.0 + xb / KB.z);
+        // inside the 19.47 deg wedge two wave systems reach each point: transverse and divergent (stationary phase)
+        float tt = ay / xb;
+        float disc = 1.0 - 8.0 * tt * tt;
+        if (disc > 0.0 && wgt > 0.001) {
+          float sq = sqrt(disc);
+          float cusp = 1.0 + 1.2 * exp(-disc * 10.0);                 // energy piles up along the cusp lines
+          float edge = smoothstep(0.0, 0.04, disc);
+          float sgn = yl < 0.0 ? -1.0 : 1.0;
+          vec2 bw = -KA.zw;
+          vec2 lat = vec2(-KA.w, KA.z) * sgn;
+          for (int r = 0; r < 2; r++) {
+            float t = r == 0 ? 2.0 * tt / (1.0 + sq) : min((1.0 + sq) / (4.0 * max(tt, 1e-3)), 6.0);
+            float sec = sqrt(1.0 + t * t);
+            float k = KB.x * sec * sec;
+            float phs = KB.x * sec * (xb + ay * t);
+            float wl = smoothstep(2.0 * fp, 5.0 * fp, 6.2832 / k);
+            float A = KB.y * wgt * cusp * edge * (r == 0 ? 0.55 : 1.0) / (sec * sec);   // cos²ψ: equal steepness k·A for both systems
+            vec2 kv = (bw + lat * t) / sec;
+            sl -= kv * (k * A * wl * sin(phs));
+            h += A * wl * cos(phs);
+            sig += 0.25 * (k * A) * (k * A) * (1.0 - wl * wl) * vec3(1.0, 1.0, 0.0);
+          }
+        }
+        // turbulent wash: a widening white trail behind the stern that fades over a few ship lengths
+        float xs = xb - KB.z;
+        if (xs > 0.0 && KC.y > 0.0) {
+          float w = KC.x * 0.55 + xs * 0.05;
+          kf = max(kf, (1.0 - cover) * KC.y * (1.0 - smoothstep(0.45 * w, w, ay)) * exp(-xs / (KB.z * 3.0 + 80.0)) * smoothstep(0.0, 6.0, xs));
+        }
+      }
+    }
+  }
+}
+`;
+const CUT_GLSL = /* glsl */`uniform float uCutN; uniform vec4 uCutA[8]; uniform vec4 uCutB[8];
+float cutSide(vec2 a, vec2 b, vec2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
+bool inCut(vec2 p) {
+  bool hit = false;
+  for (int i = 0; i < 8; i++) {
+    if (float(i) < uCutN) {
+      vec2 a = uCutA[i].xy, b = uCutA[i].zw, c = uCutB[i].xy, d = uCutB[i].zw;
+      float s0 = cutSide(a, b, p), s1 = cutSide(b, c, p), s2 = cutSide(c, d, p), s3 = cutSide(d, a, p);
+      if ((s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)) hit = true;
+    }
+  }
+  return hit;
+}
+`;
+
+// ------------------------------------------------------------------------------------------------ lite tier
+// Phones / weak GPUs / WebGL1 / no highp in fragment shaders, and the fallback when the full program fails to link or
+// draws nothing: the spectrum is summed in the VERTEX shader (always highp), normals are carried as a varying with the
+// components the grid cannot carry four vertices per wavelength turned into roughness (no moire), the fragment does
+// only lighting with small numbers (mediump-safe). ~45 fragment uniform vectors, 6 varyings, constant loop bounds.
+const LITE_VERT = /* glsl */`
+#define NL 10
+#define NLM 16
+#define NW 20
+uniform vec4 uWaveA[NW]; uniform vec4 uWaveB[NW];
+uniform vec2 uC; uniform vec2 uVrel; uniform float uS0; uniform float uR0; uniform float uSnap; uniform float uRmax; uniform float uLevel; uniform float uPixAng;
+varying vec3 vWorld; varying vec3 vNrm; varying vec2 vRel; varying vec3 vMisc;
+#include <fog_pars_vertex>
+void main() {
+  vec2 rel = position.xz;
+  float cheb = max(abs(rel.x), abs(rel.y));
+  float rim = 1.0 - smoothstep(uRmax * 0.55, uRmax * 0.985, cheb);
+  float ceff = uS0 * max(1.0, 2.0 * (length(rel - uVrel) + 0.5 * uSnap) / uR0);
+  vec3 w0 = vec3(uC.x + rel.x, uLevel, uC.y + rel.y);
+  float dist = length(cameraPosition - w0);
+  float cv = max(abs(cameraPosition.y - uLevel) / max(dist, 1.0), 0.03);
+  float fp = dist * uPixAng / cv;
+  vec3 disp = vec3(0.0); vec4 S = vec4(0.0); float jxz = 0.0; float vr = 0.0;
+  for (int i = 0; i < NW; i++) {
+    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
+    float A = a.z * rim;
+    if (A > 1e-5) {
+      float g = smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
+      float nf = smoothstep(3.5 * ceff, 6.0 * ceff, b.z) * smoothstep(2.0 * fp, 5.0 * fp, b.z);
+      float th = a.w * dot(a.xy, rel) + b.x;
+      float s = sin(th), c = cos(th);
+      float QA = b.y * A * g;
+      disp += vec3(a.x * QA * c, A * g * s, a.y * QA * c);
+      float kA = a.w * A * nf, qs = b.y * kA * s;
+      S += vec4(a.x * kA * c, a.y * kA * c, a.x * a.x * qs, a.y * a.y * qs);
+      jxz += a.x * a.y * qs;
+      float kF = a.w * A;
+      vr += 0.5 * kF * kF * (1.0 - nf * nf);
+    }
+  }
+  float jxx = S.z, jzz = S.w;
+  vec3 N = vec3(S.y * (-jxz) - (1.0 - jzz) * S.x, (1.0 - jzz) * (1.0 - jxx) - jxz * jxz, -jxz * S.x - S.y * (1.0 - jxx));
+  vNrm = N; vRel = rel; vMisc = vec3(disp.y, N.y, vr);
+  vec3 pos = vec3(uC.x + rel.x + disp.x, uLevel + disp.y, uC.y + rel.y + disp.z);
+  vWorld = pos;
+  vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
+}`;
+const LITE_FRAG = /* glsl */`
+#define MAXKEL 4
+uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uSkyTop; uniform vec3 uSkyHorizon; uniform vec3 uSunDir; uniform vec3 uSunColor; uniform vec3 uSssCol;
+uniform sampler2D uDepth; uniform vec2 uDepthOrigin; uniform float uDepthSize; uniform float uPixAng;
+uniform float uNight; uniform float uStorm; uniform float uLevel; uniform float uHs; uniform vec3 uSig0; uniform float uFoamK; uniform float uLiteThr; uniform float uLiteSoft;
+varying vec3 vWorld; varying vec3 vNrm; varying vec2 vRel; varying vec3 vMisc;
+#include <fog_pars_fragment>
+${KELVIN_GLSL}
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y); }
+void main() {
+  vec3 toCam = cameraPosition - vWorld;
+  float dist = length(toCam);
+  vec3 V = toCam / max(dist, 0.001);
+  float cv = max(abs(V.y), 0.03);
+  float fp = dist * uPixAng / sqrt(cv);
+  vec3 sig = uSig0 + vec3(0.5 * vMisc.z + 0.0005, 0.5 * vMisc.z + 0.0005, 0.0);
+  vec2 sl = vec2(0.0); float h = vMisc.x; float kf = 0.0;
+  kelvinWakes(vRel, fp, 0.0, sl, h, sig, kf);
+  vec3 N = vNrm; N.xz -= sl * N.y; N.y = max(N.y, 0.05); N = normalize(N);
+  float nv = dot(N, V);
+  if (nv < 0.02) N = normalize(N + V * (0.02 - nv));
+  float ndv = max(0.0, dot(N, V));
+  float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0) * (1.0 - uNight * 0.9);
+  float om = clamp(1.0 - ndv, 0.0, 1.0); float om2 = om * om;
+  float fresnel = 0.02 + 0.98 * (om2 * om2 * om);
+  vec2 duv = (vWorld.xz - uDepthOrigin) / uDepthSize;
+  float depth = 255.0;
+  if (duv.x > 0.0 && duv.x < 1.0 && duv.y > 0.0 && duv.y < 1.0) depth = texture2D(uDepth, duv).r * 255.0;
+  depth = max(0.0, depth + uLevel);
+  vec3 water = mix(uDeep, mix(uDeep, uShallow, 0.55), clamp(exp(-depth / 18.0), 0.0, 1.0));
+  water = mix(water, uShallow, clamp(exp(-depth / 6.5), 0.0, 1.0));
+  float lit = 0.65 + 0.35 * max(0.0, dot(N, uSunDir)) * (0.35 + 0.65 * sunUp);
+  water *= lit;
+  if (depth < 14.0) {
+    vec3 Tr = exp(-vec3(0.46, 0.085, 0.06) * depth * (1.0 + 1.0 / max(cv, 0.25)));
+    vec3 bed = vec3(0.6, 0.55, 0.41) * (0.18 + 0.82 * sunUp * clamp(uSunDir.y * 1.5, 0.0, 1.0)) * (1.0 - 0.6 * uStorm);
+    water = water * (1.0 - Tr) + bed * Tr * 0.85;
+  }
+  water = mix(water, vec3(0.08, 0.11, 0.13) * lit, uStorm * 0.65);
+  float crest = clamp(h / max(0.25, uHs) * 0.95 + 0.35, 0.0, 1.0);
+  float crestK = (0.1 + 0.9 * smoothstep(0.9, 3.0, uHs)) * (1.0 + 0.55 * smoothstep(3.0, 9.0, uHs));
+  water *= 1.0 + crestK * (0.75 * crest - 0.35);
+  water += uSssCol * 0.18 * kf * (0.3 + 0.7 * sunUp);
+  water *= 1.0 - 0.78 * uNight;
+  vec3 R = reflect(-V, N);
+  vec3 sky = mix(uSkyHorizon, uSkyTop, sqrt(max(0.0, R.y)));
+  sky = mix(sky, mix(uSkyHorizon, uDeep * 0.6, 0.65), 1.0 - smoothstep(-0.22, 0.0, R.y));
+  sky = mix(sky, mix(uSkyHorizon, uSkyTop, 0.35), smoothstep(0.03, 0.3, sig.x + sig.y) * 0.5);
+  sky *= 1.0 - 0.28 * uStorm;
+  vec3 col = mix(water, sky, fresnel);
+  // isotropic Beckmann glitter with the unresolved slope variance as roughness
+  vec3 Hv = normalize(uSunDir + V);
+  float a2 = clamp(sig.x + sig.y, 0.001, 0.8);
+  float ndh = max(dot(N, Hv), 0.05); float ndh2 = ndh * ndh;
+  float Dm = exp(-(1.0 - ndh2) / (ndh2 * a2)) / (3.14159 * a2 * ndh2 * ndh2);
+  float ovh = clamp(1.0 - max(0.0, dot(V, Hv)), 0.0, 1.0); float ovh2 = ovh * ovh;
+  float Fh = 0.02 + 0.98 * (ovh2 * ovh2 * ovh);
+  float ndl = max(dot(N, uSunDir), 0.0);
+  float spec = Dm * Fh * smoothstep(0.0, 0.08, ndl) / (4.0 * max(ndv, 0.15));
+  col += uSunColor * min(spec, 30.0) * sunUp * 2.2 * (1.0 - 0.7 * uStorm);
+  // whitecaps from the Jacobian, broken up by noise; wake wash
+  vec2 pq = vRel * 0.21;
+  float nz = vnoise(pq) * 0.6 + vnoise(pq * 2.7 + 5.0) * 0.4;
+  float foam = (1.0 - smoothstep(uLiteThr - uLiteSoft, uLiteThr, vMisc.y)) * uFoamK;
+  foam = clamp((foam * 1.2 - (1.0 - nz) * 0.7) / 0.5, 0.0, 1.0);
+  foam = max(foam, clamp((kf * 1.3 - (1.0 - nz) * 0.85) / 0.45, 0.0, 1.0));
+  foam *= 1.0 - smoothstep(30.0, 200.0, fp) * 0.5;
+  vec3 foamCol = vec3(0.9, 0.94, 0.96) * (0.28 + 0.62 * sunUp * (0.55 + 0.45 * ndl)) * (1.0 - 0.7 * uNight);
+  col = mix(col, foamCol, foam * 0.9);
+  col *= 1.0 - 0.2 * uNight;
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+  #include <fog_fragment>
+}`;
+// Last resort: a flat, lit sea colour — a handful of uniforms, nothing that can fail. Never a black / missing sea.
+const BASIC_VERT = /* glsl */`
+uniform vec2 uC; uniform float uLevel;
+varying vec3 vWorld;
+#include <fog_pars_vertex>
+void main() {
+  vec3 pos = vec3(uC.x + position.x, uLevel, uC.y + position.z);
+  vWorld = pos;
+  vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
+}`;
+const BASIC_FRAG = /* glsl */`
+uniform vec3 uDeep; uniform vec3 uSkyHorizon; uniform float uNight;
+varying vec3 vWorld;
+#include <fog_pars_fragment>
+void main() {
+  vec3 V = normalize(cameraPosition - vWorld);
+  float f = 0.02 + 0.98 * pow(1.0 - clamp(V.y, 0.0, 1.0), 5.0);
+  vec3 col = mix(uDeep * 1.3, uSkyHorizon * 0.85, f) * (1.0 - 0.8 * uNight);
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+  #include <fog_fragment>
+}`;
+
 const VERT = /* glsl */`
 ${GLSL_COMMON}
 uniform vec2 uC; uniform vec2 uVrel; uniform float uS0; uniform float uR0; uniform float uSnap; uniform float uRmax; uniform float uLevel; uniform float uVertShort;
-varying vec3 vWorld; varying vec2 vRel; varying vec4 vSum; varying float vJxz; varying float vHeight; varying float vCeff;
+uniform sampler2D uWakeTex; uniform vec4 uWakeRect;
+varying vec3 vWorld; varying vec2 vRel; varying float vCeff;
 #include <fog_pars_vertex>
-void gerst(vec4 a, vec4 b, float A, vec2 p, inout vec3 disp, inout vec4 S, inout float jxz) {
+void gerst(vec4 a, vec4 b, float A, vec2 p, inout vec3 disp) {
   float th = a.w * dot(a.xy, p) + b.x;
-  float s = sin(th), c = cos(th);
-  float QA = b.y * A, kA = a.w * A, qs = QA * a.w * s;
-  disp += vec3(a.x * QA * c, A * s, a.y * QA * c);
-  S += vec4(a.x * kA * c, a.y * kA * c, a.x * a.x * qs, a.y * a.y * qs);
-  jxz += a.x * a.y * qs;
+  float QA = b.y * A;
+  disp += vec3(a.x * QA * cos(th), A * sin(th), a.y * QA * cos(th));
 }
 void main() {
   vec2 rel = position.xz;                                   // metres from the snapped grid origin uC
   float cheb = max(abs(rel.x), abs(rel.y));
   float rim = 1.0 - smoothstep(uRmax * 0.55, uRmax * 0.985, cheb);
   float ceff = uS0 * max(1.0, 2.0 * (length(rel - uVrel) + 0.5 * uSnap) / uR0);
-  vec3 disp = vec3(0.0); vec4 S = vec4(0.0); float jxz = 0.0;
+  vec3 disp = vec3(0.0);
   if (rim > 0.0) {
     for (int i = 0; i < NLM; i++) {
       vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
       float A = a.z * rim * smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-      if (A >= 1e-4) {
-        gerst(a, b, A, rel, disp, S, jxz);
-      }
+      if (A >= 1e-4) gerst(a, b, A, rel, disp);
     }
     if (uVertShort > 0.5 && ceff < 6.0) {
       for (int i = NLM; i < NW; i++) {
         vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
         float A = a.z * rim * smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-        if (A >= 1e-4) {
-          gerst(a, b, A, rel, disp, S, jxz);
-        }
+        if (A >= 1e-4) gerst(a, b, A, rel, disp);
       }
     }
   }
-  vRel = rel; vSum = S; vJxz = jxz; vHeight = disp.y; vCeff = ceff;
+  // ship wake simulation (dynamic height h + P), where the grid is fine enough to carry it
+  if (uWakeRect.w > 0.5 && ceff < 8.0) {
+    vec2 wuv = (rel - uWakeRect.xy) / uWakeRect.z;
+    vec2 ed = min(wuv, 1.0 - wuv);
+    float wf = smoothstep(0.0, 0.08, min(ed.x, ed.y)) * (1.0 - smoothstep(4.0, 8.0, ceff));
+    if (wf > 0.0) { vec4 w = texture2D(uWakeTex, wuv); disp.y += (w.r + w.b) * wf; }
+  }
+  vRel = rel; vCeff = ceff;
   vec3 pos = vec3(uC.x + rel.x + disp.x, uLevel + disp.y, uC.y + rel.y + disp.z);
   vWorld = pos;
   vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
@@ -192,14 +442,16 @@ uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uSkyTop; uniform vec3 uS
 uniform sampler2D uDepth; uniform vec2 uDepthOrigin; uniform float uDepthSize; uniform float uTime; uniform float uWind; uniform vec2 uWindDir;
 uniform float uNight; uniform float uRain; uniform float uStorm; uniform float uLevel; uniform float uDetail; uniform float uHs;
 uniform sampler2D uShoreA; uniform sampler2D uShoreB; uniform vec4 uShoreRectA; uniform vec4 uShoreRectB; uniform sampler2D uShelterTex; uniform vec4 uShelterRect;
-uniform float uPixAng; uniform float uVertShort; uniform float uNShortFrag; uniform float uMssSub;
+uniform float uPixAng; uniform float uNShortFrag; uniform vec3 uSig0; uniform vec4 uDet[NDET]; uniform float uNDet; uniform vec2 uPawOff; uniform float uPawC;
+uniform sampler2D uWakeTex; uniform vec4 uWakeRect; uniform float uWakeTexel;
 uniform float uSigLM; uniform float uFoamA; uniform float uFoamSoft; uniform float uFoamK; uniform float uStreak; uniform float uOldMean;
 uniform vec2 uGrpOff; uniform float uGrpK; uniform float uSigB;
 uniform sampler2D uFoamTex; uniform vec2 uFoamOff; uniform vec2 uFoamShift; uniform float uFoamW; uniform float uFoamOn; uniform vec2 uPatOff;
-varying vec3 vWorld; varying vec2 vRel; varying vec4 vSum; varying float vJxz; varying float vHeight; varying float vCeff;
+varying vec3 vWorld; varying vec2 vRel; varying float vCeff;
 #include <fog_pars_fragment>
 ${GLSL_NOISE}
 ${GLSL_VNOISE}
+${KELVIN_GLSL}
 vec3 noised(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p);
   vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
@@ -251,9 +503,9 @@ float shoreFoam(sampler2D tex, vec4 rect, vec2 p, float n, float t, out float in
   inside = smoothstep(0.0, 0.012, min(e.x, e.y));
   vec4 s = texture2D(tex, uv);
   float dAny = s.r * 63.75 - 8.0, dNat = s.g * 63.75 - 8.0, expo = s.b;
-  float wash = smoothstep(3.2, 0.0, dAny) * smoothstep(-1.5, 0.0, dAny) * (0.5 + 0.45 * n);
+  float wash = (1.0 - smoothstep(0.0, 3.2, dAny)) * smoothstep(-1.5, 0.0, dAny) * (0.5 + 0.45 * n);
   float width = (3.0 + 8.0 * uHs) * (0.3 + 0.7 * expo);
-  float zone = smoothstep(width, 0.0, dNat) * smoothstep(-1.0, 0.5, dNat);
+  float zone = (1.0 - smoothstep(0.0, width, dNat)) * smoothstep(-1.0, 0.5, dNat);
   float rows = 0.5 + 0.5 * sin(dNat * (0.9 - 0.4 * expo) + t * 1.4 + n * 5.0);
   float surf = zone * smoothstep(0.42, 0.9, rows * 0.75 + n * 0.45) * (0.2 + 0.8 * expo) * clamp(0.25 + uHs * 0.6, 0.0, 1.0);
   return clamp(max(wash, surf), 0.0, 1.0) * inside;
@@ -270,66 +522,57 @@ void main() {
   vec3 toCam = cameraPosition - vWorld;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 0.001);
-  vec2 rel = vRel; float ceff = vCeff;
+  vec2 rel = vRel;
   float sh = 0.0;
   if (uShelterRect.w > 0.5) {
     vec2 suv = (rel - uShelterRect.xy) / uShelterRect.z;
     if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) sh = texture2D(uShelterTex, suv).r;
   }
   vec3 m = vec3(max(0.26, 1.0 - sh), max(0.35, 1.0 - 0.85 * sh), max(0.48, 1.0 - 0.55 * sh));
-  // pixel footprint on the water (m): grows with distance and at grazing angles
-  float fp = dist * uPixAng / max(0.04, sqrt(max(abs(V.y), 0.04)));
-  vec4 S = vSum; float jxz = vJxz; float h = vHeight;
-  float varU = 0.0, varJ = 0.0;
-  // --- long + mid: add back per pixel what the vertices could not carry (LOD complement), filtered by the footprint
-  for (int i = 0; i < NLM; i++) {
+  // --- pixel footprint (m), anisotropic: pa across the view, fpL along it (stretched by the grazing angle). A wave is
+  //     resolved by the footprint measured along ITS direction; what a pixel cannot resolve becomes slope variance
+  //     (LEAN mapping) in the glitter roughness instead of aliasing into stripes / moire.
+  float pa = dist * uPixAng;
+  float cv = max(abs(V.y), 0.03);
+  vec2 vh = V.xz; float vl = length(vh); vh = vl > 1e-4 ? vh / vl : vec2(0.0, 1.0);
+  float fpL = pa / cv;
+  float fp = pa / sqrt(cv);                                  // isotropic footprint for textures (foam, patterns)
+  vec4 S = vec4(0.0); float jxz = 0.0; float h = 0.0;
+  vec3 sig = vec3(0.0);                                      // unresolved slope covariance (xx, zz, xz)
+  float varJ = 0.0;
+  // --- spectral components, all evaluated per pixel at the rest point (exact normals; the vertices carry only the
+  //     displacement, so the grid's sampling never shows in the shading)
+  for (int i = 0; i < NW; i++) {
     vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    float A0 = a.z * (i < NL ? m.x : m.y);
-    if (A0 < 1e-4) continue;
-    float wf = 1.0 - smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-    if (wf < 0.002) continue;
-    float wl = smoothstep(2.0 * fp, 5.0 * fp, b.z);
-    float kA = a.w * A0 * wf;
-    varU += 0.5 * kA * kA * (1.0 - wl);
-    float A = A0 * wf * wl;
-    if (A < 1e-4) continue;
-    fgerst(a, b, A, rel, S, jxz, h);
-  }
-  // --- short cascade: geometry near the camera (vertex), per-pixel normals elsewhere, faded by the footprint
-  float vs = (uVertShort > 0.5 && ceff < 6.0) ? 1.0 : 0.0;
-  for (int i = NLM; i < NW; i++) {
-    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    float A0 = a.z * m.z;
-    if (A0 < 1e-4) continue;
-    float wf = 1.0 - vs * smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-    float wl = float(i - NLM) < uNShortFrag ? smoothstep(2.0 * fp, 5.0 * fp, b.z) : 0.0;
-    float kA = a.w * A0;
-    float pres = (1.0 - wf) + wf * wl;
-    varU += 0.5 * kA * kA * wf * (1.0 - wl);
-    varJ += 0.5 * (b.y * kA * pres) * (b.y * kA * pres);
-    float A = A0 * wf * wl;
-    if (A < 1e-4) continue;
-    fgerst(a, b, A, rel, S, jxz, h);
+    float A0 = a.z * (i < NL ? m.x : (i < NLM ? m.y : m.z));
+    if (A0 > 1e-5) {
+      float on = (i < NLM || float(i - NLM) < uNShortFrag) ? 1.0 : 0.0;
+      float fd = length(vec2(dot(a.xy, vh) * fpL, (a.x * vh.y - a.y * vh.x) * pa));
+      float wl = smoothstep(2.0 * fd, 5.0 * fd, b.z) * on;
+      float kA = a.w * A0;
+      sig += 0.5 * kA * kA * (1.0 - wl * wl) * vec3(a.x * a.x, a.y * a.y, a.x * a.y);
+      if (i >= NLM) { float qj = b.y * kA * wl; varJ += 0.5 * qj * qj; }
+      if (wl > 0.002) fgerst(a, b, A0 * wl, rel, S, jxz, h);
+    }
   }
   vec2 pp = rel + uPatOff;                 // pattern coordinates (stable world frame, metres)
-  // --- Multi-scale organic liquid surface normals: fluid eddies & capillary ripples (no scanlines, no mobile NaNs)
-  float capK = uDetail * (1.0 - smoothstep(0.35, 6.0, fp)) * (0.45 + 0.55 * clamp(uWind / 12.0, 0.0, 1.0)) * m.z;
-  if (capK > 0.001) {
-    vec2 flowDir = uWindDir;
-    vec2 crossDir = vec2(-uWindDir.y, uWindDir.x);
-    // Octave 1: flowing organic chop with domain warping
-    vec2 p1 = pp * 0.42 + flowDir * (uTime * 0.32);
-    vec3 n1 = noised(p1);
-    // Octave 2: angled cross-eddies
-    vec2 p2 = pp * 0.95 - crossDir * (uTime * 0.26) + n1.yz * 0.35 + 5.7;
-    vec3 n2 = noised(p2);
-    // Octave 3: fine glistening micro-facets near camera
-    float fineFade = 1.0 - smoothstep(0.2, 1.4, fp);
-    vec2 p3 = pp * 2.4 + flowDir * (uTime * 0.62) + 12.1;
-    vec3 n3 = noised(p3);
-
-    S.xy += (n1.yz * 0.42 + n2.yz * 0.38 + n3.yz * 0.20 * fineFade) * 0.050 * capK;
+  // --- cat's-paws: wind touches the water in patches; between them the surface stays glassy (strong in light air,
+  //     uniform once the sea is wind-driven). The mean of pawK^2 is ~1, so the average roughness is unchanged.
+  float pawN = uPawC > 0.001 ? mix(0.5, groupField(pp + uPawOff, 60.0), 1.0 - smoothstep(30.0, 120.0, fp)) : 0.5;
+  float pawK = mix(1.0, 0.18 + 1.64 * smoothstep(0.22, 0.78, pawN), uPawC) * m.z;
+  // --- capillary / short-gravity ripples (0.3-6 m): analytic slope waves around the wind, energy from Cox-Munk minus
+  //     what the spectrum resolves; filtered per direction like the spectrum, the rest goes to the roughness
+  for (int i = 0; i < NDET; i++) {
+    vec4 d = uDet[i];                                         // k*dir (rad/m), phase, slope amplitude
+    float kk = max(length(d.xy), 1e-4);
+    vec2 dir = d.xy / kk;
+    float fd = length(vec2(dot(dir, vh) * fpL, (dir.x * vh.y - dir.y * vh.x) * pa));
+    float wl = smoothstep(2.0 * fd, 5.0 * fd, 6.2832 / kk) * (float(i) < uNDet ? 1.0 : 0.0);
+    float ka = d.w * pawK;
+    sig += 0.5 * ka * ka * (1.0 - wl * wl) * vec3(dir.x * dir.x, dir.y * dir.y, dir.x * dir.y);
+    if (wl > 0.002) S.xy += dir * (ka * wl * cos(dot(d.xy, rel) + d.z));
   }
+  sig += uSig0 * (pawK * pawK) + vec3(0.0004, 0.0004, 0.0);   // sub-ripple residual (never a perfect mirror)
   if (uRain > 0.0) { // expanding rain rings on a jittered grid
     vec2 rp = pp * 0.8; vec2 ci = floor(rp); vec2 cf = fract(rp) - 0.5;
     float hh = hash12(ci);
@@ -337,7 +580,40 @@ void main() {
     vec2 cc = cf + (vec2(hash12(ci + 3.1), hash12(ci + 7.7)) - 0.5) * 0.6;
     float r = length(cc);
     float ring = sin(r * 38.0 - ph * 22.0) * exp(-r * 6.0) * (1.0 - ph) * step(hh, uRain * 0.9 + 0.05);
-    S.xy -= (cc / max(r, 0.02)) * ring * 0.22 * (1.0 - smoothstep(0.1, 0.6, fp));
+    float rk = 1.0 - smoothstep(0.1, 0.6, fp);
+    S.xy -= (cc / max(r, 0.02)) * ring * 0.22 * rk;
+    sig += vec3(0.004, 0.004, 0.0) * uRain * (1.0 - rk);
+  }
+  // --- ship wakes: the local simulation near the player's ship, analytic Kelvin wakes beyond it and for other ships
+  float wFoam = 0.0, simIn = 0.0;
+  if (uWakeRect.w > 0.5) {
+    vec2 wuv = (rel - uWakeRect.xy) / uWakeRect.z;
+    vec2 ed = min(wuv, 1.0 - wuv);
+    simIn = smoothstep(0.0, 0.08, min(ed.x, ed.y));
+    if (simIn > 0.0) {
+      vec2 e = vec2(uWakeTexel, 0.0);
+      vec4 c0 = texture2D(uWakeTex, wuv);
+      vec4 cx1 = texture2D(uWakeTex, wuv + e.xy); vec4 cx0 = texture2D(uWakeTex, wuv - e.xy);
+      vec4 cz1 = texture2D(uWakeTex, wuv + e.yx); vec4 cz0 = texture2D(uWakeTex, wuv - e.yx);
+      float dxw = uWakeTexel * uWakeRect.z;
+      vec2 g = vec2((cx1.r + cx1.b) - (cx0.r + cx0.b), (cz1.r + cz1.b) - (cz0.r + cz0.b)) / (2.0 * dxw);
+      float wk = 1.0 / (1.0 + (fp * fp) / (4.0 * dxw * dxw));   // a texel smaller than the pixel: slope -> roughness
+      S.xy += g * simIn * wk;
+      sig += 0.25 * dot(g, g) * (1.0 - wk * wk) * simIn * vec3(1.0, 1.0, 0.0);
+      h += (c0.r + c0.b) * simIn;
+      wFoam = c0.a * simIn;
+    }
+  }
+  float kFoam = 0.0;
+  vec2 kSl = vec2(0.0);
+  kelvinWakes(rel, fp, simIn, kSl, h, sig, kFoam);
+  S.xy += kSl;
+  wFoam = max(wFoam, kFoam);
+  if (wFoam > 0.02) {                                          // aerated, turbulent water roughens the surface
+    vec3 tn = noised(pp * 0.65 + uTime * vec2(0.13, -0.11));
+    float tk = 1.0 - smoothstep(0.5, 4.0, fp);
+    S.xy += tn.yz * 0.07 * wFoam * tk;
+    sig += vec3(0.01, 0.01, 0.0) * wFoam * (1.0 - tk);
   }
   // --- normal + Jacobian of the displaced surface
   float jxx = S.z, jzz = S.w;
@@ -345,82 +621,97 @@ void main() {
   float J = N.y;
   N.y = max(N.y, 0.05);
   N = normalize(N);
-  // grazing: never shade a facet seen from behind (pull the normal toward the viewer)
   float nv = dot(N, V);
-  if (nv < 0.02) N = normalize(N + V * (0.02 - nv));
+  if (nv < 0.02) N = normalize(N + V * (0.02 - nv));          // never shade a facet seen from behind
   float ndv = max(0.0, dot(N, V));
   float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0) * (1.0 - uNight * 0.9);
-  float oneMinusNdv = clamp(1.0 - ndv, 0.0, 1.0);
-  float om2 = oneMinusNdv * oneMinusNdv;
-  float fresnel = 0.02 + 0.98 * (om2 * om2 * oneMinusNdv);
+  float om = clamp(1.0 - ndv, 0.0, 1.0); float om2 = om * om;
+  float fresnel = 0.02 + 0.98 * (om2 * om2 * om);
+  float rough = sig.x + sig.y;
   // --- depth
   vec2 dp = vWorld.xz;
   vec2 duv = (dp - uDepthOrigin) / uDepthSize;
   float depth = 255.0;
   if (duv.x > 0.0 && duv.x < 1.0 && duv.y > 0.0 && duv.y < 1.0) depth = texture2D(uDepth, duv).r * 255.0;
   depth = max(0.0, depth + uLevel);
-  // --- water body: multi-tier depth colour, caustics, storm grey, subsurface through crests
+  // --- water body: depth colour (scattering), then Beer-Lambert transmission to a sunlit sea bed (red dies first:
+  //     turquoise over sand, deep blue offshore), caustics on the bed, storm grey
   float shallowMix = clamp(exp(-depth / 6.5), 0.0, 1.0);
   float midMix = clamp(exp(-depth / 18.0), 0.0, 1.0);
   vec3 midCol = mix(uDeep, uShallow, 0.55);
   vec3 water = mix(uDeep, midCol, midMix);
   water = mix(water, uShallow, shallowMix);
-  water = mix(water, vec3(0.08, 0.11, 0.13), uStorm * 0.65);
-  water *= 0.65 + 0.35 * max(0.0, dot(N, uSunDir)) * (0.35 + 0.65 * sunUp);
-
-  // Dynamic moving caustic light pattern on shallow water & seabed
-  if (depth < 10.0) {
+  float lit = 0.65 + 0.35 * max(0.0, dot(N, uSunDir)) * (0.35 + 0.65 * sunUp);
+  water *= lit;
+  if (depth < 14.0) {
+    vec3 Tr = exp(-vec3(0.46, 0.085, 0.06) * depth * (1.0 + 1.0 / max(cv, 0.25)));
+    vec3 bed = vec3(0.6, 0.55, 0.41) * (0.18 + 0.82 * sunUp * clamp(uSunDir.y * 1.5, 0.0, 1.0)) * (1.0 - 0.6 * uStorm);
     vec2 cP = vWorld.xz * 0.35 + uWindDir * (uTime * 0.28);
     vec2 cP2 = vWorld.xz * 0.52 - vec2(-uWindDir.y, uWindDir.x) * (uTime * 0.22);
     float c1 = sin(cP.x + cos(cP.y * 1.5)) * cos(cP.y + sin(cP.x * 1.5));
     float c2 = sin(cP2.x * 1.4 - cos(cP2.y * 1.2)) * cos(cP2.y * 1.3 + sin(cP2.x * 1.1));
-    float cVal = max(0.0, (c1 + c2 + 0.85) * 0.52); float caustic = cVal * cVal * cVal * 0.28;
-    float cFade = smoothstep(10.0, 0.8, depth) * sunUp * (1.0 - uStorm * 0.7);
-    water += mix(uShallow * 1.4, vec3(0.4, 0.95, 0.85), 0.5) * caustic * cFade;
+    float cVal = max(0.0, (c1 + c2 + 0.85) * 0.52);
+    float caustic = mix(cVal * cVal * cVal, 0.18, smoothstep(0.6, 3.0, fp));   // fades to its mean: no far tiling
+    bed *= 1.0 + caustic * 1.4 * sunUp * (1.0 - smoothstep(1.0, 9.0, depth));
+    water = water * (1.0 - Tr) + bed * Tr * 0.85;
   }
-
+  water = mix(water, vec3(0.08, 0.11, 0.13) * lit, uStorm * 0.65);
+  // crest / trough shading grows with the sea: a glassy calm has no dark troughs or bright crests (those read as
+  // painted stripes on a swell), a storm sea has black troughs
   float crest = clamp(h / max(0.25, uHs) * 0.95 + 0.35, 0.0, 1.0);
-  float crestK = (0.45 + 0.55 * smoothstep(0.4, 2.5, uHs)) * (1.0 + 0.55 * smoothstep(3.0, 9.0, uHs));
+  float crestK = (0.1 + 0.9 * smoothstep(0.9, 3.0, uHs)) * (1.0 + 0.55 * smoothstep(3.0, 9.0, uHs));
   water *= 1.0 + crestK * (0.75 * crest - 0.35);
-
-  // Subsurface Scattering (SSS) through wave crests (glowing translucent emerald crests, NaN-safe)
+  // subsurface light through thin crests, only with the sun behind the wave, energy taken from the reflected part
   vec3 Ls = normalize(uSunDir + N * 0.45);
   float dotBack = max(0.0, dot(V, -Ls));
   float back = dotBack * dotBack * dotBack * dotBack;
   float dotSide = max(0.0, 1.0 - abs(dot(V, N)));
   float side = dotSide * dotSide * dotSide * max(0.0, dot(-N, uSunDir));
-  float cClamped = clamp(crest, 0.0, 1.0);
-  float crestPow = cClamped * cClamped * cClamped;
-  float sss = (back * 2.2 + side * 1.0) * crestPow * (0.35 + 0.65 * sunUp) * (1.0 - fresnel * 0.8);
+  float crestPow = crest * crest * crest;
+  float sss = (back * 2.2 + side) * crestPow * (0.35 + 0.65 * sunUp) * (1.0 - fresnel) * smoothstep(0.4, 2.5, uHs);
   vec3 sssColor = mix(uSssCol, vec3(0.08, 0.92, 0.78), 0.35);
   water += sssColor * sss * (0.75 + 0.5 * shallowMix) * (1.0 - 0.55 * uStorm);
+  water += uSssCol * 0.18 * wFoam * (0.3 + 0.7 * sunUp);       // aerated wake water glows turquoise
   water *= 1.0 - 0.78 * uNight;
-
-  // --- sky reflection
+  // --- sky reflection; a rough (far) surface reflects a blurred sky
   vec3 R = reflect(-V, N);
   float ry = max(0.0, R.y);
-  vec3 sky = mix(uSkyHorizon, uSkyTop, sqrt(clamp(ry, 0.0, 1.0)));
-  sky = mix(sky, mix(uSkyHorizon, uDeep * 0.6, 0.65), smoothstep(0.0, -0.22, R.y));
-  float dotGlint = max(0.0, dot(R, uSunDir)); float g2 = dotGlint * dotGlint; float g4 = g2 * g2; float g8 = g4 * g4; float sunGlint = g8 * g8 * 0.25 * sunUp;
-  sky += uSunColor * sunGlint;
+  vec3 sky = mix(uSkyHorizon, uSkyTop, sqrt(ry));
+  sky = mix(sky, mix(uSkyHorizon, uDeep * 0.6, 0.65), 1.0 - smoothstep(-0.22, 0.0, R.y));
+  sky = mix(sky, mix(uSkyHorizon, uSkyTop, 0.35), smoothstep(0.03, 0.3, rough) * 0.5);
+  float gA = max(0.0, dot(R, uSunDir)); float gA2 = gA * gA; float gA4 = gA2 * gA2;
+  sky += uSunColor * (gA4 * gA4) * 0.08 * sunUp;              // the bright sky around the sun (aureole)
   sky *= 1.0 - 0.28 * uStorm;
   vec3 col = mix(water, sky, fresnel);
-
-  // --- sun glitter: Beckmann + wide bloom halo
+  // --- sun glitter: anisotropic Beckmann in slope space. Sigma = sub-ripple Cox-Munk residual + every slope the pixel
+  //     could not resolve (LEAN): sharp sparkles close by, a soft glitter path towards the sun far away, never bands.
   vec3 Hv = normalize(uSunDir + V);
-  float ndh = max(dot(N, Hv), 1e-3);
-  float a2 = clamp(uMssSub * (1.0 - 0.5 * capK) + varU, 0.0012, 0.6);
-  float ndh2 = ndh * ndh;
-  float Dm = exp(-(1.0 - ndh2) / (ndh2 * a2)) / (3.14159 * a2 * ndh2 * ndh2);
-  float oneMinusVh = clamp(1.0 - max(0.0, dot(V, Hv)), 0.0, 1.0); float vh2 = oneMinusVh * oneMinusVh; float Fh = 0.02 + 0.98 * (vh2 * vh2 * oneMinusVh);
+  vec2 sH = -Hv.xz / max(Hv.y, 0.02);
+  vec2 sN = -N.xz / max(N.y, 0.05);
+  vec2 dd = sH - sN;
+  float sxx = sig.x + 1e-4, szz = sig.y + 1e-4, sxz = sig.z;
+  float det = max(sxx * szz - sxz * sxz, 1e-8);
+  float qf = (szz * dd.x * dd.x - 2.0 * sxz * dd.x * dd.y + sxx * dd.y * dd.y) / det;
+  float hy2 = Hv.y * Hv.y;
+  float Dm = exp(-0.5 * min(qf, 60.0)) / (6.2832 * sqrt(det) * max(hy2 * hy2, 1e-4));
+  float oneMinusVh = clamp(1.0 - max(0.0, dot(V, Hv)), 0.0, 1.0); float vh2 = oneMinusVh * oneMinusVh;
+  float Fh = 0.02 + 0.98 * (vh2 * vh2 * oneMinusVh);
+  // Smith masking (Beckmann Lambda with the slope variance along each direction): no blown-out grazing glints
+  vec2 lh = uSunDir.xz; float ll = length(lh); lh = ll > 1e-4 ? lh / ll : vec2(1.0, 0.0);
+  float sv = sqrt(max(1e-5, sxx * vh.x * vh.x + 2.0 * sxz * vh.x * vh.y + szz * vh.y * vh.y));
+  float sl = sqrt(max(1e-5, sxx * lh.x * lh.x + 2.0 * sxz * lh.x * lh.y + szz * lh.y * lh.y));
+  float av = abs(V.y) / max(1e-3, sqrt(max(0.0, 1.0 - V.y * V.y)) * sv);
+  float al = max(uSunDir.y, 1e-3) / max(1e-3, sqrt(max(0.0, 1.0 - uSunDir.y * uSunDir.y)) * sl);
+  float Lv = av < 1.6 ? (1.0 - 1.259 * av + 0.396 * av * av) / (3.535 * av + 2.181 * av * av) : 0.0;
+  float Ll = al < 1.6 ? (1.0 - 1.259 * al + 0.396 * al * al) / (3.535 * al + 2.181 * al * al) : 0.0;
+  float Gs = 1.0 / (1.0 + Lv + Ll);
   float ndl = max(dot(N, uSunDir), 0.0);
-  float spec = Dm * Fh * smoothstep(0.0, 0.08, ndl) / (4.0 * max(ndv, 0.12));
-  float dotHalo = max(0.0, dot(reflect(-V, N), uSunDir)); float h2 = dotHalo * dotHalo; float h4 = h2 * h2; float h8 = h4 * h4; float h16 = h8 * h8; float h32 = h16 * h16; float sunHalo = (h32 * h16) * 0.65;
-  col += uSunColor * (min(spec, 75.0) + sunHalo * 12.0) * sunUp * 2.5 * (1.0 - 0.7 * uStorm);
+  float spec = Dm * Fh * Gs * smoothstep(0.0, 0.08, ndl) / (4.0 * max(ndv, 0.1));
+  col += uSunColor * min(spec, 40.0) * sunUp * 2.4 * (1.0 - 0.7 * uStorm);
   // --- foam: shore surf + harbour shore fields
   float n = vnoise(pp * 0.12 + uTime * 0.05) * 0.6 + vnoise(pp * 0.5 - uTime * 0.1) * 0.4;
   float surf = n + 0.12 * sin(uTime * 0.9 + depth * 1.6);
-  float shore = smoothstep(5.5, 0.3, depth) * smoothstep(0.38, 0.72, surf);
+  float shore = (1.0 - smoothstep(0.3, 5.5, depth)) * smoothstep(0.38, 0.72, surf);
   float inA, inB;
   float fA = shoreFoam(uShoreA, uShoreRectA, dp, n, uTime, inA);
   float fB = shoreFoam(uShoreB, uShoreRectB, dp, n, uTime, inB);
@@ -432,19 +723,17 @@ void main() {
   if (uFoamK > 0.0) {
     vec2 fr = rel + uFoamShift;                                               // rel. the foam window centre
     float grp = groupField(fr + uGrpOff, 42.0);
-    float sig = sqrt(uSigLM * uSigLM + varJ);
-    float thr = 1.0 - uFoamA * sig + (grp - 0.5) * uGrpK * sig / max(1e-4, uSigB);
-    float inst = smoothstep(thr, thr - uFoamSoft * sig, J);                 // crest folding right now (all scales)
+    float sigJ = sqrt(uSigLM * uSigLM + varJ);
+    float thr = 1.0 - uFoamA * sigJ + (grp - 0.5) * uGrpK * sigJ / max(1e-4, uSigB);
+    float inst = 1.0 - smoothstep(thr - uFoamSoft * sigJ, thr, J);         // crest folding right now (all scales)
     float win = 1.0 - smoothstep(0.36 * uFoamW, 0.47 * uFoamW, max(abs(fr.x), abs(fr.y)));
     vec2 acc = uFoamOn > 0.5 ? texture2D(uFoamTex, (rel + uFoamOff) / uFoamW).rg * win : vec2(0.0);
-    // inside the window the accumulated dominant-crest foam leads and the instantaneous term adds crest-tip detail;
-    // beyond it: instantaneous breaking + the statistical mean of the residual foam
     float act = max(acc.x, inst * mix(0.9, 0.55, win)) * uFoamK;
     float old = mix(uOldMean, acc.y, win) * uFoamK * m.y;
     float strK = uStreak * m.y;
     if (act + old > 0.004) {
-      // large-scale domain warp: nothing repeats or lines up. pp is the water's rest position, so the foam rides the
-      // orbital motion and stays on the water it formed on while the crest runs on ahead of it.
+      // large-scale domain warp: nothing repeats or lines up; pp is the water's rest position, so the foam rides the
+      // orbital motion and stays on the water it formed on while the crest runs on ahead of it
       vec2 wv = vec2(vnoise(pp * 0.035), vnoise(pp * 0.035 + 31.7)) - 0.5;
       float body = 0.6, cA = 0.0, cR = 0.0, cS = 0.0;
       if (act > 0.004) {
@@ -453,15 +742,21 @@ void main() {
       }
       if (old > 0.004) {
         float st = 1.0 + 2.0 * uStreak;
-        vec2 pf = pp + wv * 22.0 * (1.0 - 0.7 * uStreak);                      // strong wind: straighter streaks
+        vec2 pf = pp + wv * 22.0 * (1.0 - 0.7 * uStreak);
         vec2 qm = vec2(dot(pf, uWindDir) / st, dot(pf, vec2(-uWindDir.y, uWindDir.x)));
         cR = foamFilm(qm, fp, old) * (0.28 + 0.5 * old);
         float sk = strK * smoothstep(0.03, 0.4, old);
-        if (sk > 0.001) cS = foamStreaks(pp, fp) * sk * (0.45 + 0.5 * smoothstep(16.0, 28.0, uWind)); // gale: well-marked streaks
+        if (sk > 0.001) cS = foamStreaks(pp, fp) * sk * (0.45 + 0.5 * smoothstep(16.0, 28.0, uWind));
       }
       foam = 1.0 - (1.0 - cA) * (1.0 - clamp(cR, 0.0, 1.0)) * (1.0 - 0.85 * cS);
       foamLit = 0.74 + 0.26 * body;
     }
+  }
+  // --- wake foam: churned white water breaking up into a marbled trail
+  if (wFoam > 0.01) {
+    float wb = foamBody(pp * 1.4 + 17.0, fp);
+    float cW = clamp((wFoam * 1.3 - (1.0 - wb) * 0.85) / 0.45, 0.0, 1.0);
+    foam = 1.0 - (1.0 - foam) * (1.0 - cW);
   }
   foam = clamp(max(foam, shore), 0.0, 1.0);
   vec3 foamCol = vec3(0.9, 0.94, 0.96) * (0.28 + 0.62 * sunUp * (0.55 + 0.45 * ndl) + 0.1 * (1.0 - uStorm)) * (1.0 - 0.7 * uNight) * foamLit;
@@ -469,18 +764,17 @@ void main() {
   col = mix(col, foamCol, foam * 0.94);
   col *= 1.0 - 0.2 * uNight;
   gl_FragColor = vec4(col, 1.0);
-  // same tail as three's built-in materials: tone-map, encode linear → output colour space, then fog (fogColor is
+  // same tail as three's built-in materials: tone-map, encode linear -> output colour space, then fog (fogColor is
   // already in the output space)
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
-const CUT_GLSL = /* glsl */`uniform float uCutN; uniform vec4 uCutA[4]; uniform vec4 uCutB[4];
-float cutSide(vec2 a, vec2 b, vec2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
-bool inCut(vec2 p) { if (uCutN < 0.5) return false; for (int i = 0; i < 4; i++) { if (float(i) < uCutN) { vec2 a = uCutA[i].xy, b = uCutA[i].zw, c = uCutB[i].xy, d = uCutB[i].zw; float s0 = cutSide(a, b, p), s1 = cutSide(b, c, p), s2 = cutSide(c, d, p), s3 = cutSide(d, a, p); if ((s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)) return true; } } return false; }
-`;
 
 // foam accumulation pass (full-screen triangle into a world-anchored toroidal render target)
+/** The sea's shader sources per tier (read by the tests: uniform budgets, loop / smoothstep hygiene). */
+export const OCEAN_SHADERS = { full: { vert: VERT, frag: FRAG, cut: CUT_GLSL }, lite: { vert: LITE_VERT, frag: LITE_FRAG, cut: CUT_GLSL }, basic: { vert: BASIC_VERT, frag: BASIC_FRAG } };
+
 const FOAM_VERT = /* glsl */`varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const FOAM_FRAG = /* glsl */`
 #define NL 10
@@ -510,9 +804,10 @@ void main() {
   for (int i = 0; i < NLM; i++) {
     vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
     float A = a.z * (i < NL ? mL : mM) * uBw[i];
-    if (A < 1e-4) continue;
-    float qs = b.y * a.w * A * sin(a.w * dot(a.xy, rel) + b.x);
-    jxx += a.x * a.x * qs; jzz += a.y * a.y * qs; jxz += a.x * a.y * qs;
+    if (A >= 1e-4) {
+      float qs = b.y * a.w * A * sin(a.w * dot(a.xy, rel) + b.x);
+      jxx += a.x * a.x * qs; jzz += a.y * a.y * qs; jxz += a.x * a.y * qs;
+    }
   }
   float J = (1.0 - jxx) * (1.0 - jzz) - jxz * jxz;
   // wave groups / short crests: a slowly drifting field (at the group velocity) decides where along a crest it breaks
@@ -539,9 +834,10 @@ float jacAt(vec2 p, float age) {
   float jxx = 0.0, jzz = 0.0, jxz = 0.0;
   for (int i = 0; i < NLM; i++) {
     vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    if (a.z < 1e-3) continue;
-    float qs = b.y * a.w * a.z * sin(a.w * dot(a.xy, p) + b.x + b.w * age);
-    jxx += a.x * a.x * qs; jzz += a.y * a.y * qs; jxz += a.x * a.y * qs;
+    if (a.z >= 1e-3) {
+      float qs = b.y * a.w * a.z * sin(a.w * dot(a.xy, p) + b.x + b.w * age);
+      jxx += a.x * a.x * qs; jzz += a.y * a.y * qs; jxz += a.x * a.y * qs;
+    }
   }
   return (1.0 - jxx) * (1.0 - jzz) - jxz * jxz;
 }
@@ -549,10 +845,11 @@ vec3 dispAt(vec2 p, float age) {
   vec3 d = vec3(0.0);
   for (int i = 0; i < NLM; i++) {
     vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    if (a.z < 1e-3) continue;
-    float th = a.w * dot(a.xy, p) + b.x + b.w * age;
-    float c = cos(th);
-    d += vec3(a.x * b.y * a.z * c, a.z * sin(th), a.y * b.y * a.z * c);
+    if (a.z >= 1e-3) {
+      float th = a.w * dot(a.xy, p) + b.x + b.w * age;
+      float c = cos(th);
+      d += vec3(a.x * b.y * a.z * c, a.z * sin(th), a.y * b.y * a.z * c);
+    }
   }
   return d;
 }
@@ -714,14 +1011,36 @@ export class Ocean {
       uDepth: { value: this.depthTex }, uDepthOrigin: { value: new THREE.Vector2(0, 0) }, uDepthSize: { value: this.depthSize }, uNight: { value: 0 },
       uRain: { value: 0 }, uStorm: { value: 0 }, uLevel: { value: 0 }, uDetail: { value: 1 }, uHs: { value: 0.8 },
       uShoreA: { value: noShoreTexture() }, uShoreB: { value: noShoreTexture() }, uShoreRectA: { value: new THREE.Vector4(0, 0, 1, 0) }, uShoreRectB: { value: new THREE.Vector4(0, 0, 1, 0) },
-      uPixAng: { value: 0.0016 }, uMssSub: { value: 0.02 }, uSigLM: { value: 0.05 }, uFoamA: { value: 3 }, uFoamSoft: { value: 0.9 }, uFoamK: { value: 0 }, uStreak: { value: 0 }, uOldMean: { value: 0 }, uGrpOff: { value: new THREE.Vector2() }, uGrpK: { value: 0 }, uSigB: { value: 0.05 },
+      uPixAng: { value: 0.0016 }, uSigLM: { value: 0.05 }, uFoamA: { value: 3 }, uFoamSoft: { value: 0.9 }, uFoamK: { value: 0 }, uStreak: { value: 0 }, uOldMean: { value: 0 }, uGrpOff: { value: new THREE.Vector2() }, uGrpK: { value: 0 }, uSigB: { value: 0.05 },
       uFoamTex: { value: noShoreTexture() }, uFoamOff: { value: new THREE.Vector2() }, uFoamShift: { value: new THREE.Vector2() }, uFoamW: { value: FOAM_W }, uFoamOn: { value: 0 },
       uPatOff: { value: new THREE.Vector2() },
+      // glitter roughness / ripples / cat's-paws
+      uSig0: { value: new THREE.Vector3(0.004, 0.004, 0) }, uDet: { value: DET.map(() => new THREE.Vector4()) }, uNDet: { value: NDET },
+      uPawOff: { value: new THREE.Vector2() }, uPawC: { value: 0 },
+      // ship wakes: local simulation + analytic Kelvin wakes
+      uWakeTex: { value: noShoreTexture() }, uWakeRect: { value: new THREE.Vector4(0, 0, 1, 0) }, uWakeTexel: { value: 1 / 256 },
+      uKelA: { value: Array.from({ length: MAXKEL }, () => new THREE.Vector4()) }, uKelB: { value: Array.from({ length: MAXKEL }, () => new THREE.Vector4(0, 0, 1, 1)) },
+      uKelC: { value: Array.from({ length: MAXKEL }, () => new THREE.Vector4()) }, uKelN: { value: 0 },
+      uLiteThr: { value: 0 }, uLiteSoft: { value: 0.05 },
     };
     this.uniforms.uCutN = { value: 0.0 };                                   // lock chambers (wwmesh.cutouts): up to 8 quads, world xz
-    this.uniforms.uCutA = { value: Array.from({ length: 4 }, () => new THREE.Vector4()) };   // p0.xz, p1.xz
-    this.uniforms.uCutB = { value: Array.from({ length: 4 }, () => new THREE.Vector4()) };   // p2.xz, p3.xz
-    this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG.replace('void main() {', CUT_GLSL + 'void main() {\n  if (inCut(vWorld.xz)) discard;'), fog: true });
+    this.uniforms.uCutA = { value: Array.from({ length: 8 }, () => new THREE.Vector4()) };   // p0.xz, p1.xz
+    this.uniforms.uCutB = { value: Array.from({ length: 8 }, () => new THREE.Vector4()) };   // p2.xz, p3.xz
+    // three shader tiers on the SAME uniforms: 2 = full (per-pixel spectrum, LEAN glitter, foam, wake sim),
+    // 1 = lite (vertex spectrum, mediump-safe), 0 = basic (flat lit colour). The highest one this GPU compiles, links
+    // and actually draws with is used (see init / selfTest); a slow GPU drops to lite through setQuality.
+    const cut = (f) => f.replace('void main() {', CUT_GLSL + 'void main() {\n  if (inCut(vWorld.xz)) discard;');
+    this.mats = [
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: BASIC_VERT, fragmentShader: BASIC_FRAG, fog: true }),
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: LITE_VERT, fragmentShader: cut(LITE_FRAG), fog: true }),
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: cut(FRAG), fog: true }),
+    ];
+    this.mats.forEach((m, i) => { m.name = `ocean-${['basic', 'lite', 'full'][i]}`; });
+    this.matCap = 2; this.matLevel = 2; this.matOk = [null, null, null]; this.matWatch = 0;
+    this.material = this.mats[2];
+    // ships fed by the game each frame (feedShip) → analytic Kelvin wakes + the local wake simulation
+    this.ships = new Map(); this.kel = []; this.wake = null; this.wakeWant = false; this.simShips = [];
+    this.detAng = 0; this.detPh = Float64Array.from(DET, (d) => d.ph); this.detKa = 0.02; this.paw = { x: 0, z: 0 };
     const prep = (renderer, scene2, camera) => this.prepare(renderer, camera);
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
     this.mesh.frustumCulled = false; this.mesh.renderOrder = 1; this.mesh.onBeforeRender = prep;
@@ -757,6 +1076,7 @@ export class Ocean {
     scene.add(this.spray);
     this._v2 = new THREE.Vector2();
     this.tier = -1;
+    this._renderer = null; this._inited = false;
     this.setQuality(defaultQuality());
     this.setWind(5, 240);
     this.snapSea();
@@ -773,7 +1093,10 @@ export class Ocean {
     u.uDetail.value = q;
     u.uNShortFrag.value = Math.round(2 + 4 * q);
     u.uVertShort.value = q >= 0.4 ? 1 : 0;
+    u.uNDet.value = q >= 0.75 ? NDET : q >= 0.4 ? 8 : 4;
     const tier = q >= 0.75 ? 2 : q >= 0.4 ? 1 : 0;
+    this.wakeWant = q >= 0.75;                     // the local wake simulation: desktop-class GPUs only
+    this.applyMaterial(tier);
     if (tier === this.tier) return;
     this.tier = tier;
     const { n, s0 } = TIERS[tier];
@@ -892,7 +1215,7 @@ export class Ocean {
   /** Lock chamber footprints in world xz (4 points each): the ocean is not drawn there (the chamber water mesh is). */
   setCutouts(quads = []) {
     const u = this.uniforms; if (!u.uCutN) return;
-    const q8 = quads.filter((q) => q && q.length >= 4).slice(0, 8); u.uCutN.value = q8.length;
+    const q8 = quads.filter((q) => q && q.length >= 4).slice(0, u.uCutA.value.length); u.uCutN.value = q8.length;
     q8.forEach((q, i) => { u.uCutA.value[i].set(q[0][0], q[0][1], q[1][0], q[1][1]); u.uCutB.value[i].set(q[2][0], q[2][1], q[3][0], q[3][1]); });
   }
   setLevel(y) { this.level = Number.isFinite(y) ? y : 0; oceanState.level = this.level; }
@@ -1002,9 +1325,19 @@ export class Ocean {
     u.uStreak.value = smooth01(12, 22, U);
     u.uOldMean.value = 0.35 * smooth01(8, 26, U) + 0.2 * smooth01(20, 32, U);   // Bft 10+: the sea takes a white appearance
     this.stats.foamThr = 1 - u.uFoamA.value * this.stats.sigLM;
-    // glitter roughness: Cox–Munk total slope variance minus what the spectrum resolves (never below 35 %)
+    // glitter roughness: Cox–Munk total slope variance minus what the spectrum resolves (never below 35 %); 70 % of it is
+    // carried by the ripple waves (sharp sparkles near the camera, roughness where unresolved), 30 % stays sub-ripple
+    // residual, split upwind / crosswind like Cox–Munk (σu² = 0.00316·U, σc² = 0.003 + 0.00192·U)
     const cm = 0.003 + 0.00512 * U;
-    u.uMssSub.value = Math.max(0.35 * cm, cm - mss);
+    const D = Math.max(0.35 * cm, cm - mss);
+    this.detKa = Math.sqrt((2 * 0.7 * D) / NDET);
+    const su = 0.3 * D * (0.00316 * U + 0.0005) / cm, sc = 0.3 * D * (0.003 + 0.00192 * U - 0.0005) / cm;
+    const tw = (this.windDir + 180) * D2R, wx = Math.sin(tw), wz = -Math.cos(tw);
+    u.uSig0.value.set(su * wx * wx + sc * wz * wz, su * wz * wz + sc * wx * wx, (su - sc) * wx * wz);
+    // cat's-paws: patchy ripples in light air, uniform once the wind drives the sea
+    u.uPawC.value = 1 - smooth01(3.5, 9, U);
+    // lite tier whitecaps: the vertex Jacobian against the same Monahan threshold
+    u.uLiteThr.value = 1 - u.uFoamA.value * this.stats.sigLM; u.uLiteSoft.value = 0.9 * this.stats.sigLM + 1e-4;
   }
   /** Phase table of the CPU pack for time t (cached per t). */
   _phaseFor(t) {
@@ -1117,6 +1450,26 @@ export class Ocean {
       if (this.ph[i] > 1e4 || this.ph[i] < -1e4) this.ph[i] %= TAU;
     }
     this.refreshTable(time);
+    if (this._renderer) this.checkTier();
+    // ripple directions follow the wind travel direction (≤ 0.25 rad/s), phases held at the view centre
+    {
+      const tgt = (this.windDir + 180) * D2R;
+      if (!this.detInit) { this.detAng = tgt; this.detInit = true; }
+      let d = tgt - this.detAng; d = Math.atan2(Math.sin(d), Math.cos(d));
+      if (Math.abs(d) > 1e-4) {
+        const step = Math.sign(d) * Math.min(Math.abs(d), 0.25 * dt), vx = this.view.x + this.frameF.x, vz = this.view.z + this.frameF.z;
+        for (let i = 0; i < NDET; i++) {
+          const a0 = this.detAng + DET[i].off, a1 = a0 + step;
+          this.detPh[i] += DET[i].k * ((Math.sin(a0) - Math.sin(a1)) * vx + (-Math.cos(a0) + Math.cos(a1)) * vz);
+          if (this.detPh[i] > 1e4 || this.detPh[i] < -1e4) this.detPh[i] %= TAU;
+        }
+        this.detAng += step;
+      }
+      // cat's-paw patches drift downwind
+      const sp = 0.5 * this.wind * dt;
+      this.paw.x = posMod(this.paw.x + Math.sin(tgt) * sp, GRP_PERIOD); this.paw.z = posMod(this.paw.z - Math.cos(tgt) * sp, GRP_PERIOD);
+    }
+    this.updateWakes(dt);
     // wave-group field drifts with the dominant waves at the group velocity g·Tp/4π
     const cg = (G * this.stats.tp) / (4 * Math.PI), ta = (this.seaTravel ?? this.windDir + 180) * D2R;
     this.grp.x = posMod(this.grp.x + Math.sin(ta) * cg * dt, GRP_PERIOD); this.grp.z = posMod(this.grp.z - Math.cos(ta) * cg * dt, GRP_PERIOD);
@@ -1133,11 +1486,11 @@ export class Ocean {
     }
     // foam accumulation at a fixed 20 Hz (needs the renderer, captured on the first draw)
     this.foamAcc += dt;
-    if (this._renderer && u.uFoamK.value > 0 && this.foamAcc >= 0.05) { this.runFoam(this._renderer, Math.min(this.foamAcc, 0.25)); this.foamAcc = 0; }
+    if (this._renderer && this.matLevel === 2 && u.uFoamK.value > 0 && this.foamAcc >= 0.05) { this.runFoam(this._renderer, Math.min(this.foamAcc, 0.25)); this.foamAcc = 0; }
     else if (u.uFoamK.value <= 0) { u.uFoamOn.value = 0; this.foamPrev = null; }
     // spindrift
     const sprayK = smooth01(14, 24, this.wind) * Math.min(1, this.hs / 1.5);
-    this.spray.visible = sprayK > 0.01;
+    this.spray.visible = sprayK > 0.01 && this.matLevel === 2;
     const su = this.sprayUniforms;
     su.uTime.value = time; su.uFrac.value = sprayK * 0.9;
     su.uThr.value = 1 - (u.uFoamA.value + 0.1) * this.stats.sigLM; su.uSoft.value = 0.6 * this.stats.sigLM + 1e-4;
@@ -1147,9 +1500,168 @@ export class Ocean {
     oceanState.time = time; oceanState.level = this.level; oceanState.hs = this.hs; oceanState.wind = this.wind; oceanState.windDir = this.windDir;
     active = this;
   }
+  // ------------------------------------------------------------------ GPU tiers (mobile-safe fallback chain)
+  /**
+   * Bind the renderer (main.js calls this once after creating the ocean; otherwise the first draw does). Picks the
+   * highest shader tier the GPU's limits allow, then the first update() self-tests it: the program must link AND draw
+   * a non-black sea into a corner of the canvas, else the next tier down is tried (full → lite → basic) with a
+   * console.error naming the cause. A black / missing sea is never the result of a shader problem.
+   */
+  init(renderer) {
+    if (!renderer || this._inited) return;
+    this._renderer = renderer; this._inited = true;
+    const c = renderer.capabilities || {};
+    const info = { webgl2: !!c.isWebGL2, precision: c.precision, maxFragmentUniforms: c.maxFragmentUniforms, maxVertexUniforms: c.maxVertexUniforms, maxVaryings: c.maxVaryings, maxTextures: c.maxTextures, maxVertexTextures: c.maxVertexTextures };
+    this.gpu = info;
+    // full: ~150 fragment uniform vectors, 7 samplers, highp per-pixel phases (|k·x| up to 10⁴ rad), a vertex texture
+    let cap = 2;
+    if (!c.isWebGL2 || c.precision !== 'highp' || (c.maxFragmentUniforms || 0) < 200 || (c.maxVertexUniforms || 0) < 128 || (c.maxVaryings || 0) < 8 || (c.maxTextures || 0) < 8 || (c.maxVertexTextures || 0) < 1) cap = 1;
+    // lite: ~70 fragment / ~60 vertex uniform vectors, 6 varyings
+    if (cap === 1 && ((c.maxFragmentUniforms || 0) < 64 || (c.maxVertexUniforms || 0) < 96 || (c.maxVaryings || 0) < 8)) cap = 0;
+    if (cap < 2) console.warn(`[ocean] GPU limits → ${['basic', 'lite'][cap]} sea shader`, info);
+    this.matCap = cap;
+    this.applyMaterial(this.tier < 0 ? 2 : this.tier);
+  }
+  /** Material for a quality tier, capped by what the GPU proved it can run. */
+  applyMaterial(tier) {
+    const lvl = Math.min(this.matCap, tier === 0 ? 1 : 2);
+    if (lvl === this.matLevel && this.material === this.mats[lvl]) return;
+    this.matLevel = lvl; this.material = this.mats[lvl];
+    this.mesh.material = this.material; this.far.material = this.material;
+    this.matWatch = 0;
+    if (lvl < 2) { this.uniforms.uFoamOn.value = 0; this.foamPrev = null; }
+  }
+  /** Self-test / link check of the active tier; on failure step down and say why. */
+  checkTier() {
+    const r = this._renderer, lvl = this.matLevel;
+    if (!r) return;
+    if (this.matOk[lvl] === null) {
+      let ok = true, why = '';
+      try { const t = this.selfTest(lvl); ok = t.ok; why = t.why; } catch (e) { ok = true; console.warn('[ocean] sea self-test skipped', e); }
+      this.matOk[lvl] = ok;
+      if (!ok) return this.failTier(lvl, why);
+    }
+    // the screen variant of the program (fog / tone mapping) is a separate link: watch it for a few seconds
+    if (this.matWatch < 600) {
+      this.matWatch++;
+      const p = r.properties.get(this.material)?.currentProgram;
+      if (p && p.diagnostics && p.diagnostics.runnable === false) this.failTier(lvl, 'program failed to link: ' + (p.diagnostics.programLog || p.diagnostics.fragmentShader?.log || p.diagnostics.vertexShader?.log || '').slice(0, 400));
+    }
+  }
+  failTier(lvl, why) {
+    const name = ['basic', 'lite', 'full'][lvl];
+    if (lvl === 0) { console.error(`[ocean] even the basic sea shader failed (${why}); nothing left to fall back to`, this.gpu); this.matOk[0] = true; return; }
+    console.error(`[ocean] the ${name} sea shader cannot be used on this GPU (${why}) — falling back to ${['basic', 'lite'][lvl - 1]}`, this.gpu);
+    this.matOk[lvl] = false;
+    this.matCap = lvl - 1;
+    this.applyMaterial(this.tier);
+    if (this.wake) { this.wake.dispose(); this.wake = null; }
+  }
+  /** Draw the sea with tier `lvl` into a 24-px corner of the canvas (before the frame is drawn) and read it back. */
+  selfTest(lvl) {
+    const r = this._renderer, gl = r.getContext();
+    if (!this._test) {
+      const g = new THREE.PlaneGeometry(400, 400, 8, 8); g.rotateX(-Math.PI / 2);
+      const mesh = new THREE.Mesh(g, this.mats[lvl]); mesh.frustumCulled = false;
+      const scene = new THREE.Scene(); scene.add(mesh);
+      this._test = { scene, mesh, cam: new THREE.PerspectiveCamera(50, 1, 0.5, 3000) };
+    }
+    const T = this._test, u = this.uniforms;
+    T.mesh.material = this.mats[lvl];
+    T.scene.fog = this.scene.fog || null;
+    const saved = { c: u.uC.value.clone(), cut: u.uCutN.value, night: u.uNight.value, wake: u.uWakeRect.value.w, kel: u.uKelN.value };
+    u.uC.value.set(0, 0); u.uCutN.value = 0; u.uNight.value = 0; u.uWakeRect.value.w = 0; u.uKelN.value = 0;
+    T.cam.position.set(0, this.level + 35, 45); T.cam.lookAt(0, this.level, 0); T.cam.updateMatrixWorld();
+    const prevRT = r.getRenderTarget(), vp = new THREE.Vector4(), sc = new THREE.Vector4();
+    r.getViewport(vp); r.getScissor(sc);
+    const scT = r.getScissorTest(), cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha(), ac = r.autoClear;
+    const px = new Uint8Array(8 * 8 * 4);
+    let why = '';
+    try {
+      r.setRenderTarget(null);
+      r.setViewport(0, 0, 24, 24); r.setScissor(0, 0, 24, 24); r.setScissorTest(true);
+      r.setClearColor(0xff00ff, 1); r.autoClear = true;
+      r.render(T.scene, T.cam);
+      const d = Math.floor(24 * r.getPixelRatio()), o = Math.max(0, Math.floor(d / 2) - 4);
+      gl.readPixels(o, o, 8, 8, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    } finally {
+      r.setRenderTarget(prevRT); r.setViewport(vp); r.setScissor(sc); r.setScissorTest(scT); r.setClearColor(cc, ca); r.autoClear = ac;
+      u.uC.value.copy(saved.c); u.uCutN.value = saved.cut; u.uNight.value = saved.night; u.uWakeRect.value.w = saved.wake; u.uKelN.value = saved.kel;
+    }
+    const prog = r.properties.get(this.mats[lvl])?.currentProgram;
+    if (prog && prog.diagnostics && prog.diagnostics.runnable === false) return { ok: false, why: 'program failed to link: ' + (prog.diagnostics.programLog || prog.diagnostics.fragmentShader?.log || '').slice(0, 400) };
+    let good = 0, magenta = 0, black = 0;
+    for (let i = 0; i < 64; i++) {
+      const R = px[i * 4], Gc = px[i * 4 + 1], B = px[i * 4 + 2];
+      if (R > 235 && Gc < 25 && B > 235) magenta++; else if (R + Gc + B < 6) black++; else good++;
+    }
+    if (good >= 32) return { ok: true, why: '' };
+    why = magenta > black ? `drew nothing (${magenta}/64 pixels untouched)` : `drew black / NaN (${black}/64 pixels)`;
+    return { ok: false, why };
+  }
+
+  // ------------------------------------------------------------------ ship wakes
+  /**
+   * Report a ship for this frame (main.js shipVisual): key = any stable object (the mesh); s = { x, z (local frame),
+   * hdg (rad, compass), spd (kn, signed), length, beam, draft, throttle (−1..1), own }. Ships not reported for a second
+   * are forgotten. The player's ship drives the local simulation; it and the nearest others get analytic Kelvin wakes.
+   */
+  feedShip(key, s) {
+    if (!key || !s || !Number.isFinite(s.x) || !Number.isFinite(s.z)) return;
+    const X = s.x + this.frameF.x, Z = s.z + this.frameF.z;
+    let e = this.ships.get(key);
+    if (!e) { e = { px: X, pz: Z }; this.ships.set(key, e); }
+    else if (e.t !== this.time) { e.px = e.x; e.pz = e.z; }
+    e.x = X; e.z = Z; e.t = this.time;
+    const h = Number(s.hdg) || 0;
+    e.fx = Math.sin(h); e.fz = -Math.cos(h);
+    e.spd = (Number(s.spd) || 0) * 0.514444; e.len = Math.max(4, Number(s.length) || 30); e.beam = Math.max(1.5, Number(s.beam) || e.len / 6);
+    e.draft = Math.max(0.3, Number(s.draft) || e.len / 18); e.throttle = Number(s.throttle) || 0; e.own = !!s.own;
+  }
+  updateWakes(dt) {
+    // forget ships that were not reported recently (sunk, out of range, despawned)
+    for (const [k, e] of this.ships) if (this.time - e.t > 1.0 || this.time < e.t) this.ships.delete(k);
+    const cx = (this.lastCam ? this.lastCam.x : 0) + this.frameF.x, cz = (this.lastCam ? this.lastCam.z : 0) + this.frameF.z;
+    const list = [...this.ships.values()].sort((a, b) => (b.own - a.own) || (Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz))).slice(0, Math.min(MAXKEL, WAKE_MAX_SHIPS));
+    const own = list.find((e) => e.own) || null;
+    // local simulation (desktop-class GPUs, full tier)
+    if (this.wakeWant && this.matLevel === 2 && this._renderer && !this.wake && this.wakeOk !== false) {
+      this.wakeOk = WakeSim.supported(this._renderer);
+      if (this.wakeOk) { this.wake = new WakeSim(this._renderer, 384); if (!this.wake.ok) { this.wake.dispose(); this.wake = null; this.wakeOk = false; } }
+    }
+    if (this.wake && (!this.wakeWant || this.matLevel < 2)) { this.wake.dispose(); this.wake = null; }
+    this.wakeLive = false;
+    const inSim = new Set();
+    if (this.wake && own) {
+      this.wake.setShipLength(own.len);
+      const sim = [];
+      for (const e of list) {
+        const U = Math.abs(e.spd);
+        sim.push({ x: e.x, z: e.z, x0: e.px, z0: e.pz, fx: e.fx, fz: e.fz, len: e.len, beam: e.beam, draft: e.draft, spd: U, wash: (U > 0.3 || Math.abs(e.throttle) > 0.05) ? Math.min(1, Math.abs(e.throttle) * 0.7 + U / 10) : 0 });
+      }
+      this.wakeLive = this.wake.step(dt, { x: own.x, z: own.z }, sim) || !!this.wake.rect();
+      const r = this.wake.rect();
+      // the simulation draws the near wake of every ship whose hull is inside its domain
+      if (r) for (const e of list) if (e.x > r.x + e.len && e.z > r.z + e.len && e.x < r.x + r.L - e.len && e.z < r.z + r.L - e.len) inSim.add(e);
+    }
+    // analytic Kelvin wakes (all tiers): k0 = g/U², amplitude from the hull's Froude number
+    this.kel = [];
+    for (const e of list) {
+      const U = Math.abs(e.spd);
+      if (U < 0.8) continue;
+      const Fr = U / Math.sqrt(G * e.len), sgn = e.spd < 0 ? -1 : 1;
+      this.kel.push({
+        x: e.x, z: e.z, fx: e.fx * sgn, fz: e.fz * sgn, k0: G / (U * U), len: e.len, beam: e.beam,
+        amp: Math.min(0.8, 0.022 * e.beam * smooth01(0.06, 0.3, Fr)) * (sgn < 0 ? 0.4 : 1),
+        reach: Math.min(4000, 30 * e.len + 400), foam: smooth01(1.5, 7, U) * (0.55 + 0.45 * Math.min(1, Math.abs(e.throttle))),
+        sim: this.wakeLive && inSim.has(e) ? 1 : 0,
+      });
+    }
+  }
+
   /** Per draw (onBeforeRender of the meshes): centre the grid where the camera looks, snap it, re-reference the phases. */
   prepare(renderer, camera) {
-    if (renderer) this._renderer = renderer;
+    if (renderer && !this._inited) this.init(renderer);
     if (!camera || !camera.matrixWorld) return;
     const e = camera.matrixWorld.elements, cx = e[12], cy = e[13], cz = e[14];
     const fx = -e[8], fz = -e[10], hl = Math.hypot(fx, fz);
@@ -1161,6 +1673,25 @@ export class Ocean {
     u.uC.value.set(Cx, Cz); u.uVrel.value.set(vx - Cx, vz - Cz);
     const B = u.uWaveB.value;
     for (let i = 0; i < NW; i++) B[i].x = wrapTau(this.tph[i] + this.k[i] * (this.dx[i] * Cx + this.dz[i] * Cz));
+    // ripples: phase referenced to the grid origin (invariant frame, double precision on the CPU)
+    const Fx0 = this.frameF.x, Fz0 = this.frameF.z, Dt = u.uDet.value, t = this.time;
+    for (let i = 0; i < NDET; i++) {
+      const d = DET[i], a = this.detAng + d.off, ddx = Math.sin(a), ddz = -Math.cos(a);
+      Dt[i].set(d.k * ddx, d.k * ddz, wrapTau(this.detPh[i] - d.w * t + d.k * (ddx * (Cx + Fx0) + ddz * (Cz + Fz0))), this.detKa);
+    }
+    u.uPawOff.value.set(-this.paw.x, -this.paw.z);
+    // analytic Kelvin wakes, relative to the grid origin
+    const KA = u.uKelA.value, KB = u.uKelB.value, KC = u.uKelC.value;
+    let nk = 0;
+    for (const k of this.kel) {
+      if (nk >= MAXKEL) break;
+      KA[nk].set(k.x - Fx0 - Cx, k.z - Fz0 - Cz, k.fx, k.fz); KB[nk].set(k.k0, k.amp, k.len, k.reach); KC[nk].set(k.beam, k.foam, k.sim, 0);
+      nk++;
+    }
+    u.uKelN.value = nk;
+    const wr = this.wake && this.wake.ok ? this.wake.rect() : null;
+    if (wr && this.wakeLive) { u.uWakeRect.value.set(wr.x - Fx0 - Cx, wr.z - Fz0 - Cz, wr.L, 1); u.uWakeTexel.value = 1 / this.wake.n; u.uWakeTex.value = this.wake.texture; }
+    else { u.uWakeRect.value.w = 0; u.uWakeTex.value = noShoreTexture(); }
     if (camera.isPerspectiveCamera && renderer) {
       renderer.getDrawingBufferSize(this._v2);
       const t2 = 2 * Math.tan((camera.fov * D2R) / 2) / Math.max(1, camera.zoom || 1);
@@ -1245,7 +1776,9 @@ export class Ocean {
   dispose() {
     this.scene.remove(this.mesh); this.scene.remove(this.far); this.scene.remove(this.spray);
     this.mesh.geometry.dispose(); this.far.geometry.dispose(); this.spray.geometry.dispose();
-    this.material.dispose(); this.sprayMat.dispose(); this.depthTex.dispose(); this.shelterTex.dispose();
+    this.mats.forEach((m) => m.dispose()); this.sprayMat.dispose();
+    if (this.wake) this.wake.dispose();
+    if (this._test) { this._test.mesh.geometry.dispose(); } this.depthTex.dispose(); this.shelterTex.dispose();
     this.foamScene.children[0].geometry.dispose(); this.foamScene.children[0].material.dispose();
     if (this.foamRT) this.foamRT.forEach((r) => r.dispose());
     if (active === this) active = null;
