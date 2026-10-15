@@ -532,7 +532,9 @@ export class SkySystem {
     this.hemi.intensity = eSky * (envActive ? 1 - ENV_SHARE : 1);
     this.envShare = envActive ? Math.min(ENV_SHARE, HEMI_CAP / Math.max(1e-6, Math.PI * hsMax) * ENV_SHARE) : 0;
     // ---- fog: the scene fog is mixed in display space after tone mapping, so give it the tone-mapped colour
-    const fogDisp = acesTone(fogRad, this.renderer.toneMappingExposure || 1);
+    // LIGHT: when the post chain tone-maps (lighting.js sets hdrFog), fog is mixed in linear HDR before OutputPass's
+    // ACES, so it gets the radiance itself (a fully fogged pixel then still displays as acesTone(fogRad))
+    const fogDisp = this.hdrFog ? fogRad : acesTone(fogRad, this.renderer.toneMappingExposure || 1);
     if (this.scene.fog) {
       const fog = this.scene.fog;
       fog.color.setRGB(fogDisp[0], fogDisp[1], fogDisp[2]);

@@ -51,6 +51,7 @@ export function diagReport(app) {
   } catch (e) { out.glError = String(e); }
   try { out.ocean = o?.diag ? o.diag() : (o ? { note: 'ocean has no diag()' } : null); } catch (e) { out.ocean = { error: String(e) }; }
   try { out.sky = app?.skySys ? { tier: app.skySys.tier, env: !!app.scene?.environment, envOn: app.skySys.envOn } : null; } catch { /* optional */ }
+  try { out.lighting = app?.lighting?.diag ? app.lighting.diag() : { note: app?.lighting === null ? 'lighting failed to start (see console)' : 'no lighting module' }; } catch (e) { out.lighting = { error: String(e) }; }
   try { out.fps = app?.qGov ? Math.round(1 / app.qGov.ema) : null; } catch { /* optional */ }
   out.log = LOG.map((l) => `${l.t}s ${l.kind}${l.n > 1 ? ' x' + l.n : ''}: ${l.text}`);
   return out;
@@ -61,6 +62,8 @@ export function diagText(rep) {
   for (const k of ['at', 'url', 'ua', 'screen', 'touch', 'gpu', 'vendor', 'webgl', 'glsl', 'depthBits', 'stencilBits', 'colorBits', 'drawingBuffer', 'contextLost', 'pixelRatio', 'fps', 'programs', 'render', 'ext', 'caps', 'brokenPrograms', 'sky', 'glError']) if (rep[k] !== undefined) kv(k, rep[k]);
   lines.push('--- ocean');
   if (rep.ocean) for (const [k, v] of Object.entries(rep.ocean)) kv(k, v);
+  lines.push('--- lighting');
+  if (rep.lighting) for (const [k, v] of Object.entries(rep.lighting)) kv(k, v);
   lines.push(`--- console (${rep.log.length})`);
   for (const l of rep.log) lines.push(l);
   return lines.join('\n');
