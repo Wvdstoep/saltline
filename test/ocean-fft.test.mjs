@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Ocean, OCEAN_SHADERS, SEA_RUNGS, FFT_RUNGS, seaBudget, seaShader } from '../public/js/ocean2.js';
 import { budgetFits } from '../public/js/glslbudget.js';
-import { fftStockhamCPU, fftBands, fftNormalise, fftMemoryBytes, jonswapS, specParts, travelVec, FFT_L, FFT_SHADERS } from '../public/js/oceanfft.js';
+import { fftStockhamCPU, fftBands, fftNormalise, fftMemoryBytes, jonswapS, specParts, travelVec, FFT_L, FFT_SHADERS, fftComponents, T_REP } from '../public/js/oceanfft.js';
 
 const fakeScene = () => ({ add() {}, remove() {}, fog: null });
 const SEAS = [
@@ -172,4 +172,90 @@ test('texture units per sea program (vertex + fragment + sun-shadow chunk) stay 
   }
   for (const k of ['foamFft', 'sprayFft']) assert.ok(units(OCEAN_SHADERS[k]) <= 6, `${k}: ${units(OCEAN_SHADERS[k])}`);
   assert.equal(counts['fft+shadow'], 13, 'fft + shadow: 7 sea + 3 cascade arrays + 3 shadow maps');
+});
+
+// ---------------------------------------------------------------------------------------------- ships ride the FFT
+// An Ocean whose drawn sea is the FFT (as after init on a desktop GPU), without a GPU: the physics spectrum is set from
+// fftNormalise exactly as the evolve pass's uniforms would be.
+function fftOcean(sea) {
+  const o = new Ocean(fakeScene()); o.setSea(sea); o.snapSea(); o.update(0, 0, 0, 1 / 60);
+  o.fftReady = true; o.rung[2] = -1; o.setRung(2, 0); o.fft = { n: 256, nc: 3, dispose() {} };
+  const p = o.fftSeaParams(), N = fftNormalise(p, 256, 3);
+  const U = { lo: N.bands.map((b) => b[0]), hi: N.bands.map((b) => b[1]), boost: [1, 1, N.boost], wind: [N.aW, N.wpW, ...N.dirW], swell: [N.aS, N.wpS || 1, ...N.dirS] };
+  o.physFromSpectrum(U, N.chop, 256, 3);
+  return { o, hs: Math.hypot(p.hsW, p.hsS), U };
+}
+// the drawn surface by direct summation of every wave the mesh shows (no grid, no interpolation), same inversion
+function drawnHeight(o, x, z, t) {
+  const g = o.fftPhys, U = o.physU, ch = o.physChop, tm = ((t % T_REP) + T_REP) % T_REP;
+  const fld = (X, Z) => {
+    let y = 0, dx = 0, dz = 0;
+    for (const p of g.cells) {
+      const sa = Math.sqrt(Math.max(0, p.pwA * U.wind[0] + p.psA * U.swell[0])) * p.sc, sb = Math.sqrt(Math.max(0, p.pwB * U.wind[0] + p.psB * U.swell[0])) * p.sc;
+      const ar = p.ga[0] * sa, ai = p.ga[1] * sa, br = p.gb[0] * sb, bi = p.gb[1] * sb, ph = p.wq * tm, c = Math.cos(ph), s = Math.sin(ph);
+      const hr = (ar * c - ai * s + br * c - bi * s) * p.resp, hi = (ar * s + ai * c - br * s - bi * c) * p.resp;
+      const th = p.kx * X + p.kz * Z, re = hr * Math.cos(th) - hi * Math.sin(th), im = hr * Math.sin(th) + hi * Math.cos(th);
+      y += 2 * re; dx -= 2 * im * ch[p.c] * p.kx / p.k; dz -= 2 * im * ch[p.c] * p.kz / p.k;
+    }
+    return [y, dx, dz];
+  };
+  const X = x + o.frameF.x, Z = z + o.frameF.z;
+  let px = X, pz = Z;
+  for (let i = 0; i < 8; i++) { const f = fld(px, pz); px = X - f[1]; pz = Z - f[2]; }
+  return fld(px, pz)[0];
+}
+
+test('ships ride the drawn FFT sea: heightAt agrees with the drawn surface within a few cm (2 m sea)', () => {
+  const { o, hs } = fftOcean({ windSpd: 8, windDir: 240, waveH: 1.0, wavePeriod: 5.5, swellH: 0.5, swellPeriod: 11 });
+  assert.ok(hs > 1.6 && hs < 2.8, `test sea Hs ${hs.toFixed(2)}`);
+  assert.ok(o.physFft); assert.match(o.diag().physics, /^fft \(/);
+  let s2 = 0, mx = 0, v = 0, n = 0;
+  for (const t of [3.5, 17.25, 40]) for (let i = 0; i < 10; i++) {
+    const x = i * 41.3 - 200, z = -i * 29.9 + 80, a = o.heightAt(x, z, t) - o.level, b = drawnHeight(o, x, z, t);
+    s2 += (a - b) ** 2; mx = Math.max(mx, Math.abs(a - b)); v += b * b; n++;
+  }
+  const rms = Math.sqrt(s2 / n), std = Math.sqrt(v / n);
+  assert.ok(std > 0.25, `the drawn sea is not flat (σ ${std.toFixed(2)} m)`);
+  assert.ok(rms < 0.03 && mx < 0.08, `heightAt vs drawn: rms ${(rms * 100).toFixed(1)} cm, max ${(mx * 100).toFixed(1)} cm`);
+  // pitch / roll: the normal is the drawn surface's (finite differences of the drawn height, 1 m apart)
+  const t = 9, x = 12, z = -30, N = o.normalAt(x, z, t), d = 0.5;
+  const gx = (drawnHeight(o, x + d, z, t) - drawnHeight(o, x - d, z, t)) / (2 * d), gz = (drawnHeight(o, x, z + d, t) - drawnHeight(o, x, z - d, t)) / (2 * d);
+  assert.ok(Math.abs(-N.x / N.y - gx) < 0.02 && Math.abs(-N.z / N.y - gz) < 0.02, `slope ${(-N.x / N.y).toFixed(3)},${(-N.z / N.y).toFixed(3)} vs drawn ${gx.toFixed(3)},${gz.toFixed(3)}`);
+  // a floating-origin shift keeps the ship on the same water
+  const h0 = o.heightAt(500, 200, 5); o.shiftOrigin(300, -100);
+  assert.ok(Math.abs(o.heightAt(200, 300, 5) - h0) < 1e-6, 'same water after shiftOrigin');
+});
+
+test('physics falls back to the Gerstner sea (bit for bit) whenever the FFT is not drawn', () => {
+  const { o } = fftOcean({ windSpd: 22, windDir: 300, waveH: 6, wavePeriod: 10, swellH: 2, swellDir: 280, swellPeriod: 13, storm: 1 });
+  const g = new Ocean(fakeScene()); g.setSea({ windSpd: 22, windDir: 300, waveH: 6, wavePeriod: 10, swellH: 2, swellDir: 280, swellPeriod: 13, storm: 1 }); g.snapSea(); g.update(0, 0, 0, 1 / 60);
+  assert.notEqual(o.heightAt(12.5, -7.25, 1.5), g.heightAt(12.5, -7.25, 1.5));
+  o.dropFft('test');                                          // FFT gone (e.g. its rung failed) → Gerstner again
+  assert.equal(o.diag().physics, 'gerstner');
+  assert.equal(o.heightAt(12.5, -7.25, 1.5), g.heightAt(12.5, -7.25, 1.5));
+});
+
+test('the CPU spectrum mirror carries the normalised sea (same Hs as the GPU spectrum)', () => {
+  const { U, o } = fftOcean({ windSpd: 8, windDir: 240, waveH: 1.0, wavePeriod: 5.5, swellH: 0.5, swellPeriod: 11 });
+  const all = fftComponents(U, 256, [0, 1]);
+  const hs = 4 * Math.sqrt(2 * all.total), want = Math.hypot(...fftNormalise(o.fftSeaParams(), 256, 3).hs.slice(0, 2));
+  assert.ok(Math.abs(hs / want - 1) < 0.25, `realised Hs ${hs.toFixed(2)} vs spectrum ${want.toFixed(2)}`);
+});
+
+test('small / sailing hulls leave a faint narrow wash; a ship keeps its white wake; far glitter is capped', () => {
+  const o = new Ocean(fakeScene()); o.setSea({ windSpd: 11, windDir: 240 }); o.update(1, 0, 0, 1 / 60);
+  const sloop = {}, ship = {};
+  o.feedShip(sloop, { x: 0, z: 0, hdg: 0, spd: 4.7, length: 11, beam: 3.5, draft: 1.8, throttle: 0, own: true, sail: true });
+  o.feedShip(ship, { x: 900, z: 0, hdg: 0, spd: 16, length: 200, beam: 32, draft: 11, throttle: 0.8 });
+  o.update(1.02, 0, 0, 1 / 60);
+  o.feedShip(sloop, { x: 0, z: -0.05, hdg: 0, spd: 4.7, length: 11, beam: 3.5, draft: 1.8, throttle: 0, own: true, sail: true });
+  o.feedShip(ship, { x: 900, z: -0.16, hdg: 0, spd: 16, length: 200, beam: 32, draft: 11, throttle: 0.8 });
+  o.update(1.04, 0, 0, 1 / 60);
+  const ks = o.kel.find((k) => k.len === 11), kb = o.kel.find((k) => k.len === 200);
+  assert.ok(ks && kb);
+  assert.ok(ks.foam < 0.12, `sloop wash ${ks.foam.toFixed(3)}`);
+  assert.ok(kb.foam > 0.7, `ship wash ${kb.foam.toFixed(3)}`);
+  const f = OCEAN_SHADERS.full.frag;
+  assert.ok(/float spr = min\(1\.0, KC\.x \/ 12\.0\)/.test(f), 'Kelvin wash width scales with the beam');
+  assert.ok(/min\(glint\(uSunDir, N, V, sig, vh, ndv\), gCap\)/.test(f) && /float gCap = 8\.0 \/ \(1\.0 \+ 40\.0 \* rough\)/.test(f), 'glitter cap falls with roughness / at the horizon');
 });

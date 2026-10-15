@@ -49,10 +49,14 @@
 // CPU mirror: heightAt / displacementAt / normalAt sum the same long+mid components (Newton-inverted horizontal
 // displacement, table sin/cos) so ships ride the drawn waves; setShelter(fn) damps the sea inside harbours on both sides;
 // shiftOrigin(px, pz) keeps everything on the same water across a floating-origin shift.
+// FFT ocean (desktop, oceanfft.js): while the FFT is drawn, heightAt / displacementAt / normalAt follow IT instead —
+// a CPU inverse FFT of the same two long cascades (same hashed Gaussians, spectrum and time), weighted by what the
+// sea mesh shows, on 128² + 64² grids (agrees with the GPU texture to ~2 mm, with the drawn mesh to ~1–2 cm rms);
+// phones and every fallback keep the Gerstner sums above, bit for bit. diag().physics names the surface in use.
 import * as THREE from 'three';
 import { WakeSim, WAKE_MAX_SHIPS } from './wakesim.js';
 import { glslBudget, budgetFits } from './glslbudget.js';
-import { FFTWaves, FFT_L } from './oceanfft.js';
+import { FFTWaves, FFT_L, FFTPhysicsGrid, evolveSnapshot } from './oceanfft.js';
 
 const G = 9.81, TAU = Math.PI * 2, D2R = Math.PI / 180;
 const NL = 10, NM = 6, NS = 4, NLM = NL + NM, NW = NLM + NS;
@@ -271,8 +275,9 @@ ${trk ? `      if (slot0 > 0.5 && KC.w > 0.5) { trackCoord(rel); xb = KB.z * 0.5
         // own ship's track wash fades with the age of the water (a full circle leaves a ring of foam)
         float xs = xb - KB.z;
         if (xs > 0.0 && KC.y > 0.0) {
-          float w = KC.x * 0.55 + (age >= 0.0 ? min(xs, 300.0) * 0.04 : xs * 0.05);
-          float fade = age >= 0.0 ? exp(-age / 45.0) : exp(-xs / (KB.z * 3.0 + 80.0));
+          float spr = min(1.0, KC.x / 12.0);                         // a small hull leaves a narrow trail
+          float w = KC.x * 0.55 + (age >= 0.0 ? min(xs, 300.0) * 0.04 : xs * 0.05) * spr;
+          float fade = age >= 0.0 ? exp(-age / clamp(KB.z * 1.5, 10.0, 45.0)) : exp(-xs / (KB.z * 3.0 + 80.0 * min(1.0, KB.z / 60.0)));
           gKf = max(gKf, (1.0 - cover) * KC.y * (1.0 - smoothstep(0.45 * w, w, ay)) * fade * smoothstep(0.0, 6.0, xs));
         }
       }
@@ -514,11 +519,15 @@ void main() {
 // Jacobian terms and second moments of all three (mipmapped + anisotropic: far water turns into LEAN roughness, never
 // stripes). Same accumulators and sign convention as the Gerstner path, so normal / foam / wakes below are unchanged.
 const FFT_VERT_PARS = /* glsl */`
-uniform highp sampler2DArray uFftD; uniform vec4 uFftOffA; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftTexel;`;
+uniform highp sampler2DArray uFftD; uniform vec4 uFftOffA; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftTexel;
+uniform sampler2D uShelterTex; uniform vec4 uShelterRect;`;
 const FFT_VERT_BODY = /* glsl */`
     vec2 fu0 = (rel + uFftOffA.xy) * uFftInvL.x; vec2 fu1 = (rel + uFftOffA.zw) * uFftInvL.y;
-    gDisp += textureLod(uFftD, vec3(fu0, 0.0), log2(max(1.0, 2.0 * ceff / uFftTexel.x))).xyz * (uFftW.x * rim);
-    gDisp += textureLod(uFftD, vec3(fu1, 1.0), log2(max(1.0, 2.0 * ceff / uFftTexel.y))).xyz * (uFftW.y * rim);`;
+    // sheltered water (harbours) is damped exactly as the physics damps it (heightAt rides this surface)
+    float fsh = 0.0;
+    if (uShelterRect.w > 0.5) { vec2 suv = (rel - uShelterRect.xy) / uShelterRect.z; if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) fsh = textureLod(uShelterTex, suv, 0.0).r; }
+    gDisp += textureLod(uFftD, vec3(fu0, 0.0), log2(max(1.0, 2.0 * ceff / uFftTexel.x))).xyz * (uFftW.x * rim * (1.0 - fsh));
+    gDisp += textureLod(uFftD, vec3(fu1, 1.0), log2(max(1.0, 2.0 * ceff / uFftTexel.y))).xyz * (uFftW.y * rim * (1.0 - 0.9 * fsh));`;
 const FFT_FRAG_PARS = /* glsl */`
 uniform highp sampler2DArray uFftT1; uniform highp sampler2DArray uFftT2;
 uniform vec4 uFftOffA; uniform vec2 uFftOffC; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftBrk;`;
@@ -607,7 +616,7 @@ function withShadow(frag, sh) {
   r('  float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0) * (1.0 - uNight * 0.9);', `  float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0) * (1.0 - uNight * 0.9);\n  float sunVis = clamp(${sh.fn}(vWorld), 0.0, 1.0);`);
   r('float lit = 0.65 + 0.35 * max(0.0, dot(N, uSunDir))', 'float lit = 0.65 + 0.35 * max(0.0, dot(N, uSunDir)) * sunVis');
   r('float sss = (back * 2.2 + side) * crestPow', 'float sss = (back * 2.2 + side) * crestPow * sunVis');
-  r('col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), 8.0) * sunUp', 'col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), 8.0) * sunUp * sunVis');
+  r('col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), gCap) * sunUp', 'col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), gCap) * sunUp * sunVis');
   return frag;
 }
 function fullFrag(v, cutMode, shadow = null) {
@@ -926,9 +935,12 @@ ${v.env ? `#ifdef ENVMAP_TYPE_CUBE_UV
   //     could not resolve (LEAN): sharp sparkles close by, a soft glitter path towards the sun far away, never bands.
   //     Capped and scaled so a daylight sea never shows white blotches; the moon is a dim second light.
   float ndl = max(dot(N, uSunDir), 0.0);
-  col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), 8.0) * sunUp * (1.0 - 0.7 * uStorm);
+  // the cap falls with the unresolved roughness (a far, rough patch is a soft path, never a saturated band) and
+  // towards the horizon (grazing view: the widened lobe would otherwise whiten a whole strip across the sun)
+  float gCap = 8.0 / (1.0 + 40.0 * rough) * mix(0.35, 1.0, smoothstep(0.02, 0.12, V.y));
+  col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), gCap) * sunUp * (1.0 - 0.7 * uStorm);
   float moonUp = clamp(uMoonDir.y * 4.0, 0.0, 1.0);
-  if (moonUp > 0.0 && dot(uMoonCol, uMoonCol) > 1e-6) col += uMoonCol * min(glint(uMoonDir, N, V, sig, vh, ndv), 8.0) * moonUp * (1.0 - 0.7 * uStorm);
+  if (moonUp > 0.0 && dot(uMoonCol, uMoonCol) > 1e-6) col += uMoonCol * min(glint(uMoonDir, N, V, sig, vh, ndv), gCap) * moonUp * (1.0 - 0.7 * uStorm);
   // --- foam: shore surf + harbour shore fields
   float n = vnoise(pp * 0.12 + uTime * 0.05) * 0.6 + vnoise(pp * 0.5 - uTime * 0.1) * 0.4;
   float surf = n + 0.12 * sin(uTime * 0.9 + depth * 1.6);
@@ -1576,7 +1588,7 @@ export class Ocean {
       chop: N ? N.chop.map((v) => +v.toFixed(2)) : null, sigJ: N ? +N.sigJ.toFixed(3) : null, fetchKm: N ? Math.round(N.fetch / 1000) : null,
       passes: `1 evolve + ${2 * Math.log2(f.n)} FFT + ${Math.min(f.nc, 2) * 3 + (f.nc > 2 ? 1 : 0)} assemble over ${2 * f.nc * f.n}×${f.n}`,
       sunShadow: this.shadow && !this.shadowFailed ? 'on (lighting hook)' : this.shadowFailed ? 'FAILED, off' : `off (${this.shadowWhy || 'no lighting hook'})`,
-      note: 'visual surface only: ships ride heightAt (Gerstner), same Hs / period / direction, different phases',
+      note: 'ships ride the drawn FFT surface (heightAt / normalAt from a CPU inverse FFT of the same spectrum); Gerstner only when the FFT is not drawn',
     };
   }
   /** Stop and free the FFT (its rung failed or a leaner tier took over for good); the Gerstner sea is drawn. */
@@ -1588,6 +1600,8 @@ export class Ocean {
     const f = this.fft, u = this.uniforms;
     f.setSea(this.fftSeaParams());
     const N = f.step(dt, this.time);
+    // the ships ride THIS surface: CPU inverse FFT of the drawn cascades (oceanfft.js FFTPhysicsGrid) for heightAt / normalAt
+    this.physFromSpectrum(evolveSnapshot(f.evolveU), [N.chop[0], f.nc > 1 ? N.chop[1] : 0], f.n, f.nc);
     this.fftStats = N;
     u.uFftW.value.set(1, f.nc > 1 ? 1 : 0, f.nc > 2 ? 1 : 0);
     u.uFftTexel.value.set(f.texel(0), f.texel(1));
@@ -1887,8 +1901,51 @@ export class Ocean {
     const E = this._E;
     E[0] = y; E[1] = ox; E[2] = oz; E[3] = sx; E[4] = sz; E[5] = jxx; E[6] = jzz; E[7] = jxz;
   }
+  /** Physics spectrum = the evolve pass's uniforms of this frame (U), choppiness per long cascade, FFT size / cascades. */
+  physFromSpectrum(U, chop, n, nc = 3) {
+    this.fftPhys ||= new FFTPhysicsGrid();
+    this.fftPhys.prepare(n, this.s0);
+    if (nc < 2) U.hi[1] = U.lo[1];
+    this.physU = U; this.physChop = chop; this.fftPhys.t = NaN;            // rebuilt lazily on the first query
+  }
+  /** Is heightAt following the FFT surface (desktop FFT drawn) rather than the Gerstner table? */
+  get physFft() { return !!(this.fftActive && this.fftPhys && this.physU); }
+  /** CPU grids of the drawn FFT surface for time t (rebuilt once per new t; ~1–2 ms). */
+  physFrame(t) { if (t !== this.fftPhys.t) this.fftPhys.frame(this.physU, t, this.physChop); }
+  /**
+   * The drawn FFT surface at the rest point (px, pz) into _E (same layout as _evalLM: y, horizontal displacement,
+   * slopes and Jacobian terms by central differences over ±0.5 m), shelter damping per cascade as on the GPU.
+   */
+  _evalFFT(px, pz, mL, mM) {
+    const g = this.fftPhys, X = px + this.frameF.x, Z = pz + this.frameF.z, h = 0.5, E = this._E;
+    let o = g.sample(X, Z, mL, mM); E[0] = o[0]; E[1] = o[1]; E[2] = o[2];
+    o = g.sample(X + h, Z, mL, mM); const yxp = o[0], dxxp = o[1];
+    o = g.sample(X - h, Z, mL, mM); const yxm = o[0], dxxm = o[1];
+    o = g.sample(X, Z + h, mL, mM); const yzp = o[0], dxzp = o[1], dzzp = o[2];
+    o = g.sample(X, Z - h, mL, mM); const yzm = o[0], dxzm = o[1], dzzm = o[2];
+    E[3] = (yxp - yxm) / (2 * h); E[4] = (yzp - yzm) / (2 * h);
+    E[5] = -(dxxp - dxxm) / (2 * h); E[6] = -(dzzp - dzzm) / (2 * h); E[7] = -(dxzp - dxzm) / (2 * h);
+  }
+  /** FFT counterpart of _invert (same Newton inversion of the horizontal displacement, 3 steps). */
+  _invertFft(x, z, t) {
+    this.physFrame(Number.isFinite(t) ? t : this.time);
+    let mL = 1, mM = 1;
+    if (this.shelterOn) { const s = this._shelterAt(x, z); mL = 1 - s; mM = 1 - 0.9 * s; }
+    const E = this._E;
+    let px = x, pz = z, ddx = 0, ddz = 0;
+    for (let it = 0; it < 3; it++) {
+      this._evalFFT(px, pz, mL, mM);
+      const Fx = px + E[1] - x, Fz = pz + E[2] - z;
+      if (Fx * Fx + Fz * Fz < 1e-6) { ddx = 0; ddz = 0; break; }
+      const a11 = 1 - E[5], a22 = 1 - E[6], a12 = -E[7], det = a11 * a22 - a12 * a12 || 1e-6;
+      ddx = -(a22 * Fx - a12 * Fz) / det; ddz = -(a11 * Fz - a12 * Fx) / det;
+      px += ddx; pz += ddz;
+    }
+    this._dpx = ddx; this._dpz = ddz; this._px = px; this._pz = pz;
+  }
   /** Find the rest point whose displaced position is (x, z) (Newton, ≤ 2 evaluations); leaves E at that point; returns the final correction step in _dp. */
   _invert(x, z, t) {
+    if (this.physFft) return this._invertFft(x, z, t);
     this._phaseFor(Number.isFinite(t) ? t : this.time);
     let mL = 1, mM = 1;
     if (this.shelterOn) { const s = this._shelterAt(x, z); mL = 1 - s; mM = 1 - 0.9 * s; }
@@ -1914,6 +1971,14 @@ export class Ocean {
   heightAt(x, z, time) { return this.level + this._height(x, z, Number.isFinite(time) ? time : this.time); }
   /** Lagrangian displacement {x, y, z} of the water particle whose rest position is (x, z) (no tide; long + mid). */
   displacementAt(x, z, time, out = { x: 0, y: 0, z: 0 }) {
+    if (this.physFft) {
+      this.physFrame(Number.isFinite(time) ? time : this.time);
+      let mL = 1, mM = 1;
+      if (this.shelterOn) { const s = this._shelterAt(x, z); mL = 1 - s; mM = 1 - 0.9 * s; }
+      this._evalFFT(x, z, mL, mM);
+      out.x = this._E[1]; out.y = this._E[0]; out.z = this._E[2];
+      return out;
+    }
     this._phaseFor(Number.isFinite(time) ? time : this.time);
     let mL = 1, mM = 1;
     if (this.shelterOn) { const s = this._shelterAt(x, z); mL = 1 - s; mM = 1 - 0.9 * s; }
@@ -2135,6 +2200,7 @@ export class Ocean {
       ships: this.ships.size, kelvin: this.kel.length, track: this.trackPts.length, spots: this.uniforms.uSpotN.value, env: this.uniforms.uEnvK.value > 0, frames: this.matChecks, upSec: Math.round((nowMs() - this.bornAt) / 1000),
       governor: { fps: Math.round(1 / Math.max(1e-3, this.gov.ema)), lastDrop: this.gov.lastDrop ? Math.round((nowMs() - this.gov.lastDrop) / 1000) + 's ago' : 'never', lastChange: this.gov.lastChange ? Math.round((nowMs() - this.gov.lastChange) / 1000) + 's ago' : 'never' },
       fft: this.fftDiag(),
+      physics: this.physFft ? `fft (CPU inverse FFT of the drawn cascades, ${this.fftPhys.cells.length} waves, 128² + 64², ${this.fftPhys.ms.toFixed(1)} ms)` : 'gerstner',
       rungs: this.rung.map((i, l) => this.rungsOf(l)[i]?.name ?? '?').join(' ') + (this.lowLimits ? ' (phone build: constant-index, no inout, alpha cut-outs)' : ' (desktop build)'),
       budget: { ...this.budget, limit: this.gpu ? `V${this.gpu.maxVertexUniforms}/F${this.gpu.maxFragmentUniforms} vec4, ${this.gpu.maxVaryings} varyings (rungs must fit with 32 to spare)` : 'no renderer yet' },
       gpu: this.gpu || null, tierLog: this.tierLog.slice(-16),
@@ -2285,7 +2351,7 @@ export class Ocean {
     const h = Number(s.hdg) || 0;
     e.fx = Math.sin(h); e.fz = -Math.cos(h);
     e.spd = (Number(s.spd) || 0) * 0.514444; e.len = Math.max(4, Number(s.length) || 30); e.beam = Math.max(1.5, Number(s.beam) || e.len / 6);
-    e.draft = Math.max(0.3, Number(s.draft) || e.len / 18); e.throttle = Number(s.throttle) || 0; e.own = !!s.own;
+    e.draft = Math.max(0.3, Number(s.draft) || e.len / 18); e.throttle = Number(s.throttle) || 0; e.own = !!s.own; e.sail = !!s.sail;
   }
   updateWakes(dt) {
     // forget ships that were not reported recently (sunk, out of range, despawned)
@@ -2306,7 +2372,7 @@ export class Ocean {
       const sim = [];
       for (const e of list) {
         const U = Math.abs(e.spd);
-        sim.push({ x: e.x, z: e.z, x0: e.px, z0: e.pz, fx: e.fx, fz: e.fz, len: e.len, beam: e.beam, draft: e.draft, spd: U, wash: (U > 0.3 || Math.abs(e.throttle) > 0.05) ? Math.min(1, Math.abs(e.throttle) * 0.7 + U / 10) : 0 });
+        sim.push({ x: e.x, z: e.z, x0: e.px, z0: e.pz, fx: e.fx, fz: e.fz, len: e.len, beam: e.beam, draft: e.draft, spd: U, wash: shipWash(e, U), size: hullSize(e.len) });
       }
       this.wakeLive = this.wake.step(dt, { x: own.x, z: own.z }, sim) || !!this.wake.rect();
       const r = this.wake.rect();
@@ -2324,7 +2390,7 @@ export class Ocean {
       this.kel.push({
         x: e.x, z: e.z, fx: e.fx * sgn, fz: e.fz * sgn, k0: G / (U * U), len: e.len, beam: e.beam,
         amp: Math.min(0.8, 0.022 * e.beam * smooth01(0.06, 0.3, Fr)) * (sgn < 0 ? 0.4 : 1),
-        reach: Math.min(4000, 30 * e.len + 400), foam: smooth01(1.5, 7, U) * (0.55 + 0.45 * Math.min(1, Math.abs(e.throttle))),
+        reach: Math.min(4000, 30 * e.len + 400), foam: (e.sail ? 0.5 * smooth01(0.12, 0.45, Fr) : smooth01(1.5, 7, U) * (0.55 + 0.45 * Math.min(1, Math.abs(e.throttle)))) * (0.35 + 0.65 * hullSize(e.len)),
         sim: this.wakeLive && inSim.has(e) ? 1 : 0, trk: e === own && this.trackPts.length >= 2 ? 1 : 0,
       });
     }
@@ -2526,5 +2592,16 @@ export class Ocean {
   }
 }
 
+/** 0.15 … 1: how much white water a hull of this length makes (≥ 60 m: all of it; an 11 m yacht: a faint trace). */
+function hullSize(len) { return Math.min(1, Math.max(0.15, (len - 6) / 54)); }
+/**
+ * Stern wash 0..1 for the wake simulation: the propeller race (motor ships, with throttle / speed) or the hull's own
+ * turbulent wake (Froude-scaled; the only wash a sailing hull makes), scaled by the hull's size.
+ */
+function shipWash(e, U) {
+  const Fr = U / Math.sqrt(G * e.len), hull = 0.45 * smooth01(0.1, 0.45, Fr);
+  const prop = e.sail ? 0 : (U > 0.3 || Math.abs(e.throttle) > 0.05) ? Math.min(1, Math.abs(e.throttle) * 0.7 + U / 10) : 0;
+  return Math.min(1, Math.max(prop, hull)) * (0.35 + 0.65 * hullSize(e.len));
+}
 function posMod(a, m) { a %= m; return a < 0 ? a + m : a; }
 function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }

@@ -1282,7 +1282,7 @@ class App {
     mesh.rotation.set(r.pitch, -h, r.roll, 'YXZ');
     ud.updateRig?.(dt, { camera: this.camera, time: this.time, own, touch: document.body.classList.contains('touch') });   // sailing: cloth, springs, LOD
     mesh.userData.setWake?.(Math.abs(spd) / 10);
-    if (!docked && flooding < 1) this.ocean.feedShip?.(mesh, { x: p.x, z: p.z, hdg: h, spd: spd || 0, length: ud.length, beam: ud.beam, draft: ud.draft, throttle: ctx.throttle, own });   // OCEAN: Kelvin wake + local wake sim
+    if (!docked && flooding < 1) this.ocean.feedShip?.(mesh, { x: p.x, z: p.z, hdg: h, spd: spd || 0, length: ud.length, beam: ud.beam, draft: ud.draft, throttle: ctx.throttle, own, sail: !!vis.motion?.sail });   // OCEAN: Kelvin wake + local wake sim (sail hulls: no propeller wash)
     mesh.userData.setWaterY?.(mesh.position.y);
     if (ud.updateWake) {
       if (ud.wakeGroup && !ud.wakeGroup.parent) this.scene.add(ud.wakeGroup);
