@@ -1,111 +1,40 @@
 // Interiors v2 — the living guests and crew of a cruise ship in walk mode (docs/CRUISE-CONTRACT.md §6). iv2crowdplan.js decides who
-// is where and when (pure, deterministic from the ship's seed and the ship's clock); this file only draws it: one instanced mesh
-// per pose (≤ 11 on a desktop, 6 on a phone), per-instance colours picked in the shader, at most CROWD.max people within
-// CROWD.radius of the player, built room by room as the player comes near and dropped again when they leave. Nothing here
-// touches the server; walkers use the same WalkMap as the player (A* on its standAt).
+// is where and when (pure, deterministic from the ship's seed and the ship's clock); this file only draws it, through the shared
+// people system (people.js): two instanced meshes — the nearest few at LOD0 (≈ 2k triangles), the rest at LOD1 (≈ 0.5k) — animated
+// from a vertex animation texture (walk / sit / clap / dance / lie / swim / tray / idle clips, frames blended, heads turning), dressed
+// from the clothing atlas (faces, hair, holiday clothes, crew uniforms). At most CROWD.max people within CROWD.radius of the player,
+// built room by room as the player comes near and dropped again when they leave. Nothing here touches the server; walkers use the
+// same WalkMap as the player (A* on its standAt).
 import * as THREE from 'three';
 import { ITEMS } from './iv2items.js';
 import { cruiseProfile } from '../../shared/ships/cruiseprofile.js';
-import { budgetFor, PARTS, posesFor, drawnPose, crowdForRoom, roamersFor, kindOfRoom, findPath, pathLen, agentPose, react, selectAgents, localHour, soundMix, hashStr, hash01, rngOf } from './iv2crowdplan.js';
+import { budgetFor, drawnPose, crowdForRoom, roamersFor, kindOfRoom, findPath, pathLen, agentPose, react, selectAgents, localHour, soundMix, hashStr, rngOf } from './iv2crowdplan.js';
+import { PeopleCrowd, PEOPLE_U, lookFromPlan } from './people.js';
 
 const REFRESH = 0.6;        // s between looks at which rooms are near enough to need people
 const MAX_ROOMS = 14;       // rooms with people kept built at a time
 const PATH_PER_TICK = 2;    // A* runs per refresh
 const WATER_ABOVE = (item) => Math.max(0.2, (ITEMS[item]?.h || 0.5) - 0.2);   // swimmers: shoulders above the water the pool shape draws
+/** people drawn at LOD0 (the nearest; the rest at LOD1) */
+export const HI_COUNT = Object.freeze({ desk: 12, phone: 4 });
+const STRIDE = 1.4;         // m walked per gait cycle
 
-/** Geometry of one pose: a box per PARTS entry (positions, normals, indices, aPart). */
-export function poseGeometry(pose) {
-  const boxes = PARTS[pose] || PARTS.stand;
-  const positions = [];
-  const normals = [];
-  const parts = [];
-  const indices = [];
-  let baseIndex = 0;
-  const M = new THREE.Matrix4();
-
-  boxes.forEach(([p, w, h, d, x, y, z, rx, hang]) => {
-    let bg;
-    if (p === 0) {
-      // Head: Smooth sculpted oval head
-      bg = new THREE.SphereGeometry(Math.max(w, d) * 0.48, 12, 10);
-      bg.scale(w / (Math.max(w, d) * 0.96), h / (Math.max(w, d) * 0.96), d / (Math.max(w, d) * 0.96));
-    } else if (p === 1) {
-      // Hair: Sculpted hair cap
-      bg = new THREE.SphereGeometry(Math.max(w, d) * 0.52, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.7);
-      bg.scale(w / (Math.max(w, d) * 1.04), h / (Math.max(w, d) * 1.04), d / (Math.max(w, d) * 1.04));
-    } else if (p === 2) {
-      // Torso: Tapered curved torso with rounded shoulders
-      bg = new THREE.CylinderGeometry(w * 0.46, w * 0.38, h, 12);
-      bg.scale(1.0, 1.0, d / w);
-    } else if (p === 3) {
-      // Legs: Smooth tapered limbs
-      bg = new THREE.CylinderGeometry(w * 0.44, w * 0.38, h, 10);
-      bg.scale(1.0, 1.0, d / w);
-    } else if (p === 4) {
-      // Arms: Smooth tapered sleeves
-      bg = new THREE.CylinderGeometry(w * 0.46, w * 0.36, h, 10);
-      bg.scale(1.0, 1.0, d / w);
-    } else {
-      bg = new THREE.BoxGeometry(w, h, d);
+/** The clip and phase (0…1) of the people system for a planned pose (iv2crowdplan agentPose / drawnPose). */
+export function clipOf(a, pose, t) {
+  const ph = a.phase || 0, k = ph / 6.283;
+  switch (pose) {
+    case 'walkA': case 'walkB': case 'tray': {
+      const s = (a.s0 || 0) + t * (a.speed || 1);
+      return [pose === 'tray' ? 'tray' : 'walk', s / STRIDE];
     }
-
-    if (hang) bg.translate(0, -h / 2, 0);
-    M.makeRotationX(rx).setPosition(x, y, z);
-    bg.applyMatrix4(M);
-    bg.computeVertexNormals();
-
-    const posAttr = bg.attributes.position;
-    const norAttr = bg.attributes.normal;
-    const idxAttr = bg.index;
-    const vertCount = posAttr.count;
-
-    for (let i = 0; i < vertCount; i++) {
-      positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-      normals.push(norAttr.getX(i), norAttr.getY(i), norAttr.getZ(i));
-      parts.push(p);
-    }
-
-    if (idxAttr) {
-      for (let i = 0; i < idxAttr.count; i++) {
-        indices.push(baseIndex + idxAttr.getX(i));
-      }
-    } else {
-      for (let i = 0; i < vertCount; i++) {
-        indices.push(baseIndex + i);
-      }
-    }
-    baseIndex += vertCount;
-    bg.dispose();
-  });
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
-  g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
-  g.setAttribute('aPart', new THREE.BufferAttribute(new Float32Array(parts), 1));
-  g.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
-  g.userData.tris = indices.length / 3;
-  return g;
+    case 'sit': return ['sit', t * 0.18 + k];
+    case 'clapA': case 'clapB': return ['clap', t * 2.6 + k];
+    case 'danceA': case 'danceB': return ['dance', t * 0.5 + k];
+    case 'lie': return ['lie', t * 0.15 + k];
+    case 'swim': return ['swim', t * 0.42 + k];
+    default: return a.mode === 'play' ? ['dance', t * 0.5 + k] : ['idle', t * 0.22 + k];
+  }
 }
-
-const ATTRS = ['iSkin', 'iHair', 'iTop', 'iLeg', 'iArm'];
-function crowdMaterial(U) {
-  const m = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });   // winding is not relied on: a person is closed anyway, and a phone saves nothing by culling
-  m.onBeforeCompile = (sh) => {
-    sh.uniforms.uCrowdLit = U.uCrowdLit;
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
-      attribute float aPart; attribute float iLit; attribute vec3 iSkin, iHair, iTop, iLeg, iArm; uniform float uCrowdLit; varying vec3 vCrowd;`)
-      .replace('#include <color_vertex>', `#include <color_vertex>
-      vec3 pc = aPart < 0.5 ? iSkin : aPart < 1.5 ? iHair : aPart < 2.5 ? iTop : aPart < 3.5 ? iLeg : aPart < 4.5 ? iArm : vec3(0.78);
-      vec3 wn = normalize(mat3(instanceMatrix) * normal);
-      vCrowd = pc * (0.6 + 0.28 * wn.y + 0.12 * abs(wn.z)) * iLit * uCrowdLit;`);
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vCrowd;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = vCrowd;');
-  };
-  m.customProgramCacheKey = () => 'iv2crowd';
-  return m;
-}
-
-const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0), _c = new THREE.Color();
 
 export class CruiseCrowd {
   /** I = the interior, plan = the v2 plan, root = the group the people live in. opts: { phone }. */
@@ -116,23 +45,18 @@ export class CruiseCrowd {
     const prof = cruiseProfile(cls) || { guests: 800, crew: 400, seed: 1 };
     this.guests = prof.guests; this.crew = prof.crew; this.seed = (prof.seed ^ hashStr(cls || '')) >>> 0;
     this.group = new THREE.Group(); this.group.name = 'iv2:crowd'; root.add(this.group);
-    this.U = { uCrowdLit: { value: 1 } };
-    this.mat = crowdMaterial(this.U);
-    this.meshes = new Map();
-    const cap = this.budget.max;
-    for (const pose of posesFor(this.phone)) {
-      const geo = poseGeometry(pose);
-      geo.setAttribute('iLit', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1));
-      for (const a of ATTRS) geo.setAttribute(a, new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3));
-      const mesh = new THREE.InstancedMesh(geo, this.mat, cap);
-      mesh.name = `iv2:crowd:${pose}`; mesh.count = 0; mesh.frustumCulled = false; mesh.userData.pose = pose;
-      this.group.add(mesh); this.meshes.set(pose, mesh);
-    }
+    this.U = { uCrowdLit: PEOPLE_U.uLit };
+    const cap = this.budget.max, hiN = Math.min(cap, this.phone ? HI_COUNT.phone : HI_COUNT.desk);
+    this.hi = new PeopleCrowd(hiN, { lod: 0, lit: 'basic', name: 'iv2:crowd:hi' });
+    this.lo = new PeopleCrowd(cap, { lod: 1, lit: 'basic', name: 'iv2:crowd:lo' });
+    this.hi.mesh.userData.pose = 'hi'; this.lo.mesh.userData.pose = 'lo';
+    this.group.add(this.hi.mesh, this.lo.mesh);
+    this.meshes = new Map([['hi', this.hi.mesh], ['lo', this.lo.mesh]]);
     this.byRoom = new Map();   // room id → props
     for (const p of plan.props || []) if (p.t === 'k2' && p.room) { let l = this.byRoom.get(p.room); if (!l) this.byRoom.set(p.room, l = []); l.push(p); }
     this.rooms = new Map();    // room id → { room, hour, agents, pending }
     this.t = 0; this.acc = REFRESH; this.hourKey = -1;
-    this.agents = []; this.poses = []; this.stats = { people: 0, drawn: 0, calls: 0, tris: 0, rooms: 0, hour: 0 };
+    this.agents = []; this.poses = []; this.stats = { people: 0, drawn: 0, calls: 0, tris: 0, rooms: 0, hour: 0, hi: 0, lo: 0 };
     this.mix = soundMix('', 12, {}); this.near = {};
     this.queue = [];
   }
@@ -203,8 +127,7 @@ export class CruiseCrowd {
       const a = agents[i];
       if (a.dead || ((a.mode === 'walk' || a.mode === 'tray' || a.mode === 'clean') && !a.path)) { poses[i] = null; continue; }
       let p = agentPose(a, t);
-      if (p.pose === 'swim') p.y = a.y + WATER_ABOVE(a.item) + p.bob - 0.05;
-      else p.y += p.bob;
+      if (p.pose === 'swim') p.y = a.y + WATER_ABOVE(a.item) + p.bob - 0.05;   // the clips carry the gait's own bob; only the water lifts swimmers
       const dx0 = p.x - px, dz0 = p.z - pz;
       if (dx0 * dx0 + dz0 * dz0 < 100) {   // within 10 m: react to the player
         const r = react(a, p, px, pz);
@@ -213,38 +136,30 @@ export class CruiseCrowd {
       }
       poses[i] = p;
     }
-    const sel = selectAgents(agents, poses, px, pz, py, this.budget);
-    const counts = new Map(), near = {};
-    for (const m of this.meshes.values()) m.count = 0;
+    const sel = selectAgents(agents, poses, px, pz, py, this.budget);   // nearest first
+    const near = {};
+    let nHi = 0, nLo = 0;
     for (const i of sel) {
       const a = agents[i], p = poses[i];
-      if (Math.hypot(p.x - px, p.z - pz) < 0.5) continue;   // not through the player's eyes
-      const mesh = this.meshes.get(drawnPose(a, p.pose, this.phone)); if (!mesh) continue;
-      const k = mesh.count; if (k >= this.budget.max) continue;
-      const L = a.look, sc = L.h * (a.look.kid ? 1 : 1);
-      _q.setFromAxisAngle(_up, p.yaw); _p.set(p.x, p.y, p.z); _s.set(L.w * sc, sc, L.w * sc * 0.92);
-      _m.compose(_p, _q, _s); mesh.setMatrixAt(k, _m);
-      if (!a.col) {
-        a.col = new Float32Array(15);
-        const c = (hex, o) => { _c.setHex(hex); a.col[o] = _c.r; a.col[o + 1] = _c.g; a.col[o + 2] = _c.b; };
-        c(L.skin, 0); c(L.hair, 3); c(L.top, 6); c(L.shorts ? (a.role === 'swim' ? L.bottom : L.skin) : L.bottom, 9); c(L.sleeves ? L.skin : L.top, 12);
+      const d = Math.hypot(p.x - px, p.z - pz);
+      if (d < 0.5) continue;   // not through the player's eyes
+      const crowd = nHi < this.hi.capacity ? this.hi : this.lo, k = crowd === this.hi ? nHi++ : nLo++;
+      if (crowd === this.lo && k >= this.lo.capacity) continue;
+      if (!a.pl) {
+        a.pl = lookFromPlan(a.look, a.role, hashStr(a.id));
         a.lit = this.rooms.get(a.room)?.room.dark ? 0.55 : 1;
       }
-      const g = mesh.geometry;
-      g.attributes.iSkin.array.set(a.col.subarray(0, 3), k * 3); g.attributes.iHair.array.set(a.col.subarray(3, 6), k * 3); g.attributes.iTop.array.set(a.col.subarray(6, 9), k * 3);
-      g.attributes.iLeg.array.set(a.col.subarray(9, 12), k * 3); g.attributes.iArm.array.set(a.col.subarray(12, 15), k * 3); g.attributes.iLit.array[k] = a.lit;
-      mesh.count = k + 1; counts.set(mesh, (counts.get(mesh) || 0) + 1);
-      if (Math.hypot(p.x - px, p.z - pz) < 12) near[a.mode] = (near[a.mode] || 0) + 1;
+      const L = a.pl, h = L.h, w = L.w * h;
+      const [clip, phase] = clipOf(a, drawnPose(a, p.pose, false), t);
+      const still = clip === 'idle' || clip === 'sit';
+      const head = still ? 0.38 * Math.sin(t * 0.23 + (a.phase || 0) * 3) * Math.sin(t * 0.071 + (a.phase || 0)) : 0;
+      crowd.set(k, p.x, p.y, p.z, p.yaw, [w, h, w * 0.95], L, clip, phase, head, a.lit);
+      if (d < 12) near[a.mode] = (near[a.mode] || 0) + 1;
     }
-    let calls = 0, tris = 0, drawn = 0;
-    for (const m of this.meshes.values()) {
-      const g = m.geometry, on = m.count > 0 || m.userData.was;
-      m.visible = m.count > 0;
-      if (on) { m.instanceMatrix.needsUpdate = true; for (const n of [...ATTRS, 'iLit']) g.attributes[n].needsUpdate = true; }
-      m.userData.was = m.count > 0;
-      if (m.count > 0) { calls++; tris += m.count * g.userData.tris; drawn += m.count; }
-    }
-    this.stats.drawn = drawn; this.stats.calls = calls; this.stats.tris = tris;
+    this.hi.commit(nHi); this.lo.commit(Math.min(nLo, this.lo.capacity));
+    const calls = (this.hi.count > 0 ? 1 : 0) + (this.lo.count > 0 ? 1 : 0);
+    this.stats.drawn = this.hi.count + this.lo.count; this.stats.calls = calls; this.stats.hi = this.hi.count; this.stats.lo = this.lo.count;
+    this.stats.tris = this.hi.count * this.hi.tris + this.lo.count * this.lo.tris;
     // the light the people stand in: follows the v2 light mode (lights on, daylight)
     const U = I.v2?.U; this.U.uCrowdLit.value = U ? Math.min(1.1, 0.5 + 0.42 * U.uLights.value + 0.25 * U.uDay.value) : 0.9;
     this.near = near;
@@ -255,8 +170,7 @@ export class CruiseCrowd {
   sound() { return this.mix; }
 
   dispose() {
-    for (const m of this.meshes.values()) m.geometry.dispose();
-    this.mat.dispose();
+    this.hi.dispose(); this.lo.dispose();
     this.group.parent?.remove(this.group);
     this.meshes.clear(); this.rooms.clear(); this.agents = []; this.poses = []; this.byRoom.clear(); this.queue = [];
   }
@@ -264,4 +178,3 @@ export class CruiseCrowd {
 
 /** Does this plan get a crowd? Cruise ships on the v2 interiors only. */
 export const wantsCrowd = (plan) => !!plan && plan.v === 2 && plan.gen === 'cruise';
-void hash01;

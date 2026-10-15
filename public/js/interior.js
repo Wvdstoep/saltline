@@ -365,6 +365,7 @@ export class Interior {
     const bob = this.avatar.userData.animate(dt, moving, this.runVis && moving);
     this.avatar.position.set(this.pos.x, this.y + bob, this.pos.z);
     this.avatar.rotation.y = -this.yaw;
+    this.avatar.userData.look?.(0, this.pitch);   // people.js: the head follows the camera's pitch (the body already faces its yaw)
     iv2Frame(this, dt);   // IV2 HV3b: ladder climb, door leaves, sill foot-lift
     const bobY = third ? 0 : (moving ? Math.sin(this.bob) * 0.03 : 0);
     const V = this.v, dirL = V.dir.set(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));

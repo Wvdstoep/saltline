@@ -39,3 +39,11 @@ were converted to neutral grey (luminance, mean sRGB 0.878) so code can multiply
 | sand | Ground054 | https://ambientcg.com/view?id=Ground054 | https://ambientcg.com/get?file=Ground054_1K-JPG.zip |
 | rock | Rock030 | https://ambientcg.com/view?id=Rock030 | https://ambientcg.com/get?file=Rock030_1K-JPG.zip |
 | grass | Grass004 | https://ambientcg.com/view?id=Grass004 | https://ambientcg.com/get?file=Grass004_1K-JPG.zip |
+
+## People clothing atlas (`people/albedo.ktx2`, `people/albedo_512.ktx2`)
+
+Not from ambientCG: **own work, procedurally drawn, CC0 1.0**. `scripts/people-atlas.py` (Pillow + numpy, run on the VPS)
+draws an 8 × 8 grid of tiles — faces for eight skin tones, hair and hats, tops and crew uniforms, trousers, shoes — in the
+layout `scripts/people-atlas-layout.json` (generated from `public/js/people.js` TILES) at 2048 px, downsampled to 1024 /
+512 px, then encoded like the albedo maps above: `toktx --t2 --encode etc1s --clevel 2 --qlevel 255 --genmipmap
+--assign_oetf srgb` (sRGB, BasisLZ, full mips). Loaded by people.js through texlib.js `loadKTX2Texture` (not a LIB set).

@@ -1227,6 +1227,7 @@ export class Ashore {
       const bob = this.avatar.userData.animate(dt, moving, running);
       this.avatar.position.set(this.pos.x, this.y + bob, this.pos.z);
       this.avatar.rotation.y = -this.heading;
+      this.avatar.userData.look?.(this.yaw - this.heading, this.pitch);   // people.js: the head looks where the camera looks
       this.avatar.visible = this.view === 'third';
     }
     this.updateCamera(dt);
