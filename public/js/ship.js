@@ -129,6 +129,7 @@ function genBuilder(ctx, cls, opts = {}) {
     lanes: deckLanes({ L: ga.L, B: ga.B, zMid0: sk.zMid?.[0] ?? -ga.L * 0.3, zMid1: sk.zMid?.[1] ?? ga.L * 0.3, houseZ0: ga.house?.z0, houseZ1: ga.house?.z1, aftHouse: ga.house?.pos !== 'fwd' }),
     walk: walkwayFor(r.mats.deck?.color?.getHex?.() ?? 0x666b70, ga.gen), gen: ga.gen,
     funnel: ga.funnel && ga.funnel.kind !== 'none' ? [ga.funnel.y + ga.funnel.h, ga.funnel.h] : [0, 0],
+    house: ga.house && ga.house.tiers?.length && ga.gen !== 'cruise' ? [ga.house.z0, ga.house.z1, ga.house.w / 2, ga.house.tiers[0].y] : null,
     nameColor: ga.livery.nameColor ?? markColorFor(hullHex), markColor: markColorFor(hullHex), primer: (opts.stage ?? 1) < 0.9,
   };
   return r.info.labelY;
@@ -147,6 +148,7 @@ function applySkin(ctx, opts) {
   const ln = S.lanes; U.uLanes.value.set(ln ? ln.z0 : 0, ln ? ln.z1 : 0, ln ? ln.inset : 0, ln ? ln.width : 0);
   U.uWalk.value.setHex(S.walk ?? 0x4f7a5a);
   U.uFunnel.value.set(S.funnel?.[0] ?? 0, S.funnel?.[1] ?? 0);
+  const ho = S.house; U.uHouse.value.set(ho ? ho[0] : 0, ho ? ho[1] : 0, ho ? ho[2] : 0, ho ? ho[3] : 0);
   U.uMarkCol.value.setHex(S.markColor); U.uNameCol.value.setHex(S.nameColor);
   U.uGlyph.value = glyphTexture();
   const ds = draftStations(S); U.uDraft.value.set(ds.zF, ds.zM, ds.zA, S.mode === 1 || S.L < 15 ? 0 : ds.top);
@@ -1026,6 +1028,9 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
   const { L, B, draft, freeboard } = ctx;
   // crew-sized scale reference (one per spot, at most three; none on derelicts / the helicopter)
   if (!ctx.lightsOff && key !== 'helicopter') for (const [x, y, z] of ctx.crewSpots.slice(0, 3)) { try { ctx.crew(x, y, z); } catch { /* decoration only */ } }
+  // deck floodlights and the bridge searchlight (fittings + emissive lenses; the sky builder attaches the real lights)
+  let work = null;
+  try { work = workLightFixtures(ctx, key, opts); } catch (e) { console.warn('[ship] work lights failed', cls, e); }
   // merged static parts
   ctx.pb.build(g);
   // navigation lights per COLREGS (arc-limited glow sprites + lamp housings)
@@ -1099,6 +1104,15 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
     setHullName(name, port = '') { if (ctx.hullName === name && ctx.hullPort === port) return; ctx.hullName = name; ctx.hullPort = port; try { setLettering(ctx, name, port, !!opts.own); } catch (e) { console.warn('[ship] lettering failed', e); } },
     /** the COLREGS lights (port, starboard, masthead ×1–2, stern) — sprites with userData.kind / userData.arc */
     navLights: navs.map((nl) => nl.sprite),
+    /** deck floodlights + searchlight on / off: lens glow and lit deck pools here; SpotLights + beam cones are the sky builder's (lightFixtures) */
+    setWorkLights(on) { const k = on ? 1 : 0; g.userData.workLights = !!on; ctx.skinU.uWork.value = k; if (work) work.lens.emissiveIntensity = 2.6 * k; },
+    workLights: false,
+    /** [{ kind: 'flood'|'search', pos: [x, y, z], dir: [x, y, z], cone: half-angle rad, colour: hex, range: m, node }] in the ship frame (forward = −z); the searchlight's `node` turns (aimSearchlight), its beam is the node's local −z */
+    lightFixtures: work ? work.fixtures : [],
+    /** turn the searchlight: yaw rad (0 = ahead, + = to starboard), pitch rad (+ = up); own ship only */
+    aimSearchlight(yaw, pitch) { if (!work?.search) return; work.search.yaw.rotation.y = -(Number(yaw) || 0); work.search.pitch.rotation.x = THREE.MathUtils.clamp(Number(pitch) || 0, -0.6, 0.5); },
+    /** turn the searchlight onto a world point (own ship only) */
+    aimSearchlightAt(worldPos) { if (!work?.search || !worldPos) return; const l = g.worldToLocal(_aim.copy(worldPos)).sub(work.search.yaw.position); g.userData.aimSearchlight(Math.atan2(l.x, -l.z), Math.atan2(l.y, Math.hypot(l.x, l.z))); },
     /** helicopter rotor spin (t = seconds) */
     setRotor(t) { if (ctx.rotor) { ctx.rotor.main.rotation.y = t * 28; ctx.rotor.tail.rotation.x = t * 50; } },
     dispose() { wake?.dispose(); disposeGroup(g); if (ctx.letterKey) { releaseLettering(ctx.letterKey); ctx.letterKey = null; } },
@@ -1121,6 +1135,57 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
   } else if (ctx.sails.length) g.userData.setSails(true, 90);
   if (name) { const l = makeLabel(name); l.position.set(0, labelY + 4, 0); g.add(l); g.userData.label = l; }
   return g;
+}
+
+// ----------------------------------------------------------------------------------------------- work lights
+const _aim = new THREE.Vector3();
+/**
+ * Floodlight housings (on the bridge front, the foremast and the aft end of the house) and a searchlight on the compass
+ * deck, with one emissive lens material per ship. Returns { lens, fixtures, search: { yaw, pitch } | null } or null.
+ */
+function workLightFixtures(ctx, key, opts) {
+  const l = ctx.lights, { pb, L } = ctx;
+  if (!l || ctx.lightsOff || key === 'helicopter' || key === 'skiff' || key === 'rib' || L < 12) return null;
+  const lens = new THREE.MeshStandardMaterial({ color: 0x9a9480, emissive: 0xfff1cc, emissiveIntensity: 0, roughness: 0.35, metalness: 0.2 });
+  lens.name = 'worklens';
+  const fixtures = [];
+  const sc = THREE.MathUtils.clamp(L / 80, 0.5, 1.6), hw = 0.42 * sc, hh = 0.3 * sc, hd = 0.32 * sc;
+  const flood = (x, y, z, dir, range) => {
+    const d = new THREE.Vector3(...dir).normalize();
+    const ry = Math.atan2(d.x, -d.z), rx = Math.asin(THREE.MathUtils.clamp(-d.y, -1, 1));
+    pb.box(hw, hh, hd, P.housing, x, y, z, rx, ry, 0);                               // the lamp housing, tilted along its beam
+    pb.box(hw * 0.8, hh * 0.8, 0.04, lens, x + d.x * hd * 0.5, y + d.y * hd * 0.5, z + d.z * hd * 0.5, rx, ry, 0);   // the lens on its front
+    pb.box(0.06 * sc, 0.25 * sc, 0.06 * sc, P.housing, x, y + hh * 0.5 + 0.12 * sc, z);  // the bracket
+    fixtures.push({ kind: 'flood', pos: [x, y, z], dir: [d.x, d.y, d.z], cone: 0.75, colour: 0xfff1cc, range, node: null });
+  };
+  const span = Math.max(8, L * 0.35);
+  // bridge front: a pair lighting the deck forward
+  for (const sgn of [-1, 1]) flood(sgn * l.x * 0.55, l.y + 0.9, l.z - 0.5, [sgn * 0.15, -0.55, -1], span);
+  // foremast: one lighting aft over the hatches / tank deck
+  if (l.fore && l.fore.z < l.z - 10) flood(0, l.fore.y - 1.2, l.fore.z + 0.35, [0, -0.6, 1], span);
+  // aft: the mooring deck from the house's after end
+  if (l.stern && l.z < l.stern.z - 6) flood(0, l.y - 0.4, l.z + Math.min(8, (l.stern.z - l.z) * 0.3), [0, -0.7, 1], span * 0.6);
+  // the searchlight on the compass deck, forward edge (turns on the own ship; static elsewhere)
+  const sx = 0.35 * l.x, sy = l.y + 1.25 + 0.3 * sc, sz = l.z - 0.3, r = 0.28 * sc;
+  let search = null;
+  if (opts.own) {
+    const yaw = new THREE.Group(), pitch = new THREE.Group();
+    yaw.position.set(sx, sy, sz); yaw.add(pitch); ctx.g.add(yaw);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.35, r * 0.45, 0.5 * sc, 8), P.housing); base.position.y = -0.25 * sc - r * 0.2; yaw.add(base);
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 0.9, r * 1.6, 12), P.housing); drum.rotation.x = Math.PI / 2; pitch.add(drum);
+    const glass = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.92, r * 0.92, 0.04, 12), lens); glass.rotation.x = Math.PI / 2; glass.position.z = -r * 0.8; pitch.add(glass);
+    search = { yaw, pitch };
+    fixtures.push({ kind: 'search', pos: [sx, sy, sz], dir: [0, 0, -1], cone: 0.09, colour: 0xfff8e8, range: Math.max(300, L * 6), node: pitch });
+  } else {
+    pb.cyl(r * 0.45, 0.5 * sc, P.housing, sx, sy - 0.25 * sc - r * 0.2, sz, r * 0.35, 8);
+    pb.cyl(r * 0.9, r * 1.6, P.housing, sx, sy, sz, r, 12, Math.PI / 2, 0, 0);
+    pb.box(r * 1.6, r * 1.6, 0.04, lens, sx, sy, sz - r * 0.8);
+    fixtures.push({ kind: 'search', pos: [sx, sy, sz], dir: [0, 0, -1], cone: 0.09, colour: 0xfff8e8, range: Math.max(300, L * 6), node: null });
+  }
+  // the deck-lit pools of the skin shader (up to four fixtures: the floods)
+  const U = ctx.skinU.uFix.value;
+  fixtures.filter((f) => f.kind === 'flood').slice(0, 4).forEach((f, i) => U[i].set(f.pos[0], f.pos[1], f.pos[2], f.range));
+  return { lens, fixtures, search };
 }
 
 // ----------------------------------------------------------------------------------------------- COLREGS lights

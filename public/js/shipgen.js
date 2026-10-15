@@ -54,23 +54,34 @@ function facadeTexture(size = 1024) {
   const Y = (k, f) => top(k) + bh * (1 - (0.03 + 0.94 * f));
   const rect = (k, m0, f0, m1, f1) => [X(k, m0), Y(k, f1), X(k, m1) - X(k, m0), Y(k, f0) - Y(k, f1)];
   const rr = (x, y, w, h, rad) => { g.beginPath(); g.moveTo(x + rad, y); g.arcTo(x + w, y, x + w, y + h, rad); g.arcTo(x + w, y + h, x, y + h, rad); g.arcTo(x, y + h, x, y, rad); g.arcTo(x, y, x + w, y, rad); g.closePath(); };
+  const tone = (hex, k) => { const v = parseInt(hex.slice(1), 16); const c = (sh) => Math.min(255, (((v >> sh) & 255) * k) | 0); return `rgb(${c(16)},${c(8)},${c(0)})`; };
   const wall = (k, base) => {
     const t = top(k); g.fillStyle = base; g.fillRect(0, t, W, bh);
+    for (let m = 0; m < BAND_TILE[k]; m += 2.0) { g.fillStyle = `rgba(0,0,0,${(0.012 + r() * 0.03).toFixed(3)})`; g.fillRect(X(k, m), t, X(k, 2.0), bh); }   // plate-to-plate tonal variation
     g.fillStyle = 'rgba(0,0,0,0.10)'; g.fillRect(0, Y(k, 0.035), W, bh * 0.035);          // deck line / toe of the bulkhead
     g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(0, Y(k, 1.0), W, bh * 0.012);       // drip rail at the deckhead
     g.fillStyle = 'rgba(0,0,0,0.045)'; for (let m = 0; m < BAND_TILE[k]; m += 2.0) g.fillRect(X(k, m), t, Math.max(1, W / 900), bh);   // plate seams
     for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(${100 + r() * 40 | 0},${90 + r() * 30 | 0},${80 + r() * 20 | 0},${0.02 + r() * 0.03})`; g.fillRect(r() * W, t + r() * bh, W * (0.01 + r() * 0.04), bh * (0.2 + r() * 0.6)); }   // grime
   };
-  const window_ = (k, m0, f0, m1, f1, lit, frame = '#c3c9cd') => {
-    const [x, y, w, h] = rect(k, m0, f0, m1, f1), fw = Math.max(2, W * 0.07 / BAND_TILE[k]);
-    g.fillStyle = 'rgba(0,0,0,0.18)'; rr(x - fw * 1.2, y - fw * 1.2 + 1, w + fw * 2.4, h + fw * 2.4, fw * 1.5); g.fill();   // shadow line round the frame
-    g.fillStyle = frame; rr(x - fw, y - fw, w + fw * 2, h + fw * 2, fw * 1.4); g.fill();
-    const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, '#3a5670'); gr.addColorStop(0.45, '#1d3247'); gr.addColorStop(1, '#0f1c29');
+  const window_ = (k, m0, f0, m1, f1, lit, frame = '#b9c0c5') => {
+    const [x, y, w, h] = rect(k, m0, f0, m1, f1), fw = Math.max(2, W * 0.08 / BAND_TILE[k]);
+    // every window a little different: frame tone, glass brightness, blind / curtain, so the row never reads as a stamp
+    const ft = 0.86 + r() * 0.2, gt = 0.75 + r() * 0.5;
+    g.fillStyle = 'rgba(0,0,0,0.42)'; rr(x - fw * 1.35, y - fw * 1.35 + 1, w + fw * 2.7, h + fw * 2.7, fw * 1.6); g.fill();   // dark outline: the frame reads from afar
+    g.fillStyle = 'rgba(0,0,0,0.5)'; g.fillRect(x - fw * 1.3, y - fw * 1.3, w + fw * 2.6, fw * 1.1);                           // the recess' top shadow
+    g.fillStyle = tone(frame, ft); rr(x - fw, y - fw, w + fw * 2, h + fw * 2, fw * 1.4); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(x - fw, y + h + fw * 0.3, w + fw * 2, fw * 0.5);                          // the sill catching the light
+    const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, tone('#3a5670', gt)); gr.addColorStop(0.45, tone('#1d3247', gt)); gr.addColorStop(1, tone('#0f1c29', gt));
     g.fillStyle = gr; g.fillRect(x, y, w, h);
-    if (r() < 0.45) { g.fillStyle = r() < 0.5 ? 'rgba(214,200,168,0.55)' : 'rgba(150,160,170,0.5)'; g.fillRect(x + w * (r() < 0.5 ? 0 : 0.6), y, w * 0.4, h); }   // curtains
+    g.fillStyle = 'rgba(0,0,0,0.45)'; g.fillRect(x, y, w, Math.max(1, h * 0.08));                                                // glass in the frame's shadow
+    const cur = r();
+    if (cur < 0.3) { g.fillStyle = r() < 0.5 ? 'rgba(214,200,168,0.6)' : 'rgba(150,160,170,0.55)'; g.fillRect(x + w * (r() < 0.5 ? 0 : 0.6), y, w * 0.4, h); }        // curtains
+    else if (cur < 0.5) { g.fillStyle = 'rgba(225,222,210,0.75)'; g.fillRect(x, y, w, h * (0.3 + r() * 0.5)); }                                                       // blind half down
     glass.push([x, y, w, h, lit]);
-    // rust weeping from the lower corners
-    g.fillStyle = 'rgba(120,64,30,0.10)'; for (const sx of [x - fw, x + w + fw * 0.4]) if (r() < 0.6) g.fillRect(sx, y + h + fw, Math.max(1, fw * 0.6), bh * (0.08 + r() * 0.18));
+    // dirt and rust weeping from the sill and the lower corners (grey rain streaks, rust from the frame's bolts)
+    const n = 1 + (r() * 3 | 0);
+    for (let i = 0; i < n; i++) { const sx = x - fw + (w + fw * 2) * r(), sw = Math.max(1, fw * (0.4 + r() * 0.6)), sh = bh * (0.06 + r() * 0.22); const gs = g.createLinearGradient(0, y + h + fw, 0, y + h + fw + sh); gs.addColorStop(0, 'rgba(70,72,74,0.28)'); gs.addColorStop(1, 'rgba(70,72,74,0)'); g.fillStyle = gs; g.fillRect(sx, y + h + fw, sw, sh); }
+    g.fillStyle = 'rgba(120,64,30,0.16)'; for (const sx of [x - fw, x + w + fw * 0.4]) if (r() < 0.6) g.fillRect(sx, y + h + fw, Math.max(1, fw * 0.6), bh * (0.08 + r() * 0.18));
   };
   // band 0: merchant cabins — windows ~0.95 × 0.85 m in pairs and singles, a steel door, vent grilles
   wall(0, '#f2f3f0');

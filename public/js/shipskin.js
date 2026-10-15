@@ -36,6 +36,9 @@ uniform vec4 uHawse;   // |x|, y, z, pipe radius (0 = none)
 uniform vec4 uLanes;   // z0, z1, inset, width
 uniform vec3 uWalk;
 uniform vec2 uFunnel;  // top y, height
+uniform vec4 uHouse;   // z0, z1, half width, foot y of the deckhouse (half width 0 = none): deck AO at its foot
+uniform float uWork;   // deck floodlights on (0..1)
+uniform vec4 uFix[4];  // floodlight fixtures in the ship frame: x, y, z, range (0 = none)
 varying vec3 vShipPos;
 float wh(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
 float h1(float n) { return fract(sin(n * 91.3458 + 3.17) * 47453.5453); }
@@ -51,6 +54,13 @@ vec3 skinPerturb(vec3 surf_pos, vec3 surf_norm, vec2 dHdxy, float faceDir) {
   return normalize(abs(fDet) * surf_norm - vGrad);
 }
 float seamDist(float x, float pitch) { return (0.5 - abs(fract(x / pitch) - 0.5)) * pitch; }
+/** one floodlight's pool at P (f = x, y, z, range; range 0 = no fixture): inverse-square fall-off, only below the lamp */
+float fixPool(vec4 f, vec3 P, vec3 nS) {
+  if (f.w <= 0.0) return 0.0;
+  vec3 d = P - f.xyz; float r2 = dot(d, d);
+  float fall = clamp(f.w * f.w * 0.35 / (r2 + 4.0), 0.0, 1.0) * step(P.y, f.y);
+  return fall * (0.35 + 0.65 * abs(dot(nS, normalize(d + vec3(0.0, -0.001, 0.0)))));
+}
 #if SKIN_KIND == 1
 uniform sampler2D uLetter; uniform sampler2D uGlyph;
 uniform vec4 uNameBow;    // zc, yc, w, h  (w = 0: none)
@@ -61,14 +71,15 @@ uniform vec3 uMarkCol; uniform vec3 uNameCol;
 `;
 
 const FRAG_MAIN = /* glsl */`
-float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
+float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0.0;
 {
   vec3 P = vShipPos;
   vec3 dpx = dFdx(P), dpy = dFdy(P);
   vec3 nS = normalize(cross(dpx, dpy));
   float mpp = max(length(dpx), length(dpy));
   float near = 1.0 - smoothstep(0.025, 0.1, mpp);      // welds, letters, marks
-  float mid = 1.0 - smoothstep(0.2, 0.8, mpp);         // plates, streaks
+  float mid = 1.0 - smoothstep(0.6, 2.6, mpp);         // plates, streaks: still there from the chase camera (~0.7 m/px on a big ship)
+  float ao = 1.0;
   float w = clamp(uWear, 0.0, 1.0);
   float grime = clamp(uAge + 0.6 * w, 0.0, 1.0);
   vec3 col = diffuseColor.rgb;
@@ -80,6 +91,8 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
   skinGlass = 1.0 - smoothstep(0.86, 0.94, fa);
   skinLit = 1.0 - smoothstep(0.55, 0.65, fa);
 #endif
+  // white paint is never a 1.0 albedo: real topcoat tops out around 0.8, so sunlit houses keep their form
+  col = mix(min(col, vec3(0.8)), col, skinGlass);
   // paint: low-frequency tonal variation (touch-ups, fading) and chalky dulling with age
   float mott = wnoise(P * 0.33 + 17.0);
   col *= 0.95 + 0.1 * mott * (1.0 - skinGlass);
@@ -102,9 +115,9 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
     float dB = seamDist(q.x + h1(row + 3.0) * uPlate.y, uPlate.y);
     float dS = seamDist(q.y, uPlate.x);
     float d = min(dB, dS);
-    float bead = (1.0 - smoothstep(0.0, 0.016 + 0.6 * mpp, d)) * uPlate.z;
+    float bead = (1.0 - smoothstep(0.0, 0.016 + 0.9 * mpp, d)) * uPlate.z;
     skinH += 0.006 * bead * near;
-    col *= 1.0 - 0.09 * bead * mid;
+    col *= 1.0 - 0.14 * bead * mid;
     col *= 1.0 + 0.035 * (1.0 - smoothstep(0.0, 0.06 + mpp, abs(d - 0.03))) * mid * uPlate.z;   // light catching the bead's edge
     skinH += 0.006 * (0.5 + 0.5 * cos(6.2832 * q.x / 0.8)) * (0.25 + grime) * side * mid * (0.6 + 0.4 * h1(row));
   }
@@ -121,10 +134,10 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
     float y0 = uDims.w - 0.45 - 0.25 * h1(cell + 5.0);
     float dn = y0 - P.y;
     float len = (0.3 + 0.7 * h1(cell + 11.0)) * (0.6 + 4.0 * grime) * clamp(uDims.w * 0.22, 0.4, 2.6);
-    float wd = 0.05 + 0.06 * max(dn, 0.0);
+    float wd = 0.05 + 0.06 * max(dn, 0.0) + 0.8 * mpp;
     float dzs = abs(P.z - cz) + 0.04 * (wnoise(vec3(P.y * 7.0, cell, 1.0)) - 0.5);
     sStreak = (1.0 - smoothstep(wd * 0.35, wd, dzs)) * step(0.0, dn) * (1.0 - smoothstep(len * 0.25, len, dn));
-    sStreak *= (0.45 + 0.55 * wnoise(vec3(P.z * 14.0, P.y * 0.9, cell))) * (0.25 + grime) * side * steel;
+    sStreak *= (0.45 + 0.55 * wnoise(vec3(P.z * 14.0, P.y * 0.9, cell))) * (0.4 + grime) * side * steel;
     float hole = (1.0 - smoothstep(0.06, 0.1, length(vec2(P.z - cz, (P.y - y0) * 1.7)))) * side * steel * mid;
     col = mix(col, vec3(0.02), hole * 0.85);
   }
@@ -132,7 +145,7 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
   float hStreak = 0.0;
   if (uHawse.w > 0.0) {
     float dz = abs(P.z - uHawse.z), dn = uHawse.y - P.y;
-    float wd = uHawse.w * 0.9 + 0.12 * max(dn, 0.0);
+    float wd = uHawse.w * 0.9 + 0.12 * max(dn, 0.0) + 0.8 * mpp;
     hStreak = (1.0 - smoothstep(wd * 0.3, wd, dz + 0.1 * (wnoise(vec3(P.y * 3.0, 2.0, 7.0)) - 0.5))) * step(0.0, dn) * (1.0 - smoothstep(uHawse.y * 0.5, uHawse.y + 0.4, dn));
     hStreak *= (0.35 + 0.65 * wnoise(vec3(P.z * 9.0, P.y * 0.6, 4.0))) * (0.35 + grime);
     float ring = 1.0 - smoothstep(uHawse.w * 1.1, uHawse.w * 2.4, length(vec2(dz, P.y - uHawse.y)));
@@ -182,6 +195,9 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
     pm = max(pm, (1.0 - smoothstep(lw * 0.6, lw, abs(pl.y - (uDims.w - 0.3)))) * step(abs(pl.x), 0.15));
   }
   float marks = max(ga, pm) * near;
+  // AO: the sheer strake under the deck-edge lip / bulwark, the bilge turn
+  ao *= 1.0 - 0.28 * (1.0 - smoothstep(0.0, 0.7, uDims.w - P.y)) * step(P.y, uDims.w + 0.05) * side;
+  ao *= 1.0 - 0.15 * (1.0 - smoothstep(0.0, 1.2, abs(P.y + uDims.z * 0.75))) * (1.0 - side);
   col = mix(col, rustCol, clamp(rust, 0.0, 1.0) * 0.92);
   col = mix(col, uNameCol, la);
   col = mix(col, uMarkCol, marks);
@@ -189,6 +205,13 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
   skinRough += 0.35 * rust - 0.1 * la;
 #elif SKIN_KIND == 2
   float ax = abs(P.x), hb = uDims.y * 0.5;
+  // AO: along the hull sides (bulwark / rail foot), at the foot of the deckhouse
+  ao *= 1.0 - 0.3 * (1.0 - smoothstep(0.0, 0.9, hb - ax));
+  if (uHouse.z > 0.0) {
+    vec2 dq = max(vec2(abs(P.z - 0.5 * (uHouse.x + uHouse.y)) - 0.5 * (uHouse.y - uHouse.x), ax - uHouse.z), 0.0);
+    float dh = length(dq);
+    ao *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 1.4, dh)) * step(uHouse.w - 0.6, P.y) * step(P.y, uHouse.w + 0.6);
+  }
   if (uDeckMode < 0.5) {
     // non-slip grain, faint plate seams, walkways, edge rust
     float grain = wh(floor(P * 37.0));
@@ -221,9 +244,20 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
 #elif SKIN_KIND == 3
   float rain = smoothstep(0.55, 0.9, wnoise(vec3((P.x + P.z) * 5.0, P.y * 0.45, 3.0))) * (0.15 + grime);
   col *= 1.0 - 0.16 * rain * (1.0 - skinGlass);
+#ifdef USE_MAP
+  {
+    // the facade atlas maps each tier to 0.03..0.97 of a band: AO at the tier's foot (deck line) and under the deck above
+    float vy = clamp((fract(vMapUv.y * 4.0) - 0.03) / 0.94, 0.0, 1.0);
+    float wallish = 1.0 - skinGlass;
+    ao *= 1.0 - 0.24 * (1.0 - smoothstep(0.0, 0.28, vy)) * wallish - 0.2 * (1.0 - smoothstep(0.0, 0.14, 1.0 - vy)) * wallish;
+    // tonal variation per tier and per tile, so a long house is not one flat white slab from afar
+    col *= 0.955 + 0.09 * h1(floor(P.y / 2.85) * 3.1 + floor(vMapUv.x) * 0.37);
+  }
+#endif
   col = mix(col, rustCol, clamp(rust, 0.0, 1.0) * 0.6 * (1.0 - skinGlass));
   skinRough += 0.25 * rust * (1.0 - skinGlass);
 #elif SKIN_KIND == 4
+  ao *= 1.0 - 0.22 * (1.0 - smoothstep(0.0, 1.6, P.y - (uFunnel.x - uFunnel.y)));
   if (uFunnel.y > 0.0) {
     float soot = smoothstep(uFunnel.x - 0.4 * uFunnel.y, uFunnel.x, P.y) * (0.3 + 0.5 * grime) * (0.65 + 0.35 * wnoise(P * 2.1));
     col = mix(col, vec3(0.025), soot);
@@ -240,6 +274,15 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0;
   skinRough += 0.2 * rust;
 #endif
   skinRough += 0.3 * w + 0.12 * grime;
+  // sky occlusion: faces that look down see less sky (the hemisphere light cannot tell)
+  ao *= 0.82 + 0.18 * clamp(nS.y * 0.5 + 0.5, 0.0, 1.0);   // nS (screen derivatives) faces the viewer, so its y is the true up
+  col *= ao;
+  // deck floodlights: warm pools on the deck, houses and fittings around each fixture (the sky builder adds the real lights)
+  if (uWork > 0.0) {
+    // unrolled with constant indices and no continue / break: some Mali / Adreno drivers fail on either
+    skinWork += fixPool(uFix[0], P, nS) + fixPool(uFix[1], P, nS) + fixPool(uFix[2], P, nS) + fixPool(uFix[3], P, nS);
+    skinWork = min(skinWork, 1.0) * uWork;
+  }
   diffuseColor.rgb = col;
 }
 `;
@@ -268,7 +311,7 @@ const hemiGlass = (mask) => /* glsl */`
 }
 #endif
 `;
-const EMIT = /* glsl */`totalEmissiveRadiance += skinLit * uNight * vec3(1.0, 0.74, 0.42) * 1.5;` + hemiGlass('skinGlass');
+const EMIT = /* glsl */`totalEmissiveRadiance += skinLit * uNight * vec3(1.0, 0.74, 0.42) * 1.5 + skinWork * vec3(1.0, 0.93, 0.78) * 0.5 * diffuseColor.rgb;` + hemiGlass('skinGlass');
 const IBL_FROM = 'iblIrradiance += getIBLIrradiance( geometryNormal );';
 const IBL_TO = 'iblIrradiance += getIBLIrradiance( geometryNormal ) * uEnvDiffuse;';
 
@@ -278,7 +321,8 @@ export function skinUniforms() {
     uWear: { value: 0 }, uFlood: { value: 0 }, uWaterY: { value: 0 }, uAge: { value: 0.2 }, uNight: { value: 0 }, uEnvDiffuse: { value: 0.4 },
     uMode: { value: 0 }, uDeckMode: { value: 0 }, uDims: { value: new THREE.Vector4(60, 10, 4, 4) }, uPlate: { value: new THREE.Vector4(2.4, 9, 1, 10) },
     uHawse: { value: new THREE.Vector4(0, 0, 0, 0) }, uLanes: { value: new THREE.Vector4(0, 0, 0, 0) }, uWalk: { value: new THREE.Color(0x4f7a5a) },
-    uFunnel: { value: new THREE.Vector2(0, 0) },
+    uFunnel: { value: new THREE.Vector2(0, 0) }, uHouse: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uWork: { value: 0 }, uFix: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
     uLetter: { value: null }, uGlyph: { value: null }, uNameBow: { value: new THREE.Vector4(0, 0, 0, 0) }, uNameStern: { value: new THREE.Vector4(0, 0, 0, 0) },
     uDraft: { value: new THREE.Vector4(-20, 0, 20, 0) }, uMarkCol: { value: new THREE.Color(0xf4f4f0) }, uNameCol: { value: new THREE.Color(0xffffff) },
   };

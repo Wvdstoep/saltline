@@ -2,6 +2,7 @@
 // defence buttons, the 3D units from snap.hostiles (skiffs, patrol craft, warships built by ship.js), muzzle flashes / splashes /
 // hits, the radar and chart markers and the sound cues. Loaded lazily by main.js; every entry point is wrapped so a problem here
 // never takes the helm down.
+import { ShipSmoke } from './shipsmoke.js';
 import * as THREE from 'three';
 import { buildShip } from './ship.js';
 import { ic } from './icons.js';
@@ -20,7 +21,7 @@ export class HostileLayer {
     this.fx = [];                // live effects
     this.pool = [];
     this.lastBanner = ''; this.lastChip = ''; this.alertUntil = 0;
-    this.shape = {}; this.smoke = []; this.boarders = null; this.hitUntil = 0; this.bino = null; this.smokeT = 0;
+    this.shape = {}; this.smokeFx = null; this.boarders = null; this.hitUntil = 0; this.bino = null;
     this.inject();
   }
   inject() {
@@ -168,22 +169,10 @@ export class HostileLayer {
     const a = this.app, me = a.myMesh, you = a.you; if (!me || !you) return;
     const dmg = Math.max(0, Math.min(1, (70 - (you.cond ?? 100)) / 70)), sinking = (you.flooding || 0) >= 0.2 || !!you.rescue;
     const power = Math.max(dmg, now < this.hitUntil ? 0.35 : 0, sinking ? 0.9 : 0);
-    this.smokeT += dt;
-    const gap = 0.45 - 0.35 * power;
-    if (power > 0.05 && this.smokeT > gap && this.smoke.length < 14) {
-      this.smokeT = 0;
-      const L = me.userData.length || 60, hh = ((you.ship?.hdg ?? 0) * Math.PI) / 180, off = (Math.random() - 0.5) * L * 0.4;
-      const fire = (you.cond ?? 100) < 45 || sinking;
-      const mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(1.2, 1), new THREE.MeshStandardMaterial({ color: fire && Math.random() < 0.4 ? 0xff7a18 : 0x5a5e66, roughness: 0.95, metalness: 0.05, transparent: true, opacity: 0.4, depthWrite: false, blending: fire ? THREE.AdditiveBlending : THREE.NormalBlending }));
-      mesh.position.set(me.position.x + Math.sin(hh) * off, me.position.y + (me.userData.freeboard || 4) + 3, me.position.z - Math.cos(hh) * off);
-      mesh.frustumCulled = false; a.scene.add(mesh); this.smoke.push({ mesh, t: 0, life: 3 + 3 * power, s0: 1 + 2 * power });
-    }
-    for (const p of [...this.smoke]) {
-      p.t += dt; const u = p.t / p.life;
-      if (u >= 1) { a.scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); this.smoke.splice(this.smoke.indexOf(p), 1); continue; }
-      p.mesh.position.y += dt * (3 + 3 * power); p.mesh.position.x += dt * (a.wind?.u ?? 2) * 0.4; p.mesh.position.z -= dt * (a.wind?.v ?? 0) * 0.4;
-      p.mesh.scale.setScalar(p.s0 * (1 + u * 4)); p.mesh.material.opacity = 0.7 * (1 - u);
-    }
+    if (!this.smokeFx) { if (power <= 0.05) return; this.smokeFx = new ShipSmoke(a.scene); }
+    const fire = (you.cond ?? 100) < 45 || sinking;
+    const w = a.localWind || a.wind || {}, wu = Number.isFinite(w.u) ? w.u : 0, wv = Number.isFinite(w.v) ? w.v : 0;
+    this.smokeFx.update(dt, { x: me.position.x, y: me.position.y + (me.userData.freeboard || 4), z: me.position.z, hdg: ((you.ship?.hdg ?? 0) * Math.PI) / 180, L: me.userData.length || 60, wind: { u: wu, v: wv } }, power, fire, 1 - (a.night || 0));
   }
   /** Boarders on our deck while a unit reports a boarding party (`bd`): dark figures swaying by the rail where the ladder lands. */
   boarding(now) {
@@ -259,5 +248,5 @@ export class HostileLayer {
   }
   expressWarning(points) { return expressWarning(this.on, this.routeLines(points)); }
   riskBlock(lines) { return riskBlockHTML(this.on, lines); }
-  dispose() { for (const o of this.units.values()) this.app.drop(o.mesh); this.units.clear(); }
+  dispose() { for (const o of this.units.values()) this.app.drop(o.mesh); this.units.clear(); this.smokeFx?.dispose(); this.smokeFx = null; }
 }

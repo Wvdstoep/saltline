@@ -308,6 +308,7 @@ class App {
         if (this.myMesh) { if (this.interior.active) this.interior.exit(); this.drop(this.myMesh); }
         this.myMesh = buildShip(s.cls, you.name, 7, { livery: you.livery || undefined, hullName: you.vesselName || '', port: you.homeName || '', own: true }); this.scene.add(this.myMesh);   // SHIPYARD H9: own livery (vessel.spec)
         this.sailHud?.setClass(s.cls); this.touchHelm?.setButtons?.(rigOf(s.cls) ? ['stop', 'auto', 'sails', 'tack'] : ['stop', 'auto']);
+        if (this.workLightsOn) { this.myMesh.userData.setWorkLights?.(true); this.onWorkLights?.(true, this.myMesh); }
         this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false);
         // a new hull: chase camera sized to it (docs/V4-CONTRACTS.md §4)
         this.cam.dist = camDistFor(this.shipLength()); this.cam.pitch = CAM_PITCH;
@@ -722,6 +723,7 @@ class App {
       if (k === 'h') return document.getElementById('helpWrap')?.classList.toggle('hidden');
       if (k === 'r' && this.hud.chartOpen()) { this.hud.chartMode = this.hud.chartMode === 'region' ? 'world' : 'region'; this.hud.drawChart(); return; }
       if (!this.ashore?.active && this.sailHud?.handleKey(e)) return;   // sailing keys (§0.2): Q Shift+Q 1–7 Shift+1–7 [ ] Ctrl+[ ] = - R Shift+R Z
+      if (k === 'l' && e.shiftKey) return this.toggleWorkLights();        // ship skin: deck floodlights + searchlight (the sky builder's lights follow onWorkLights)
       if (k === 'l') return this.market?.toggle();
       if (k === 'o') return this.hq?.toggle();
       if (this.ashore?.active) return; // ashore: the ship's controls are aboard
@@ -949,6 +951,15 @@ class App {
   }
   /** Relative wind angle in degrees, signed −180…180: + = from starboard, − = from port (§1.2 item 1: it was 0…360, so
    *  setSails' `rel > 0` sent the boom to port for every wind — to windward with the wind from port). */
+  /** Shift+L: deck floodlights and the bridge searchlight of the own ship (fittings glow + lit deck in ship.js; SpotLights via onWorkLights(on, mesh) → sky builder) */
+  toggleWorkLights(force) {
+    const on = force == null ? !this.workLightsOn : !!force;
+    this.workLightsOn = on;
+    this.myMesh?.userData.setWorkLights?.(on);
+    this.onWorkLights?.(on, this.myMesh);
+    this.hud.event?.({ kind: 'info', text: on ? 'Deck lights and searchlight on.' : 'Deck lights off.' });
+    return on;
+  }
   windRel() { const w = this.localWind || this.wind; const from = Number.isFinite(w?.dir) ? w.dir : normDeg((Math.atan2(-(w?.u || 0), -(w?.v || 0)) * 180) / Math.PI); return windRelSigned(from, this.ship?.hdg || 0); }
   // ------------------------------------------------------------------ sailing (docs/SAILING-CONTRACT.md §3.4, §5)
   /** A rig command (HUD, keys, autopilot): applied locally at once, sent to the server at ≤ 4 Hz with a trailing send. */

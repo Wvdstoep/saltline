@@ -94,13 +94,14 @@ test('skin shader patch finds every insertion point in three r160 (standard and 
       const lib = physical && kind === 'hull' ? THREE.ShaderLib.physical : THREE.ShaderLib.standard;
       const shader = { uniforms: {}, vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader };
       m.onBeforeCompile(shader);
-      for (const needle of ['vShipPos = shipPos', 'skinH', 'roughnessFactor = clamp(mix(roughnessFactor + skinRough', 'skinPerturb(-vViewPosition', 'skinLit * uNight', 'getIBLIrradiance( geometryNormal ) * uEnvDiffuse']) {
+      for (const needle of ['vShipPos = shipPos', 'skinH', 'roughnessFactor = clamp(mix(roughnessFactor + skinRough', 'skinPerturb(-vViewPosition', 'skinLit * uNight', 'skinWork * vec3', 'getIBLIrradiance( geometryNormal ) * uEnvDiffuse', 'min(col, vec3(0.8))', 'col *= ao;']) {
         const src = needle.startsWith('vShipPos') ? shader.vertexShader : shader.fragmentShader;
         assert.ok(src.includes(needle), `${kind}${physical ? ' (physical)' : ''}: ${needle}`);
       }
       assert.equal(m.defines.SKIN_KIND, skinKindOf(kind));
       if (physical) assert.ok('STANDARD' in m.defines, 'keeps three\'s own defines');
-      assert.ok(shader.uniforms.uWear === U.uWear, 'one uniform set per ship');
+      assert.ok(shader.uniforms.uWear === U.uWear && shader.uniforms.uWork === U.uWork && shader.uniforms.uFix === U.uFix && shader.uniforms.uHouse === U.uHouse, 'one uniform set per ship');
+      assert.equal(U.uFix.value.length, 4, 'four floodlight slots');
       if (kind !== 'hull') assert.equal(shader.uniforms.uLetter, undefined, 'lettering samplers only on the hull');
       if (physical && kind === 'hull') assert.ok(m.isMeshPhysicalMaterial && m.clearcoat > 0, 'fresh hull paint has a clear coat');
     }
