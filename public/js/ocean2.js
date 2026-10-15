@@ -52,6 +52,7 @@
 import * as THREE from 'three';
 import { WakeSim, WAKE_MAX_SHIPS } from './wakesim.js';
 import { glslBudget, budgetFits } from './glslbudget.js';
+import { FFTWaves, FFT_L } from './oceanfft.js';
 
 const G = 9.81, TAU = Math.PI * 2, D2R = Math.PI / 180;
 const NL = 10, NM = 6, NS = 4, NLM = NL + NM, NW = NLM + NS;
@@ -503,12 +504,50 @@ void main() {
   #include <fog_fragment>
 }`;
 
+// ---- FFT ocean (desktop rungs 'fft' / 'fft-lean', oceanfft.js): the vertices take the displacement of the 557 m and
+// 61 m cascades (texture LOD by the local cell size: a cell never under-samples its texels), every pixel the slopes,
+// Jacobian terms and second moments of all three (mipmapped + anisotropic: far water turns into LEAN roughness, never
+// stripes). Same accumulators and sign convention as the Gerstner path, so normal / foam / wakes below are unchanged.
+const FFT_VERT_PARS = /* glsl */`
+uniform sampler2D uFftD0; uniform sampler2D uFftD1; uniform vec4 uFftOffA; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftTexel;`;
+const FFT_VERT_BODY = /* glsl */`
+    vec2 fu0 = (rel + uFftOffA.xy) * uFftInvL.x; vec2 fu1 = (rel + uFftOffA.zw) * uFftInvL.y;
+    gDisp += textureLod(uFftD0, fu0, log2(max(1.0, 2.0 * ceff / uFftTexel.x))).xyz * (uFftW.x * rim);
+    gDisp += textureLod(uFftD1, fu1, log2(max(1.0, 2.0 * ceff / uFftTexel.y))).xyz * (uFftW.y * rim);`;
+const FFT_FRAG_PARS = /* glsl */`
+uniform sampler2D uFftA1; uniform sampler2D uFftA2; uniform sampler2D uFftB1; uniform sampler2D uFftB2; uniform sampler2D uFftC1;
+uniform vec4 uFftOffA; uniform vec2 uFftOffC; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftBrk;`;
+// m = shelter damping per cascade, pawK = cat's-paw ripple patches (light air), mg = slow amplitude variation that hides
+// the patches' repeat; gBrk = folding crest (Jacobian of the two long cascades below the breaking threshold) on the face
+// running downwind
+const FFT_FRAG_BODY = /* glsl */`
+  {
+    float mg = 0.8 + 0.4 * mix(0.5, groupField(pp + 913.0, 260.0), 1.0 - smoothstep(60.0, 260.0, fp));
+    vec2 fu0 = (rel + uFftOffA.xy) * uFftInvL.x; vec2 fu1 = (rel + uFftOffA.zw) * uFftInvL.y; vec2 fu2 = (rel + uFftOffC) * uFftInvL.z;
+    vec4 fa = texture2D(uFftA1, fu0); vec4 fb = texture2D(uFftA2, fu0);
+    float fw = uFftW.x * m.x;
+    gS += fa * fw; gJxz += fb.x * fw; gH += fb.y * fw;
+    gSig += vec3(max(0.0, fb.z - fa.x * fa.x), max(0.0, fb.w - fa.y * fa.y), 0.0) * (fw * fw);
+    fa = texture2D(uFftB1, fu1); fb = texture2D(uFftB2, fu1);
+    fw = uFftW.y * m.y * mg;
+    gS += fa * fw; gJxz += fb.x * fw; gH += fb.y * fw;
+    gSig += vec3(max(0.0, fb.z - fa.x * fa.x), max(0.0, fb.w - fa.y * fa.y), 0.0) * (fw * fw);
+    if (uFftW.z > 0.0) {
+      fa = texture2D(uFftC1, fu2);
+      fw = uFftW.z * pawK * mg;
+      gS.xy += fa.xy * fw;
+      gSig += vec3(max(0.0, fa.z - fa.x * fa.x), max(0.0, fa.w - fa.y * fa.y), 0.0) * (fw * fw);
+    }
+    float Jb = (1.0 - gS.w) * (1.0 - gS.z) - gJxz * gJxz;
+    gBrk = (1.0 - smoothstep(uFftBrk.x - uFftBrk.y, uFftBrk.x, Jb)) * smoothstep(0.0, 0.12, -dot(gS.xy, uWindDir));
+  }`;
+
 function fullVert(v) {
   return /* glsl */`
 #define NL 10
 #define NLM 16
 #define NW ${v.nw}
-uniform vec4 uWaveA[NW]; uniform vec4 uWaveB[NW];
+${v.fft ? FFT_VERT_PARS : 'uniform vec4 uWaveA[NW]; uniform vec4 uWaveB[NW];'}
 uniform vec2 uC; uniform vec2 uVrel; uniform float uS0; uniform float uR0; uniform float uSnap; uniform float uRmax; uniform float uLevel; uniform float uVertShort; uniform float uLean;
 uniform sampler2D uWakeTex; uniform vec4 uWakeRect;
 varying vec3 vWorld; varying vec2 vRel; varying float vCeff;
@@ -533,8 +572,8 @@ void main() {
   float ceff = uS0 * max(1.0, 2.0 * (length(rel - uVrel) + 0.5 * uSnap) / uR0);
   gDisp = vec3(0.0); gRim = rim; gCeff = ceff; gRel = rel;
   if (rim > 0.0) {
-${rep(NLM, (i) => `    gv(uWaveA[${i}], uWaveB[${i}]);`)}
-${v.nw > NLM ? `    if (uVertShort > 0.5 && ceff < 6.0) {
+${v.fft ? FFT_VERT_BODY : rep(NLM, (i) => `    gv(uWaveA[${i}], uWaveB[${i}]);`)}
+${!v.fft && v.nw > NLM ? `    if (uVertShort > 0.5 && ceff < 6.0) {
 ${rep(v.nw - NLM, (j) => `      gv(uWaveA[${NLM + j}], uWaveB[${NLM + j}]);`)}
     }` : ''}
   }
@@ -555,20 +594,31 @@ ${rep(v.nw - NLM, (j) => `      gv(uWaveA[${NLM + j}], uWaveB[${NLM + j}]);`)}
 }`;
 }
 
-function fullFrag(v, cutMode) {
+// Sun shadow on the FFT sea (lighting.js hook: GLSL chunk with `float saltlineShadow(vec3 worldPos)`, 1 = lit): the
+// sun's glitter, its diffuse share of the water body and the subsurface glow are shadowed; sky reflection is not
+function withShadow(frag, sh) {
+  const r = (a, b) => { if (!frag.includes(a)) throw new Error('withShadow: anchor missing: ' + a); frag = frag.replace(a, b); };
+  r('#include <fog_pars_fragment>', `#include <fog_pars_fragment>\n${sh.glsl}`);
+  r('  float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0) * (1.0 - uNight * 0.9);', `  float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0) * (1.0 - uNight * 0.9);\n  float sunVis = clamp(${sh.fn}(vWorld), 0.0, 1.0);`);
+  r('float lit = 0.65 + 0.35 * max(0.0, dot(N, uSunDir))', 'float lit = 0.65 + 0.35 * max(0.0, dot(N, uSunDir)) * sunVis');
+  r('float sss = (back * 2.2 + side) * crestPow', 'float sss = (back * 2.2 + side) * crestPow * sunVis');
+  r('col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), 8.0) * sunUp', 'col += uSunColor * min(glint(uSunDir, N, V, sig, vh, ndv), 8.0) * sunUp * sunVis');
+  return frag;
+}
+function fullFrag(v, cutMode, shadow = null) {
   const frag = /* glsl */`
 #define NL 10
 #define NLM 16
 #define NW ${v.nw}
 #define NDET ${v.ndet}
 #define MAXKEL 4
-uniform vec4 uWaveA[NW]; uniform vec4 uWaveB[NW];
+${v.fft ? FFT_FRAG_PARS : 'uniform vec4 uWaveA[NW]; uniform vec4 uWaveB[NW];'}
 uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uSkyTop; uniform vec3 uSkyHorizon; uniform vec3 uSunDir; uniform vec3 uSunColor; uniform vec3 uSssCol;
 uniform vec3 uMoonDir; uniform vec3 uMoonCol;
 uniform sampler2D uDepth; uniform vec2 uDepthOrigin; uniform float uDepthSize; uniform float uTime; uniform float uWind; uniform vec2 uWindDir;
 uniform float uNight; uniform float uRain; uniform float uStorm; uniform float uLevel; uniform float uDetail; uniform float uHs;
 uniform sampler2D uShoreA; uniform sampler2D uShoreB; uniform vec4 uShoreRectA; uniform vec4 uShoreRectB; uniform sampler2D uShelterTex; uniform vec4 uShelterRect;
-uniform float uPixAng; uniform float uNShortFrag; uniform vec3 uSig0; uniform vec4 uDet[NDET]; uniform float uNDet; uniform vec2 uPawOff; uniform float uPawC;
+uniform float uPixAng; uniform float uNShortFrag; uniform vec3 uSig0;${v.ndet ? ' uniform vec4 uDet[NDET];' : ''} uniform float uNDet; uniform vec2 uPawOff; uniform float uPawC;
 uniform sampler2D uWakeTex; uniform vec4 uWakeRect; uniform float uWakeTexel;
 uniform float uSigLM; uniform float uFoamA; uniform float uFoamSoft; uniform float uFoamK; uniform float uStreak; uniform float uOldMean;
 uniform vec2 uGrpOff; uniform float uGrpK; uniform float uSigB; uniform vec2 uBrk; uniform vec2 uFoamDrift;
@@ -743,7 +793,7 @@ void main() {
   gVh = vh; gFpL = fpL; gPa = pa; gRel = rel; gM = m;
   // --- spectral components, all evaluated per pixel at the rest point (exact normals; the vertices carry only the
   //     displacement, so the grid's sampling never shows in the shading)
-${rep(v.nw, (i) => `  wave(uWaveA[${i}], uWaveB[${i}], ${i < NL ? 'gM.x' : i < NLM ? 'gM.y' : 'gM.z'}, ${i < NLM ? '1.0' : `(${i - NLM}.0 < uNShortFrag ? 1.0 : 0.0)`}, ${i < NLM ? '0.0' : '1.0'});`)}
+${v.fft ? '' : rep(v.nw, (i) => `  wave(uWaveA[${i}], uWaveB[${i}], ${i < NL ? 'gM.x' : i < NLM ? 'gM.y' : 'gM.z'}, ${i < NLM ? '1.0' : `(${i - NLM}.0 < uNShortFrag ? 1.0 : 0.0)`}, ${i < NLM ? '0.0' : '1.0'});`)}
   vec2 pp = rel + uPatOff;                 // pattern coordinates (stable world frame, metres)
   // --- cat's-paws: wind touches the water in patches; between them the surface stays glassy (strong in light air,
   //     uniform once the sea is wind-driven). The mean of pawK^2 is ~1, so the average roughness is unchanged.
@@ -751,7 +801,7 @@ ${rep(v.nw, (i) => `  wave(uWaveA[${i}], uWaveB[${i}], ${i < NL ? 'gM.x' : i < N
   float pawK = mix(1.0, 0.18 + 1.64 * smoothstep(0.22, 0.78, pawN), uPawC) * m.z;
   // --- capillary / short-gravity ripples (0.3-6 m): analytic slope waves around the wind, energy from Cox-Munk minus
   //     what the spectrum resolves; filtered per direction like the spectrum, the rest goes to the roughness
-${rep(v.ndet, (i) => `  ripple(uDet[${i}], (${i}.0 < uNDet ? 1.0 : 0.0), pawK);`)}
+${v.fft ? FFT_FRAG_BODY : rep(v.ndet, (i) => `  ripple(uDet[${i}], (${i}.0 < uNDet ? 1.0 : 0.0), pawK);`)}
   vec4 S = gS; float jxz = gJxz; float h = gH; vec3 sig = gSig; float varJ = gVarJ; float brk = gBrk;
   sig += uSig0 * (pawK * pawK) + vec3(0.0004, 0.0004, 0.0);   // sub-ripple residual (never a perfect mirror)
   if (uRain > 0.0) { // expanding rain rings on a jittered grid
@@ -940,7 +990,7 @@ ${v.spots ? `  // --- searchlights / deck floods: lit pools on the water
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
-  return withCut(frag, v.cut ? cutMode : 0);
+  return withCut(v.fft && shadow ? withShadow(frag, shadow) : frag, v.cut ? cutMode : 0);
 }
 
 // Shader rungs per tier, tried in order (init / failTier). The first full rung is the desktop look; GPUs with fewer
@@ -961,6 +1011,16 @@ export const SEA_RUNGS = [
   ],
 ];
 /**
+ * Desktop-only FFT rungs (oceanfft.js), tried before the Gerstner full rungs when the GPU has ≥ 512 uniform vectors per
+ * stage, float render targets and the FFT passed its own self-test; a failing FFT rung steps to the Gerstner 'full' rung
+ * (logged in the diagnostics). Never offered to phones, so they are not part of SEA_RUNGS.
+ */
+export const FFT_RUNGS = [
+  { name: 'fft', fft: 1, nw: 0, ndet: 0, kel: 1, cut: 1, trk: 1, spots: 1, env: 1 },
+  { name: 'fft-lean', fft: 1, nw: 0, ndet: 0, kel: 1, cut: 1, trk: 0, spots: 0, env: 0 },
+];
+const FFT_TIER_RUNGS = [...FFT_RUNGS, ...SEA_RUNGS[2]];
+/**
  * GLSL of one rung of tier lvl (0 basic, 1 lite, 2 full). opts.phone: the build for a GPU with < 512 uniform vectors
  * (lock-chamber cut-outs by alpha 0 on a transparent material instead of discard; everything else is the same code).
  */
@@ -968,7 +1028,7 @@ export function seaShader(lvl, rung, opts = {}) {
   const cutMode = opts.phone ? 'alpha' : 'discard';
   if (lvl === 0) return { vert: BASIC_VERT, frag: BASIC_FRAG };
   if (lvl === 1) return { vert: liteVert(rung), frag: liteFrag(rung, cutMode) };
-  return { vert: fullVert(rung), frag: fullFrag(rung, cutMode) };
+  return { vert: fullVert(rung), frag: fullFrag(rung, cutMode, opts.shadow || null) };
 }
 /** Estimated GPU resources of one rung (three.js prefix + fog + tone mapping included; env counted as on). */
 export function seaBudget(lvl, rung, opts = {}) {
@@ -1022,6 +1082,48 @@ ${rep(NLM, (i) => `  J3 += fj(uWaveA[${i}], uWaveB[${i}], uBw[${i}], ${i < NL ? 
   float dth = (fract(sin(dot(vUv * 1371.0 + uSeed, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
   float act = max(prev.x * uDecMul - uDecSub + dth, brk);                    // active whitecap foam (seconds)
   float old = max(prev.y * uDecMul2 - uDecSub2 + dth, act * uOldK);          // residual foam / streak source (tens of s)
+  gl_FragColor = vec4(clamp(act, 0.0, 1.0), clamp(old, 0.0, 1.0), 0.0, 1.0);
+}`;
+
+// FFT ocean (desktop) foam accumulation: the same persistence / decay / wave-group logic, the Jacobian taken from the
+// two long FFT cascades (choppy displacement → real folding crests, at the texel's footprint: textureLod) instead of
+// the Gerstner sums, a 1024 m window (2 m texels), and the stored foam smeared a little along the wind each step so
+// it is drawn out into downwind streaks as it ages
+const FOAM_FRAG_FFT = /* glsl */`
+uniform sampler2D uPrev; uniform vec2 uCfF; uniform vec2 uCfFPrev; uniform vec2 uPrevShift; uniform float uW;
+uniform float uDecMul; uniform float uDecSub; uniform float uDecMul2; uniform float uDecSub2; uniform float uOldK;
+uniform float uThr; uniform float uSoft; uniform float uK; uniform float uSeed; uniform vec2 uGrpOff; uniform float uGrpK;
+uniform sampler2D uShelterTex; uniform vec4 uShelterRect;
+uniform sampler2D uFA1; uniform sampler2D uFA2; uniform sampler2D uFB1; uniform sampler2D uFB2;
+uniform vec4 uFOff; uniform vec2 uFInvL; uniform vec2 uFLod; uniform vec2 uWindF; uniform float uRes;
+varying vec2 vUv;
+${GLSL_NOISE}
+${GLSL_VNOISE}
+vec2 prevAt(vec2 uv, vec2 rel) {
+  vec2 relPrev = uW * (fract(uv - uCfFPrev + 0.5) - 0.5) + uPrevShift;
+  vec2 dd = relPrev - rel;
+  return dot(dd, dd) > 1.0 ? vec2(0.0) : texture2D(uPrev, uv).rg;            // wrapped around the window: stale
+}
+void main() {
+  vec2 rel = uW * (fract(vUv - uCfF + 0.5) - 0.5);
+  vec2 wt = uWindF / uRes;
+  vec2 prev = prevAt(vUv, rel) * 0.8 + (prevAt(vUv - wt, rel - wt * uW) + prevAt(vUv + wt, rel + wt * uW)) * 0.1;
+  float sh = 0.0;
+  if (uShelterRect.w > 0.5) {
+    vec2 suv = (rel - uShelterRect.xy) / uShelterRect.z;
+    if (suv.x > 0.0 && suv.y > 0.0 && suv.x < 1.0 && suv.y < 1.0) sh = texture2D(uShelterTex, suv).r;
+  }
+  float mL = 1.0 - sh, mM = 1.0 - 0.9 * sh;
+  vec2 u0 = (rel + uFOff.xy) * uFInvL.x; vec2 u1 = (rel + uFOff.zw) * uFInvL.y;
+  vec4 a = textureLod(uFA1, u0, uFLod.x) * mL + textureLod(uFB1, u1, uFLod.y) * mM;
+  float jxz = textureLod(uFA2, u0, uFLod.x).x * mL + textureLod(uFB2, u1, uFLod.y).x * mM;
+  float J = (1.0 - a.z) * (1.0 - a.w) - jxz * jxz;
+  float grp = groupField(rel + uGrpOff, 42.0);
+  float thr = uThr + (grp - 0.5) * uGrpK;
+  float brk = (1.0 - smoothstep(thr - 0.7 * uSoft, thr + 0.3 * uSoft, J)) * uK;
+  float dth = (fract(sin(dot(vUv * 1371.0 + uSeed, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+  float act = max(prev.x * uDecMul - uDecSub + dth, brk);
+  float old = max(prev.y * uDecMul2 - uDecSub2 + dth, act * uOldK);
   gl_FragColor = vec4(clamp(act, 0.0, 1.0), clamp(old, 0.0, 1.0), 0.0, 1.0);
 }`;
 
@@ -1084,6 +1186,45 @@ ${rep(4, (c) => `    { vec2 p = uCamRel + d + (hash22(hs * 31.7 + ${c}.0 * 4.1) 
   gl_PointSize = clamp(size * uPx / max(1.0, -mvPosition.z), 0.0, 28.0);
   #include <fog_vertex>
 }`;
+// FFT ocean (desktop) spindrift: the same particles, born where the long FFT cascade's crests fold right now
+const SPRAY_VERT_FFT = /* glsl */`
+uniform vec2 uC; uniform vec2 uCamRel; uniform vec2 uCamInv; uniform float uR; uniform float uTime; uniform float uFrac;
+uniform float uThr; uniform float uSoft; uniform vec3 uWindV; uniform float uLevel; uniform float uPx;
+uniform sampler2D uFftD0; uniform sampler2D uFftA1; uniform sampler2D uFftA2; uniform vec4 uFftOffA; uniform vec3 uFftInvL;
+attribute vec4 aSeed;
+varying float vA;
+#include <fog_pars_vertex>
+${GLSL_NOISE}
+float jacAt(vec2 p) {
+  vec2 u0 = (p + uFftOffA.xy) * uFftInvL.x;
+  vec4 a = textureLod(uFftA1, u0, 0.0); float jxz = textureLod(uFftA2, u0, 0.0).x;
+  return (1.0 - a.z) * (1.0 - a.w) - jxz * jxz;
+}
+void main() {
+  vA = 0.0;
+  float T = 1.3 + 1.7 * aSeed.y;
+  float tt = uTime / T + aSeed.z * 13.0;
+  float cyc = floor(tt), age = (tt - cyc) * T;
+  vec2 hs = hash22(vec2(aSeed.x * 0.371 + 1.3, mod(cyc, 4093.0) * 0.731 + 0.17));
+  vec2 d = mod(hs * 2.0 * uR - uCamInv + uR, 2.0 * uR) - uR;
+  float J = 9.0; vec2 sp = uCamRel + d;
+  if (aSeed.w < uFrac) {
+${rep(4, (c) => `    { vec2 p = uCamRel + d + (hash22(hs * 31.7 + ${c}.0 * 4.1) - 0.5) * 22.0; float j = jacAt(p); if (j < J) { J = j; sp = p; } }`)}
+  }
+  if (J > uThr) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+  vec3 dsp = textureLod(uFftD0, (sp + uFftOffA.xy) * uFftInvL.x, 0.0).xyz;
+  float r1 = hash12(hs * 17.3), r2 = hash12(hs * 7.9 + 1.1);
+  vec3 p0 = vec3(uC.x + sp.x + dsp.x, uLevel + dsp.y + 0.3, uC.y + sp.y + dsp.z);
+  vec3 vel = uWindV * (0.25 + 0.4 * r1) + vec3(0.0, 1.2 + 3.2 * r2, 0.0);
+  vec3 pos = p0 + vel * age + vec3(0.0, -3.2 * age * age, 0.0);
+  float strength = clamp((uThr - J) / uSoft * 2.0 + 0.35, 0.0, 1.0);
+  vA = strength * smoothstep(0.0, 0.15, age) * (1.0 - smoothstep(0.4 * T, T, age)) * (1.0 - smoothstep(0.65 * uR, uR, length(d)));
+  vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  float size = (0.6 + 1.6 * r1) * (1.0 + 2.0 * age / T);
+  gl_PointSize = clamp(size * uPx / max(1.0, -mvPosition.z), 0.0, 28.0);
+  #include <fog_vertex>
+}`;
 const SPRAY_FRAG = /* glsl */`
 uniform vec3 uCol; varying float vA;
 #include <fog_pars_fragment>
@@ -1099,6 +1240,7 @@ void main() {
 export const OCEAN_SHADERS = {
   full: seaShader(2, SEA_RUNGS[2][0]), lite: seaShader(1, SEA_RUNGS[1][0]), basic: seaShader(0, SEA_RUNGS[0][0]),
   foam: { vert: FOAM_VERT, frag: FOAM_FRAG }, spray: { vert: SPRAY_VERT, frag: SPRAY_FRAG },
+  fft: seaShader(2, FFT_RUNGS[0]), foamFft: { vert: FOAM_VERT, frag: FOAM_FRAG_FFT }, sprayFft: { vert: SPRAY_VERT_FFT, frag: SPRAY_FRAG },
 };
 
 // ------------------------------------------------------------------------------------------------ geometry
@@ -1240,6 +1382,15 @@ export class Ocean {
       uLean: { value: 0 }, uBrk: { value: new THREE.Vector2(0, 0.3) }, uFoamDrift: { value: new THREE.Vector2() },
       envMap: { value: null }, uEnvK: { value: 0 },
     });
+    // FFT ocean (desktop rungs): cascade textures, world-anchored offsets (m), 1/patch size, cascade weights, texel sizes
+    Object.assign(this.uniforms, {
+      uFftD0: { value: noShoreTexture() }, uFftD1: { value: noShoreTexture() }, uFftA1: { value: noShoreTexture() }, uFftA2: { value: noShoreTexture() },
+      uFftB1: { value: noShoreTexture() }, uFftB2: { value: noShoreTexture() }, uFftC1: { value: noShoreTexture() },
+      uFftOffA: { value: new THREE.Vector4() }, uFftOffC: { value: new THREE.Vector2() }, uFftInvL: { value: new THREE.Vector3(1 / FFT_L[0], 1 / FFT_L[1], 1 / FFT_L[2]) },
+      uFftW: { value: new THREE.Vector3(1, 1, 1) }, uFftTexel: { value: new THREE.Vector2(FFT_L[0] / 256, FFT_L[1] / 256) }, uFftBrk: { value: new THREE.Vector2(0, 0.05) },
+    });
+    this.fft = null; this.fftReady = false; this.fftBaseN = 256; this.fftWhy = 'not initialised';
+    this.shadow = null; this.shadowFailed = false; this.shadowWhy = '';
     this.track = [];                              // own ship: { x, z (invariant frame), t } at ~3 Hz, last 120 s
     this.trackAcc = 0; this.trackPts = [];
     this.foamDrift = { x: 0, z: 0 };
@@ -1277,6 +1428,14 @@ export class Ocean {
     tri.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
     const fq = new THREE.Mesh(tri, new THREE.ShaderMaterial({ uniforms: this.foamUniforms, vertexShader: FOAM_VERT, fragmentShader: FOAM_FRAG, depthTest: false, depthWrite: false }));
     fq.frustumCulled = false; this.foamScene.add(fq);
+    this.foamMat = fq.material;
+    // FFT ocean foam pass: the same uniform objects + the long cascades' Jacobian textures (created only when used)
+    this.foamUniformsFft = {
+      ...this.foamUniforms, uFA1: this.uniforms.uFftA1, uFA2: this.uniforms.uFftA2, uFB1: this.uniforms.uFftB1, uFB2: this.uniforms.uFftB2,
+      uFOff: { value: new THREE.Vector4() }, uFInvL: { value: new THREE.Vector2(1 / FFT_L[0], 1 / FFT_L[1]) }, uFLod: { value: new THREE.Vector2() },
+      uWindF: { value: new THREE.Vector2(0, 1) }, uRes: { value: 512 },
+    };
+    this.foamMatFft = null; this.foamW = FOAM_W;
     this.foamCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     // spindrift
     this.sprayUniforms = {
@@ -1284,8 +1443,10 @@ export class Ocean {
       uWaveA: { value: waveA }, uWaveB: { value: waveB }, uC: this.uniforms.uC, uCamRel: { value: new THREE.Vector2() }, uCamInv: { value: new THREE.Vector2() },
       uR: { value: SPRAY_R }, uTime: { value: 0 }, uFrac: { value: 0 }, uThr: { value: 0 }, uSoft: { value: 0.05 }, uWindV: { value: new THREE.Vector3() },
       uLevel: this.uniforms.uLevel, uPx: { value: 600 }, uCol: { value: new THREE.Color(1, 1, 1) },
+      uFftD0: this.uniforms.uFftD0, uFftA1: this.uniforms.uFftA1, uFftA2: this.uniforms.uFftA2, uFftOffA: this.uniforms.uFftOffA, uFftInvL: this.uniforms.uFftInvL,
     };
     this.sprayMat = new THREE.ShaderMaterial({ uniforms: this.sprayUniforms, vertexShader: SPRAY_VERT, fragmentShader: SPRAY_FRAG, transparent: true, depthWrite: false, fog: true });
+    this.sprayMatGerstner = this.sprayMat; this.sprayMatFft = null;
     this.spray = new THREE.Points(new THREE.BufferGeometry(), this.sprayMat);
     this.spray.frustumCulled = false; this.spray.renderOrder = 3; this.spray.visible = false;
     this.spray.onBeforeRender = prep;
@@ -1313,6 +1474,7 @@ export class Ocean {
     const tier = q >= 0.75 ? 2 : q >= 0.4 ? 1 : 0;
     this.wakeWant = q >= 0.75;                     // the local wake simulation: desktop-class GPUs only
     this.applyMaterial(tier);
+    this.sizeFft(q);
     if (tier === this.tier) return;
     this.tier = tier;
     const { n, s0 } = TIERS[tier];
@@ -1331,6 +1493,118 @@ export class Ocean {
     sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nSpray * 3), 3));
     sg.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4));
     this.spray.geometry.dispose(); this.spray.geometry = sg;
+  }
+  /**
+   * FFT size / cascades for a quality level (governor ladder): q 1 → N = 256 (128 on a weak GPU) × 3 cascades,
+   * q 0.75 → 128 × 3, q ≤ 0.5 → 128 × 2 (the 7.3 m cascade goes; the 61 m one then runs to its Nyquist), q < 0.4 → the
+   * lite shader (the FFT stops). Reallocates only on a change and runs one step so no frame shows empty textures.
+   */
+  sizeFft(q = this.quality) {
+    if (!this.fft) return;
+    const n = q >= 1 ? this.fftBaseN : 128, nc = q >= 0.75 ? 3 : 2;
+    if (this.fft.setSize(n, nc)) {
+      this.tierLog.push(`fft: ${n}² × ${nc} cascades (${(this.fft.memoryBytes / 1048576).toFixed(1)} MB)`);
+      if (this._renderer) { try { this.stepFft(0); } catch (e) { this.dropFft('step threw: ' + e); } }
+    }
+  }
+  /** Sea state for the FFT spectrum: the LIVE Gerstner table's significant heights (what ships ride), wind, directions. */
+  fftSeaParams() {
+    let w2 = 0, s2 = 0;
+    for (let i = 0; i < NW; i++) { const a2 = this.amp[i] * this.amp[i] * 0.5; if (this.fam[i] === 1) s2 += a2; else w2 += a2; }
+    const dirW = this.seaTravel ?? this.windDir + 180;
+    return { U: this.wind, dirW, tp: this.stats.tp || 5, hsW: 4 * Math.sqrt(w2), hsS: 4 * Math.sqrt(s2), swellT: this.stats.swellT || 11, dirS: this.swellTravel ?? dirW };
+  }
+  /** Is the FFT ocean what is drawn right now (desktop FFT rung bound)? */
+  get fftActive() { return !!(this.fft && this.matLevel === 2 && this.material && this.material.userData.rung && this.material.userData.rung.fft); }
+  /** Rungs of tier lvl: tier 2 gets the FFT rungs in front once the FFT passed its self-test. */
+  rungsOf(lvl) { return lvl === 2 && this.fftReady ? FFT_TIER_RUNGS : SEA_RUNGS[lvl]; }
+  /** Create the FFT ocean and self-test it (desktop only); on any failure the Gerstner full rungs stay. */
+  initFft(renderer) {
+    if (!FFTWaves.supported(renderer)) { this.fftWhy = 'unsupported (needs WebGL2, highp, EXT_color_buffer_float, 16 texture units)'; this.tierLog.push(`fft: ${this.fftWhy} → Gerstner full`); return; }
+    let f = null;
+    try {
+      const weak = FFTWaves.weakGPU(renderer);
+      this.fftBaseN = weak ? 128 : 256;
+      f = new FFTWaves(renderer, { n: this.quality >= 1 ? this.fftBaseN : 128, cascades: this.quality >= 0.75 ? 3 : 2 });
+      f.setSea(this.fftSeaParams());
+      this.fft = f; this.stepFft(0);
+      const p = this.fftSeaParams(), t = f.probe(Math.hypot(p.hsW, p.hsS));
+      if (!t.ok) throw new Error(t.why);
+      this.fftReady = true; this.rung[2] = -1; this.fftWhy = ''; this.bindFft(0, 0);
+      this.tierLog.push(`fft: self-test ok (${f.n}² × ${f.nc} cascades, ${(f.memoryBytes / 1048576).toFixed(1)} MB${weak ? ', weak GPU' : ''})`);
+    } catch (e) {
+      this.fft = null; if (f) f.dispose();
+      this.fftWhy = 'self-test FAILED: ' + (e && e.message ? e.message : e);
+      this.tierLog.push(`fft: ${this.fftWhy} → Gerstner full`);
+      console.warn('[ocean] FFT ocean unavailable, using the Gerstner sea:', this.fftWhy);
+    }
+  }
+  /**
+   * Sun shadow on the FFT sea from the lighting pipeline (lighting.js: `shadowUniforms()` = live uniform objects,
+   * `shadowGLSL` = chunk declaring them + `float saltlineShadow(vec3 worldPos)`, `oceanShadowOk` = its own self-test).
+   * Desktop FFT rungs only; absent / failed hook → the sea is simply unshadowed. Returns whether it was attached.
+   */
+  attachLighting(l) {
+    const ok = l && l.oceanShadowOk !== false && typeof l.shadowUniforms === 'function' && typeof l.shadowGLSL === 'string' && /float\s+saltlineShadow\s*\(/.test(l.shadowGLSL);
+    if (!ok || this.lowLimits) { this.shadowWhy = !ok ? 'no usable lighting hook' : 'phone path'; return false; }
+    let su = null;
+    try { su = l.shadowUniforms(); } catch { su = null; }
+    if (!su || typeof su !== 'object') { this.shadowWhy = 'shadowUniforms() gave nothing'; return false; }
+    for (const k of Object.keys(su)) this.uniforms[k] = su[k];            // the same objects: values stay current
+    this.shadow = { glsl: l.shadowGLSL, fn: 'saltlineShadow' }; this.shadowFailed = false; this.shadowWhy = '';
+    this.tierLog.push('sun shadow on the FFT sea: lighting hook attached');
+    if (this.fftReady && (this.rungsOf(2)[this.rung[2]] || {}).fft) { const i = this.rung[2]; this.rung[2] = -1; this.setRung(2, i); }
+    return true;
+  }
+  /** The FFT broke at run time: free it and walk the full tier from the first Gerstner rung (silent fallback, logged). */
+  fallFromFft(why) {
+    this.dropFft(why);
+    if (this.fftReady && (this.rungsOf(2)[this.rung[2]] || {}).fft && !this.pickRung(2, FFT_RUNGS.length)) this.failTier(2, why);
+  }
+  /** FFT state for the diagnostics panel. */
+  fftDiag() {
+    const f = this.fft, N = this.fftStats;
+    if (!f) return `off (${this.fftWhy || 'not used'})`;
+    const p = this.fftSeaParams();
+    return {
+      active: this.fftActive, n: f.n, cascades: f.nc, patches: FFT_L.slice(0, f.nc).join(' / ') + ' m', memMB: +(f.memoryBytes / 1048576).toFixed(1),
+      hsGerstner: +Math.hypot(p.hsW, p.hsS).toFixed(2), hsCascades: N ? N.hs.map((v) => +v.toFixed(2)) : null, boostShort: N ? +N.boost.toFixed(2) : null,
+      chop: N ? N.chop.map((v) => +v.toFixed(2)) : null, sigJ: N ? +N.sigJ.toFixed(3) : null, fetchKm: N ? Math.round(N.fetch / 1000) : null,
+      passes: `1 evolve + ${2 * Math.log2(f.n)} FFT + ${Math.min(f.nc, 2) * 3 + (f.nc > 2 ? 1 : 0)} assemble over ${2 * f.nc * f.n}×${f.n}`,
+      sunShadow: this.shadow && !this.shadowFailed ? 'on (lighting hook)' : this.shadowFailed ? 'FAILED, off' : `off (${this.shadowWhy || 'no lighting hook'})`,
+      note: 'visual surface only: ships ride heightAt (Gerstner), same Hs / period / direction, different phases',
+    };
+  }
+  /** Stop and free the FFT (its rung failed or a leaner tier took over for good); the Gerstner sea is drawn. */
+  dropFft(why) {
+    if (this.fft) { this.fft.dispose(); this.fft = null; this.fftWhy = why; this.tierLog.push(`fft: off (${why}) → Gerstner full`); }
+  }
+  /** One FFT frame + the uniforms the FFT rungs read (whitecap statistics come from the FFT field then). */
+  stepFft(dt) {
+    const f = this.fft, u = this.uniforms;
+    f.setSea(this.fftSeaParams());
+    const N = f.step(dt, this.time);
+    this.fftStats = N;
+    u.uFftW.value.set(1, f.nc > 1 ? 1 : 0, f.nc > 2 ? 1 : 0);
+    u.uFftTexel.value.set(f.texel(0), f.texel(1));
+    // whitecap threshold in σ units of the FFT Jacobian; sub-cascade glitter residual (the short cascade carries Cox–Munk)
+    u.uSigLM.value = N.sigJ;
+    const cm = 0.003 + 0.00512 * this.wind;
+    u.uSig0.value.set(0.05 * cm, 0.05 * cm, 0);
+    u.uFftBrk.value.set(1 - (u.uFoamA.value - 0.6) * N.sigJ, 0.6 * N.sigJ + 1e-4);
+    this.stats.foamThr = 1 - u.uFoamA.value * N.sigJ;
+    return N;
+  }
+  /** Bind the cascade textures and their world-anchored offsets (X, Z = invariant position of the grid origin). */
+  bindFft(X, Z) {
+    const f = this.fft, u = this.uniforms;
+    if (!f || !f.out) return;
+    const off = (c) => posMod(X, FFT_L[c]) + 0.5 * f.texel(c), offZ = (c) => posMod(Z, FFT_L[c]) + 0.5 * f.texel(c);
+    u.uFftOffA.value.set(off(0), offZ(0), off(1), offZ(1)); u.uFftOffC.value.set(off(2), offZ(2));
+    const o = f.out, nt = noShoreTexture();
+    u.uFftD0.value = o[0].d.texture; u.uFftA1.value = o[0].t1.texture; u.uFftA2.value = o[0].t2.texture;
+    u.uFftD1.value = o[1] ? o[1].d.texture : nt; u.uFftB1.value = o[1] ? o[1].t1.texture : nt; u.uFftB2.value = o[1] ? o[1].t2.texture : nt;
+    u.uFftC1.value = o[2] ? o[2].t1.texture : nt;
   }
   /** Build the near (clipmap) grid — kept under ocean.js's method name; `size`/`segs` here are cells-per-ring and cell size. */
   buildNearGrid(n = this.gridN, s0 = this.s0) { return buildClipGrid(n, s0, LEVELS); }
@@ -1365,7 +1639,7 @@ export class Ocean {
   /** ocean.js compatibility: the target component table as [{ amp, ang }] (a snapshot; set the sea with setSea). */
   get target() { return Array.from(this.tAmp, (amp, i) => ({ amp, ang: this.tAng[i] })); }
   /** Jump the live sea to the current target at once (no crossfade) — first contact, teleports, tests. */
-  snapSea() { this.amp.set(this.tAmp); this.amp1.set(this.tAmp); this.ang.set(this.tAng); this.refreshTable(this.time); }
+  snapSea() { this.amp.set(this.tAmp); this.amp1.set(this.tAmp); this.ang.set(this.tAng); this.refreshTable(this.time); if (this.fft) this.fft.snap(); }
   /** Compute the target component table from a (possibly partial) sea description. Missing wave data is derived from the wind. */
   applySea(s) {
     const U = Math.max(0, num(s.windSpd, 5));
@@ -1422,6 +1696,7 @@ export class Ocean {
     let sumS = 0;
     for (let i = 0; i < NW; i++) if (this.fam[i] === 1) { const x = Math.log(this.w[i] / ws); const e = Math.exp(-(x * x) / (2 * 0.085 * 0.085)) * this.w[i]; sw.push([i, e]); sumS += e; }
     const stravel = swellFrom + 180;
+    this.swellTravel = stravel;
     for (const [i, e] of sw) this.tAmp[i] = sumS > 0 ? Math.min(Math.sqrt(2 * e / sumS) * (swellH / 2.35), 0.045 * this.len[i]) : 0;
     sw.map(([i]) => i).sort((a, b) => this.tAmp[b] - this.tAmp[a]).forEach((i, r) => { this.tAng[i] = stravel + spreadAngle(THREE.MathUtils.clamp(rankU(r, i), 0.05, 0.95), 45) / D2R; });
     // keep target angles within ±180° of the live ones so easing takes the short way round
@@ -1700,6 +1975,8 @@ export class Ocean {
     }
     this.refreshTable(time);
     if (this._renderer) this.checkTier();
+    // FFT ocean (desktop): evolve + inverse FFT + assemble every frame while its rung is the one drawn
+    if (this.fftActive && this._renderer) { try { this.stepFft(dt); } catch (e) { console.error('[ocean] FFT step failed', e); this.fallFromFft('FFT step threw: ' + e); } }
     // ripple directions follow the wind travel direction (≤ 0.25 rad/s), phases held at the view centre
     {
       const tgt = (this.windDir + 180) * D2R;
@@ -1744,6 +2021,9 @@ export class Ocean {
     // spindrift
     const sprayK = Math.max(smooth01(12, 22, this.wind), 0.6 * this.storm * smooth01(9, 14, this.wind)) * Math.min(1, this.hs / 1.5);   // spray off the crests in strong wind
     this.spray.visible = sprayK > 0.01 && this.matLevel === 2;
+    // FFT ocean: spray born on the FFT's folding crests (the Gerstner crests are not drawn then)
+    const sprayMat = this.fftActive ? (this.sprayMatFft ||= new THREE.ShaderMaterial({ uniforms: this.sprayUniforms, vertexShader: SPRAY_VERT_FFT, fragmentShader: SPRAY_FRAG, transparent: true, depthWrite: false, fog: true })) : this.sprayMatGerstner;
+    if (this.spray.material !== sprayMat) this.spray.material = sprayMat;
     const su = this.sprayUniforms;
     su.uTime.value = time; su.uFrac.value = sprayK * 0.9;
     su.uThr.value = 1 - (u.uFoamA.value + 0.1) * this.stats.sigLM; su.uSoft.value = 0.6 * this.stats.sigLM + 1e-4;
@@ -1774,6 +2054,10 @@ export class Ocean {
     this.lowLimits = Math.min(c.maxFragmentUniforms || 0, c.maxVertexUniforms || 0) < 512;
     if (cap < 2) { const why = `GPU limits: ${JSON.stringify(info)}`; this.tierLog.push(`lite cap: ${why}`); console.warn('[ocean] GPU limits → lite sea shader', info); }
     this.matCap = cap;
+    // desktop (≥ 512 uniform vectors per stage, float render targets): the FFT ocean, self-tested on its own first; its
+    // rungs then lead the full tier and fall through to the Gerstner full rungs if they fail
+    if (cap === 2 && !this.lowLimits && (c.maxFragmentUniforms || 0) >= 512) this.initFft(renderer);
+    else this.fftWhy = cap < 2 ? 'full tier unavailable' : 'GPU has < 512 uniform vectors (phone path)';
     // offscreen self-tests (8x8 RGBA8 target, always readable) before anything is drawn: the highest tier that has a
     // rung which links AND draws, walking its rungs, then the tiers below; basic is always proven too (last resort)
     let top = -1;
@@ -1787,7 +2071,7 @@ export class Ocean {
   }
   /** A ShaderMaterial for rung i of tier lvl (all tiers share this.uniforms). */
   makeMat(lvl, i) {
-    const r = SEA_RUNGS[lvl][i], phone = !!this.lowLimits, s = seaShader(lvl, r, { phone });
+    const r = this.rungsOf(lvl)[i], phone = !!this.lowLimits, s = seaShader(lvl, r, { phone, shadow: r.fft && !this.shadowFailed ? this.shadow : null });
     // phone builds with cut-outs write alpha 0 there (no discard): a transparent material, drawn first among the
     // transparent objects (renderOrder below the sky dome's -10), i.e. right after the opaques as the opaque sea was
     const m = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: s.vert, fragmentShader: s.frag, fog: true, transparent: phone && !!r.cut, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
@@ -1818,9 +2102,10 @@ export class Ocean {
    * self-test the rest in order; the first that links and draws stays. Returns whether one did.
    */
   pickRung(lvl, from) {
-    const rungs = SEA_RUNGS[lvl], g = this.gpu || {}, tier = ['basic', 'lite', 'full'][lvl];
+    const rungs = this.rungsOf(lvl), g = this.gpu || {}, tier = ['basic', 'lite', 'full'][lvl];
     for (let i = from; i < rungs.length; i++) {
       const r = rungs[i], b = seaBudget(lvl, r, { phone: !!this.lowLimits });
+      if (r.fft && !this.fft) { this.tierLog.push(`${r.name}: skipped (FFT ${this.fftWhy || 'off'})`); continue; }
       if (r.highp && g.precision && g.precision !== 'highp') { this.tierLog.push(`${r.name}: skipped (needs highp)`); continue; }
       if (lvl === 2 && this.lowLimits && !r.lowLimit) { this.tierLog.push(`${r.name}: skipped (GPU has < 512 uniform vectors)`); continue; }
       if (g.maxFragmentUniforms && !budgetFits(b, g, 32)) { this.tierLog.push(`${r.name}: skipped (budget ${this.budgetText(lvl, r, b)} > limits − 32)`); continue; }
@@ -1828,7 +2113,11 @@ export class Ocean {
       this.budget[tier] = this.budgetText(lvl, r, b);
       let t;
       try { t = this.selfTest(lvl); } catch (e) { t = { ok: true, why: 'self-test threw: ' + e }; this.tierLog.push(`${r.name}: ${t.why}`); }
-      if (t.ok) { this.matOk[lvl] = true; this.tierLog.push(`${r.name}: self-test ok (${this.budget[tier]})`); return true; }
+      if (t.ok) {
+        this.matOk[lvl] = true; this.tierLog.push(`${r.name}: self-test ok (${this.budget[tier]})`);
+        if (lvl === 2 && !r.fft && this.fft) this.dropFft(`no FFT rung works, ${r.name} drawn`);
+        return true;
+      }
       this.tierLog.push(`${r.name}: FAILED ${t.why}`);
       console.error(`[ocean] sea shader ${r.name} cannot be used on this GPU (${t.why})`, g);
     }
@@ -1843,7 +2132,8 @@ export class Ocean {
       safeStart: this.safeStart, quality: this.quality, grid: this.gridN, ripples: this.uniforms.uNDet.value, foamRT: !!this.foamRT, wakeSim: this.wake ? (this.wake.ok ? 'on' : 'broken') : (this.wakeOk === false ? 'unsupported' : 'off'),
       ships: this.ships.size, kelvin: this.kel.length, track: this.trackPts.length, spots: this.uniforms.uSpotN.value, env: this.uniforms.uEnvK.value > 0, frames: this.matChecks, upSec: Math.round((nowMs() - this.bornAt) / 1000),
       governor: { fps: Math.round(1 / Math.max(1e-3, this.gov.ema)), lastDrop: this.gov.lastDrop ? Math.round((nowMs() - this.gov.lastDrop) / 1000) + 's ago' : 'never', lastChange: this.gov.lastChange ? Math.round((nowMs() - this.gov.lastChange) / 1000) + 's ago' : 'never' },
-      rungs: this.rung.map((i, l) => SEA_RUNGS[l][i].name).join(' ') + (this.lowLimits ? ' (phone build: constant-index, no inout, alpha cut-outs)' : ' (desktop build)'),
+      fft: this.fftDiag(),
+      rungs: this.rung.map((i, l) => this.rungsOf(l)[i]?.name ?? '?').join(' ') + (this.lowLimits ? ' (phone build: constant-index, no inout, alpha cut-outs)' : ' (desktop build)'),
       budget: { ...this.budget, limit: this.gpu ? `V${this.gpu.maxVertexUniforms}/F${this.gpu.maxFragmentUniforms} vec4, ${this.gpu.maxVaryings} varyings (rungs must fit with 32 to spare)` : 'no renderer yet' },
       gpu: this.gpu || null, tierLog: this.tierLog.slice(-16),
       sea: { wind: this.wind, hs: +this.hs.toFixed(2), level: this.level, storm: this.storm },
@@ -1916,9 +2206,15 @@ export class Ocean {
   }
   failTier(lvl, why) {
     const name = ['basic', 'lite', 'full'][lvl];
+    // an FFT build with the lighting's sun-shadow chunk failed: the same rung without the shadow first
+    if (lvl === 2 && this.shadow && !this.shadowFailed && (this.rungsOf(2)[this.rung[2]] || {}).fft) {
+      this.shadowFailed = true; this.tierLog.push(`sun shadow on the sea: FAILED ${why} → FFT sea without it`);
+      const i = this.rung[2]; this.rung[2] = -1; this.setRung(2, i);
+      return;
+    }
     // a leaner rung of the same tier first (the screen variant of a program can fail where the offscreen test passed)
-    if (lvl > 0 && this.rung[lvl] + 1 < SEA_RUNGS[lvl].length) {
-      this.tierLog.push(`${SEA_RUNGS[lvl][this.rung[lvl]].name}: FAILED ${why}`);
+    if (lvl > 0 && this.rung[lvl] + 1 < this.rungsOf(lvl).length) {
+      this.tierLog.push(`${this.rungsOf(lvl)[this.rung[lvl]].name}: FAILED ${why}`);
       if (this.pickRung(lvl, this.rung[lvl] + 1)) return;
     }
     if (lvl === 0) { console.error(`[ocean] even the basic sea shader failed (${why}); nothing left to fall back to`, this.gpu); this.matOk[0] = true; return; }
@@ -1928,6 +2224,7 @@ export class Ocean {
     this.matCap = lvl - 1;
     this.applyMaterial(this.tier);
     if (this.wake) { this.wake.dispose(); this.wake = null; }
+    if (lvl === 2) this.dropFft('full tier failed');
   }
   /** Draw the sea with tier `lvl` into an offscreen 8x8 RGBA8 render target (readable on every GPU) and read it back. */
   selfTest(lvl) {
@@ -2099,6 +2396,7 @@ export class Ocean {
     u.uKelN.value = nk;
     if (!nk || !this.kel[0].trk) u.uTrkN.value = 0;
     this.bindEnvironment();
+    if (this.fft) this.bindFft(Cx + Fx0, Cz + Fz0);
     const wr = this.wake && this.wake.ok ? this.wake.rect() : null;
     if (wr && this.wakeLive) { u.uWakeRect.value.set(wr.x - Fx0 - Cx, wr.z - Fz0 - Cz, wr.L, 1); u.uWakeTexel.value = 1 / this.wake.n; u.uWakeTex.value = this.wake.texture; }
     else { u.uWakeRect.value.w = 0; u.uWakeTex.value = noShoreTexture(); }
@@ -2111,7 +2409,7 @@ export class Ocean {
     // shelter / foam / pattern frames relative to the grid origin
     u.uShelterRect.value.set(this.shelterOrigin.x - Cx, this.shelterOrigin.z - Cz, SHELTER_SIZE, this.shelterOn ? 1 : 0);
     const Fx = this.frameF.x, Fz = this.frameF.z;
-    u.uFoamOff.value.set(posMod(Cx + Fx, FOAM_W), posMod(Cz + Fz, FOAM_W));
+    u.uFoamOff.value.set(posMod(Cx + Fx, this.foamW), posMod(Cz + Fz, this.foamW));
     u.uFoamShift.value.set(Cx - (this.foamX.x - Fx), Cz - (this.foamX.z - Fz));
     u.uPatOff.value.set(posMod(Cx + Fx, PAT_ANCHOR), posMod(Cz + Fz, PAT_ANCHOR));
     const su = this.sprayUniforms;
@@ -2142,16 +2440,28 @@ export class Ocean {
       this.foamRT = [new THREE.WebGLRenderTarget(n, n, opt), new THREE.WebGLRenderTarget(n, n, opt)];
       this.foamPrev = null;
     }
-    const W = FOAM_W, tex = W / n, Fx = this.frameF.x, Fz = this.frameF.z;
+    // FFT ocean: a 1024 m window (2 m texels) fed by the FFT Jacobian; Gerstner: 2048 m fed by the component sums
+    const fftOn = !!(this.fftActive && this.fftStats && this.fft.out);
+    const W = fftOn ? 1024 : FOAM_W;
+    if (W !== this.foamW) { this.foamW = W; this.foamPrev = null; this.uniforms.uFoamW.value = W; this.foamUniforms.uW.value = W; }
+    const tex = W / n, Fx = this.frameF.x, Fz = this.frameF.z;
     const cfx = Math.round(this.view.x / tex) * tex, cfz = Math.round(this.view.z / tex) * tex;
     const X = cfx + Fx, Z = cfz + Fz; // invariant foam centre
     const fu = this.foamUniforms;
+    const fq = this.foamScene.children[0];
+    if (fftOn) {
+      const f = this.fft, fx = this.foamUniformsFft, wd = this.uniforms.uWindDir.value;
+      fx.uFOff.value.set(posMod(X, FFT_L[0]) + 0.5 * f.texel(0), posMod(Z, FFT_L[0]) + 0.5 * f.texel(0), posMod(X, FFT_L[1]) + 0.5 * f.texel(1), posMod(Z, FFT_L[1]) + 0.5 * f.texel(1));
+      fx.uFLod.value.set(Math.log2(Math.max(1, tex / f.texel(0))), Math.log2(Math.max(1, tex / f.texel(1))));
+      fx.uWindF.value.set(wd.x, wd.y); fx.uRes.value = n;
+      fq.material = this.foamMatFft ||= new THREE.ShaderMaterial({ uniforms: fx, vertexShader: FOAM_VERT, fragmentShader: FOAM_FRAG_FFT, depthTest: false, depthWrite: false });
+    } else fq.material = this.foamMat;
     fu.uCfF.value.set(posMod(X, W) / W, posMod(Z, W) / W);
     if (this.foamPrev) { fu.uCfFPrev.value.set(posMod(this.foamPrev.x + Fx, W) / W, posMod(this.foamPrev.z + Fz, W) / W); fu.uPrevShift.value.set(this.foamPrev.x - cfx, this.foamPrev.z - cfz); }
     else { fu.uCfFPrev.value.copy(fu.uCfF.value); fu.uPrevShift.value.set(0, 0); }
     const Bf = fu.uWaveB.value;
     for (let i = 0; i < NLM; i++) Bf[i].set(wrapTau(this.tph[i] + this.k[i] * (this.dx[i] * cfx + this.dz[i] * cfz)), this.q[i], this.len[i], this.w[i]);
-    const u = this.uniforms, sig = this.stats.sigB;
+    const u = this.uniforms, sig = fftOn ? this.fftStats.sigJ : this.stats.sigB;
     fu.uThr.value = 1 - u.uFoamA.value * sig; fu.uSoft.value = u.uFoamSoft.value * sig + 1e-4; fu.uK.value = 1;
     const life = 2.2 + 2.5 * smooth01(8, 24, this.wind), life2 = 5 + 25 * smooth01(8, 24, this.wind);
     fu.uDecMul.value = Math.exp(-dtU / life); fu.uDecSub.value = dtU / (life * 2.5);
@@ -2204,8 +2514,11 @@ export class Ocean {
     this.mesh.geometry.dispose(); this.far.geometry.dispose(); this.spray.geometry.dispose();
     this.mats.forEach((m) => m.dispose()); this.sprayMat.dispose();
     if (this.wake) this.wake.dispose();
+    if (this.fft) { this.fft.dispose(); this.fft = null; }
+    if (this.sprayMatFft) this.sprayMatFft.dispose();
+    if (this.foamMatFft) this.foamMatFft.dispose();
     if (this._test) { this._test.mesh.geometry.dispose(); this._test.rt.dispose(); } this.depthTex.dispose(); this.shelterTex.dispose();
-    this.foamScene.children[0].geometry.dispose(); this.foamScene.children[0].material.dispose();
+    this.foamScene.children[0].geometry.dispose(); this.foamMat.dispose();
     if (this.foamRT) this.foamRT.forEach((r) => r.dispose());
     if (active === this) active = null;
   }
