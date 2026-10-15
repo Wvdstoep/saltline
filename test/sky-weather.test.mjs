@@ -75,3 +75,18 @@ test('weather map: cover fraction is exact and the map tiles seamlessly', () => 
   assert.ok(Math.abs(sampleMap(m, N, 0.0001, 0.4) - sampleMap(m, N, 0.9999, 0.4)) < 0.05);
   assert.ok(Math.abs(sampleMap(m, N, 0.3, 1.25) - sampleMap(m, N, 0.3, 0.25)) < 1e-9);
 });
+
+test('exposure: a fixed curve of sun elevation, calibrated so sunlit 18 % grey displays as mid grey', async () => {
+  const { acesTone, acesInputFor, linearToSrgb, calibrateDayExposure, exposureCurve, NIGHT_RATIO } = await import('../public/js/skywx.js');
+  const x = acesInputFor(0.45);
+  assert.ok(Math.abs(linearToSrgb(acesTone([x, x, x])[1]) - 0.45) < 1e-4);
+  const kDay = calibrateDayExposure(0.85, 0.148, 0.45);
+  const grey = (0.18 / Math.PI) * (0.85 + 0.148) * kDay;
+  assert.ok(Math.abs(linearToSrgb(acesTone([grey, grey, grey])[1]) - 0.45) < 1e-3, 'grey lands on 0.45');
+  const white = grey / 0.18 * 0.85;
+  assert.ok(linearToSrgb(acesTone([white, white, white])[1]) < 0.9, 'a sunlit white hull does not clip');
+  const lzen = (e) => Math.max(1e-9, 0.012 * Math.max(0, Math.sin(e * Math.PI / 180)));
+  const K = exposureCurve(kDay, lzen(60), lzen, () => 0);
+  assert.equal(K(60), kDay); assert.equal(K(80), kDay);
+  assert.ok(K(10) > kDay && K(2) > K(10) && K(-20) === kDay * NIGHT_RATIO, 'rises as the Sun sets, capped at night');
+});
