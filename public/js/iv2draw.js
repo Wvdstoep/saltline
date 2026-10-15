@@ -1,4 +1,4 @@
-import { createPBRTable, createPBRBlackjackTable, createPBRRouletteTable, createPBRBarCounter, createPBRSlotIsland, createPBRCasinoCeiling, getCasinoCarpetMat, getCasinoDamaskMat, loadGLTFProp, getPBRMaterials, applyCasinoEnvironment } from './iv2pbr.js';
+import { casinoBatch, casinoItem, dressCasinoRoom, dressCasinoWall, prepareCasino, warmCasino, casinoTick } from './iv2pbr.js';   // the casino (and palms): procedural, instanced, shared textures
 // Interiors v2 — the renderer (docs/INTERIORS-V2-CONTRACT.md §5–6, Lane R).
 //
 // buildInteriorV2(I, plan, root, { phone }) draws a Plan v2 into `root` and returns the zone groups interior.js streams
@@ -1132,7 +1132,7 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
   const zones = plan.zones?.length ? plan.zones.map((z) => z.id) : ['deck'];
   const zoneOf = (o) => o.zone || 'deck';
   const groups = new Map();
-  const ctrl = { plan, zones: new Map(), mats, U: S.U, phone, doors: [], wipers: [], chunkOfRoom: new Map(), views: new Map((plan.views || []).map((v) => [v.room, v.zones])), stats: { tris: 0, calls: 0 } };
+  const ctrl = { plan, zones: new Map(), mats, U: S.U, phone, doors: [], wipers: [], chunkOfRoom: new Map(), views: new Map((plan.views || []).map((v) => [v.room, v.zones])), stats: { tris: 0, calls: 0 }, casinoZones: new Set() };
   for (const c of plan.chunks || []) for (const rid of c.rooms) ctrl.chunkOfRoom.set(rid, c.id);
   // legacy props: the room they stand in (for the bake) and their chunk
   const roomAtPt = (x, z, y) => { let best = -1, ba = Infinity; for (let i = 0; i < plan.rooms.length; i++) { const r = plan.rooms[i]; if (Math.abs(r.y - y) > 0.4 || x < r.x0 - 0.05 || x > r.x1 + 0.05 || z < r.z0 - 0.05 || z > r.z1 + 0.05) continue; const a = (r.x1 - r.x0) * (r.z1 - r.z0); if (a < ba) { ba = a; best = i; } } return best; };
@@ -1143,6 +1143,7 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
     const chunkGeo = new Map(), chunkLo = new Map(), zoneLo = new Geo(size);
     const chunkOf = (cid) => { if (!chunkGeo.has(cid)) { const g = new Geo(size); if (phone) g.segCap = 6; chunkGeo.set(cid, g); chunkLo.set(cid, new Geo(size)); } return [chunkGeo.get(cid), chunkLo.get(cid)]; };
     const rooms = plan.rooms.filter((r) => zoneOf(r) === zid);
+    const cb = casinoBatch(phone);   // casino rooms, casino furniture and palms of this zone: shared parts, one instanced mesh each
     // ---- rooms: floors, ceilings / deckheads, walls with openings, lights
     const ops = new Map();
     const push = (id, side, o) => { const k = id + ':' + side; let l = ops.get(k); if (!l) { l = []; ops.set(k, l); } l.push(o); };
@@ -1158,70 +1159,10 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
       shell.room = roomIndex.get(r.id);
       const mat = r.mat || { floor: 'lino_grey', wall: 'laminate', ceil: 'ceil_panel' };
       for (const w of r.windows || []) push(r.id, w.side, { from: w.from, to: w.to, bottom: w.bottom, top: w.top, glass: true });
-      const isCasino = r.space === 'casino' || (r.name && r.name.toLowerCase().includes('casino')) || r.mat?.floor === 'carpet_pax';
-      if (isCasino) {
-        applyCasinoEnvironment(I.app?.scene, I.app?.renderer);
-        const pbrMats = getPBRMaterials();
-        const midX = (r.x0 + r.x1) / 2, midZ = (r.z0 + r.z1) / 2;
-
-        // Warm Ambient Casino Lighting (Zero glare, rich atmosphere)
-        const casinoHemi = new THREE.HemisphereLight(0xffebd0, 0x22120a, 0.95);
-        zg.add(casinoHemi);
-        const pitLight1 = new THREE.PointLight(0xffedd0, 1.8, 18, 1.2);
-        pitLight1.position.set(midX - 4.0, r.y + r.h - 0.3, midZ);
-        const pitLight2 = new THREE.PointLight(0xffedd0, 1.8, 18, 1.2);
-        pitLight2.position.set(midX + 4.0, r.y + r.h - 0.3, midZ);
-        zg.add(pitLight1, pitLight2);
-
-        // Real Royal Casino Damask Carpet floor mesh with World-Scale UV mapping (1 repeat per 2.6 meters)
-        if (r.drawFloor !== false && !(r.open && !r.drawFloor)) {
-          const carpetMat = getCasinoCarpetMat();
-          for (const q of rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles)) {
-            const fw = q.x1 - q.x0, fd = q.z1 - q.z0;
-            const floorGeo = new THREE.PlaneGeometry(fw, fd);
-            floorGeo.rotateX(-Math.PI / 2);
-            const uvAttr = floorGeo.attributes.uv;
-            for (let i = 0; i < uvAttr.count; i++) {
-              const u = uvAttr.getX(i);
-              const v = uvAttr.getY(i);
-              uvAttr.setXY(i, (u * fw) / 2.6, (v * fd) / 2.6);
-            }
-            uvAttr.needsUpdate = true;
-            const floorMesh = new THREE.Mesh(floorGeo, carpetMat);
-            floorMesh.position.set((q.x0 + q.x1) / 2, r.y + 0.003, (q.z0 + q.z1) / 2);
-            floorMesh.receiveShadow = true;
-            zg.add(floorMesh);
-          }
-        }
-        // Luxury Coffered Casino Ceiling with Gold Recessed Trays & Warm Cove Glow
-        if (r.ceiling !== false) {
-          zg.add(createPBRCasinoCeiling(r, pbrMats));
-        }
-        // Marble columns with brass capitals
-        const colPositions = [
-          [r.x0 + 1.2, r.z0 + 1.2], [r.x1 - 1.2, r.z0 + 1.2],
-          [r.x0 + 1.2, r.z1 - 1.2], [r.x1 - 1.2, r.z1 - 1.2],
-          [(r.x0 + r.x1) / 2, r.z0 + 1.2], [(r.x0 + r.x1) / 2, r.z1 - 1.2]
-        ];
-        for (const [cx, cz] of colPositions) {
-          const col = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, r.h, 24), pbrMats.marble);
-          col.position.set(cx, r.y + r.h / 2, cz);
-          const baseM = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.35, 0.16, 24), pbrMats.brass);
-          baseM.position.set(cx, r.y + 0.08, cz);
-          const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.26, 0.18, 24), pbrMats.brass);
-          cap.position.set(cx, r.y + r.h - 0.09, cz);
-          zg.add(col, baseM, cap);
-        }
-        // Chandeliers
-        for (const ox of [-5.5, 5.5]) {
-          for (const oz of [-4.0, 4.0]) {
-            loadGLTFProp('lantern_chandelier_01', (ch) => {
-              ch.position.set(midX + ox, r.y + r.h - 0.75, midZ + oz);
-              ch.scale.setScalar(1.2);
-              zg.add(ch);
-            });
-          }
-        }
+      const isCasino = r.space === 'casino' || (r.name && r.name.toLowerCase().includes('casino'));   // only the casino itself (carpet_pax lounges, bars and restaurants keep their own look)
+      if (isCasino) {   // carpet, coffered ceiling with downlights, marble columns, chandeliers (no lights: see iv2pbr.js)
+        const floor = r.drawFloor !== false && !(r.open && !r.drawFloor) ? rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles) : [];
+        dressCasinoRoom(cb, r, floor);
       } else {
         if (r.drawFloor !== false && !(r.open && !r.drawFloor)) for (const q of rectMinus({ x0: r.x0, x1: r.x1, z0: r.z0, z1: r.z1 }, r.floorHoles)) shell.quad(mat.floor, [q.x0, r.y, q.z1], [q.x1, r.y, q.z1], [q.x1, r.y, q.z0], [q.x0, r.y, q.z0], [0, 1, 0], q.x0, q.z1, q.x1, q.z0);
       }
@@ -1234,82 +1175,13 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
       for (const [side, [c, from, to]] of Object.entries(sides)) {
         if (!r.walls[side]) continue;
         wallFace(shell, r, side, c, from, to, r.y, wallTop + 0.06, ops.get(r.id + ':' + side), mat.wall, r.lined ? 'rubber_black' : null);
-        if (isCasino) {
-          const pbrMats = getPBRMaterials();
-          const wlen = Math.abs(to - from), wh = wallTop + 0.06 - r.y;
-
-          // Two-tier luxury architectural casino wall:
-          // Lower: Rich Dark American Walnut Wainscot Paneling with Boiserie Frame
-          const wainscotH = Math.min(1.25, wh * 0.45);
-          const wainscotGeo = new THREE.PlaneGeometry(wlen, wainscotH);
-          const wainscotMesh = new THREE.Mesh(wainscotGeo, pbrMats.walnut);
-          wainscotMesh.receiveShadow = true;
-
-          // Upper: Royal Ruby & Gold Damask Fabric Wall Tapestry
-          const upperH = wh - wainscotH;
-          const upperGeo = new THREE.PlaneGeometry(wlen, upperH);
-          const uUv = upperGeo.attributes.uv;
-          for (let i = 0; i < uUv.count; i++) {
-            uUv.setXY(i, (uUv.getX(i) * wlen) / 1.8, (uUv.getY(i) * upperH) / 1.8);
-          }
-          uUv.needsUpdate = true;
-          const upperMesh = new THREE.Mesh(upperGeo, getCasinoDamaskMat());
-          upperMesh.receiveShadow = true;
-
-          // Raised Boiserie Frames on Wainscot
-          const nFrames = Math.max(1, Math.floor(wlen / 2.2));
-          const fW = (wlen - 0.4) / nFrames;
-          const framesGroup = new THREE.Group();
-          for (let f = 0; f < nFrames; f++) {
-            const fx = -wlen / 2 + 0.2 + (f + 0.5) * fW;
-            const bFrame = new THREE.Mesh(new THREE.BoxGeometry(fW - 0.24, wainscotH - 0.26, 0.025), pbrMats.brass);
-            bFrame.position.set(fx, r.y + wainscotH / 2, 0.012);
-            framesGroup.add(bFrame);
-          }
-
-          // Middle: Protruding Polished Brass Chair Rail
-          const railGeo = new THREE.BoxGeometry(wlen, 0.06, 0.05);
-          const railMesh = new THREE.Mesh(railGeo, pbrMats.brass);
-
-          // Top: Polished Brass Crown Molding
-          const crownGeo = new THREE.BoxGeometry(wlen, 0.05, 0.04);
-          const crownMesh = new THREE.Mesh(crownGeo, pbrMats.brass);
-
-          const wallGroup = new THREE.Group();
-          wainscotMesh.position.set(0, r.y + wainscotH / 2, 0);
-          upperMesh.position.set(0, r.y + wainscotH + upperH / 2, 0);
-          railMesh.position.set(0, r.y + wainscotH, 0.02);
-          crownMesh.position.set(0, r.y + wh - 0.025, 0.02);
-          wallGroup.add(wainscotMesh, upperMesh, railMesh, crownMesh, framesGroup);
-
-          // Sconces along walls
-          const numSconces = Math.max(1, Math.floor(wlen / 4.5));
-          for (let s = 0; s < numSconces; s++) {
-            const sx = -wlen / 2 + (s + 0.5) * (wlen / numSconces);
-            const sconce = new THREE.Group();
-            const sBack = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.28, 0.02), pbrMats.brass);
-            const sArm = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.14, 8), pbrMats.brass);
-            sArm.rotation.x = Math.PI / 2;
-            sArm.position.set(0, 0, 0.08);
-            const sGlobe = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 12), pbrMats.light);
-            sGlobe.position.set(0, 0.04, 0.15);
-            sconce.add(sBack, sArm, sGlobe);
-            sconce.position.set(sx, r.y + wainscotH + 0.45, 0.02);
-            wallGroup.add(sconce);
-          }
-
-          if (side === 'n') { wallGroup.position.set((from + to) / 2, 0, c + 0.01); wallGroup.rotation.y = 0; }
-          else if (side === 's') { wallGroup.position.set((from + to) / 2, 0, c - 0.01); wallGroup.rotation.y = Math.PI; }
-          else if (side === 'w') { wallGroup.position.set(c + 0.01, 0, (from + to) / 2); wallGroup.rotation.y = Math.PI / 2; }
-          else if (side === 'e') { wallGroup.position.set(c - 0.01, 0, (from + to) / 2); wallGroup.rotation.y = -Math.PI / 2; }
-          zg.add(wallGroup);
-        }
+        if (isCasino) dressCasinoWall(cb, r, side, c, from, to, wallTop + 0.06, ops.get(r.id + ':' + side));
       }
       // window frames and glass; rails round floor openings
       for (const w of r.windows || []) windowFrame(shell, r, w);
       if (r.cuts?.length) cutRails(shell, r);
       // light fittings (emissive diffusers) of this room
-      for (const l of (plan.lights || []).filter((q) => q.room === r.id)) lightFitting(shell, r, l);
+      if (!isCasino) for (const l of (plan.lights || []).filter((q) => q.room === r.id)) lightFitting(shell, r, l);   // the casino has its own coffer downlights
     }
     // ---- stairs, deck surface, rails
     for (const s of plan.stairs) if (zoneOf(s) === zid) { shell.room = roomIndex.get(s.head) ?? -1; drawStair(shell, s, plan.style); }
@@ -1327,51 +1199,7 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
         hi.room = ri; lo.room = ri; zoneLo.room = ri;
         if (p.t === 'k2') {
         const it = ITEMS[p.item];
-        let pbrMesh = null;
-        if (p.item === 'poker_table') {
-          pbrMesh = createPBRTable('poker');
-        } else if (p.item === 'blackjack') {
-          pbrMesh = createPBRBlackjackTable(false);
-        } else if (p.item === 'baccarat_table') {
-          pbrMesh = createPBRBlackjackTable(true);
-        } else if (p.item === 'roulette') {
-          pbrMesh = createPBRRouletteTable();
-        } else if (p.item === 'slot_island') {
-          pbrMesh = createPBRSlotIsland(p.w || 3.2, p.d || 1.8, p.h || 1.65);
-        } else if (p.item === 'bar_counter' || p.item === 'bar_island') {
-          pbrMesh = createPBRBarCounter(p.w || 5.0, p.d || 1.1, p.h || 1.15);
-        } else if (p.item === 'palm') {
-          loadGLTFProp('potted_plant_01', (mesh) => {
-            mesh.position.set(p.x, p.y, p.z);
-            mesh.rotation.y = p.rotY || 0;
-            mesh.scale.setScalar(1.4);
-            zg.add(mesh);
-          });
-          continue;
-        }
-        if (pbrMesh) {
-          pbrMesh.position.set(p.x, p.y, p.z);
-          pbrMesh.rotation.y = p.rotY || 0;
-          zg.add(pbrMesh);
-          // Place realistic chairs around table
-          if (it?.spots) {
-            for (const sp of it.spots) {
-              if (sp[0] === 'sit' || (p.item === 'roulette' && sp[0] === 'stand')) {
-                loadGLTFProp('modern_arm_chair_01', (chair) => {
-                  const rad = p.rotY || 0, c = Math.cos(rad), s = Math.sin(rad);
-                  const lx = sp[1], lz = sp[2];
-                  const wx = p.x + lx * c + lz * s;
-                  const wz = p.z - lx * s + lz * c;
-                  chair.position.set(wx, p.y, wz);
-                  chair.rotation.y = rad + (sp[3] || Math.atan2(-lx, -lz));
-                  chair.scale.setScalar(0.92);
-                  zg.add(chair);
-                });
-              }
-            }
-          }
-          continue;
-        }
+        if (casinoItem(cb, p, it)) continue;   // casino tables, slot islands, bars and palms: procedural parts, instanced per zone
         drawItem(hi, p, 0); if (it && (p.h ?? it.h) >= (phone ? 1.0 : 0.7) && !it.over) { drawItem(lo, p, 1); if ((p.h ?? it.h) >= 1.2) drawItem(zoneLo, p, 1); } }
         else { const room = byId.get(p.room); drawRun(hi, p, room, 0); drawRun(lo, p, room, 1); if (p.kind !== 'frame') drawRun(zoneLo, p, room, 1); }
         if (p.anim === 'wiper') ctrl.wipers.push(p);
@@ -1388,6 +1216,9 @@ export function buildInteriorV2(I, plan, root, opts = {}) {
       try { I.drawProp(lctx, p); } catch (e) { console.warn('[iv2] prop', p.t, e); }
     }
     // ---- meshes
+    if (cb.casino) { ctrl.casinoZones.add(zid); prepareCasino({ renderer: I.app?.renderer, phone }); }
+    cb.finish(zg);
+    if (cb.casino) warmCasino(I.app, zg);   // compile the casino programs in the background (KHR_parallel_shader_compile)
     for (const m of shell.build(mats, bake)) { m.userData.part = 'shell'; zg.add(m); }
     for (const m of adapter.extra) zg.add(m);
     const chunks = new Map();
@@ -1551,6 +1382,9 @@ function frameV2(ctrl, I, dt) {
   // window views: the zones the room looks onto show their shell (and LOD1 on desktop)
   const views = room ? ctrl.views.get(room.id) : null;
   if (views) for (const v of views) { const z = ctrl.zones.get(v); if (z && !z.group.visible) { z.group.visible = true; for (const c of z.chunks.values()) { c.hi.visible = false; c.lo.visible = false; } if (z.far) z.far.visible = !ctrl.phone; } }
+  // the casino: prepared while in sight, its GPU memory released when it has been out of sight a while
+  let casinoSeen = false; for (const id of ctrl.casinoZones) if (ctrl.zones.get(id)?.group.visible) casinoSeen = true;
+  casinoTick(casinoSeen, dt, I.app, ctrl.phone);
   // light mode
   const app = I.app || {};
   const you = app.you || {};
