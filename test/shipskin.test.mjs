@@ -129,3 +129,13 @@ test('shipgen: hawse pipes, anchors and skin facts on merchant hulls, none on ya
   const sk = r.info.skin;
   assert.ok(sk && sk.hawse && sk.bootH > 0 && typeof sk.zStemAt === 'function' && sk.zMid[0] < sk.zMid[1] && sk.transomHalf > 1);
 });
+
+test('rust never swallows a damaged hull: coverage saturates well below full and is capped in the shader', () => {
+  const m = makeSkinMaterial('hull', 0x8b2b1a, { uniforms: skinUniforms(), preset: 'paint' });
+  const shader = { uniforms: {}, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader };
+  m.onBeforeCompile(shader);
+  const f = shader.fragmentShader;
+  assert.ok(f.includes('float wr = 0.55 * w;'), 'rust coverage scales by 0.55 of wear');
+  assert.ok(f.includes('rust = min(rust, 0.85);'), 'rust is capped');
+  assert.ok(!f.includes('1.0 - w * 1.15'), 'the old threshold that painted the whole ship at low condition is gone');
+});

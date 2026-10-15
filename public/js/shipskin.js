@@ -97,10 +97,13 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0
   float mott = wnoise(P * 0.33 + 17.0);
   col *= 0.95 + 0.1 * mott * (1.0 - skinGlass);
   col = mix(col, vec3(dot(col, vec3(0.3333))), 0.22 * grime * mott * (1.0 - skinGlass));
-  // rust patches grow with wear (hull condition)
+  // rust patches grow with wear (hull condition) but never swallow the ship: a badly damaged hull is still mostly paint
+  // with streaks and patches (at w = 1 about a third of the surface), never a rust-coloured block
   float streakN = wnoise(vec3(P.x * 4.0, P.y * 0.35, P.z * 4.0));
-  rust = smoothstep(1.0 - w * 1.15, 1.0 - w * 1.15 + 0.22, n1) * (0.6 + 0.4 * streakN);
-  rust += smoothstep(1.0 - w * 0.9, 1.0 - w * 0.9 + 0.1, streakN) * 0.5 * w;
+  float wr = 0.55 * w;                                            // coverage saturates well below full
+  rust = smoothstep(1.0 - wr, 1.0 - wr + 0.22, n1) * (0.6 + 0.4 * streakN);
+  rust += smoothstep(1.0 - wr * 0.8, 1.0 - wr * 0.8 + 0.1, streakN) * 0.45 * w;
+  rust = min(rust, 0.85);
 #if SKIN_KIND == 1
   float side = step(0.35, abs(nS.x));
   float transom = step(0.6, abs(nS.z)) * step(0.0, P.z);
