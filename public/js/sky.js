@@ -9,22 +9,31 @@
 // renderOrder -10, after all opaque geometry) with blending  out = sky + background * T  where T = transmittance of
 // atmosphere x clouds x fog. Opaque things occlude the dome by depth, so the dome only shades empty sky.
 //
-// Units: radiance for a top-of-atmosphere Sun of 1, times an eye-adaptation exposure K (skywx.exposureFor), then the
-// renderer's ACES tone mapping.  Debug: ?sky=low|medium|high (cloud tier), ?wx=<preset> (skywx.WX_PRESETS),
+// Units: radiance for a top-of-atmosphere Sun of 1, times the exposure K, then the renderer's ACES tone mapping.
+// EXPOSURE is a fixed curve of the Sun's elevation (skywx.exposureCurve), calibrated once from the model itself so
+// that an 18 % grey facing a high Sun displays as sRGB 0.45 (skywx.calibrateDayExposure): the sun disc is the only
+// thing near white, a sunlit white hull lands around 0.85 and a shaded one around 0.35. SKY_GAIN lifts the
+// single-scattering sky to the measured diffuse/direct ratio (~17 % on a clear day) so shade is never black.
+// LIGHT BUDGET (no double counting): the Sun is one DirectionalLight with irradiance T_sun * K; the sky's
+// irradiance pi * L_sky is shared between the HemisphereLight (every material) and the PMREM environment (standard
+// materials only; three.js gives Lambert materials no IBL): hemisphere = (1 - ENV_SHARE), environment = ENV_SHARE.  Debug: ?sky=low|medium|high (cloud tier), ?wx=<preset> (skywx.WX_PRESETS),
 // ?skyenv=0 (no environment map), window.saltlineSky(preset|object|null).
 import * as THREE from 'three';
 import { solarPosition, lunarPosition } from '/shared/astro.js';
 import { ATMOS_GLSL, skyRadiance, skyAmbient, transmittance, mieForVisibility, luminance, MIE_G } from './atmos.js';
 import { weatherMap, sampleMap } from './skynoise.js';
-import { cloudParams, exposureFor, limitingMagnitude, moonPhaseLaw, twilightLuminance, FULL_MOON_E, WX_PRESETS } from './skywx.js';
+import { cloudParams, limitingMagnitude, moonPhaseLaw, twilightLuminance, acesTone, exposureCurve, calibrateDayExposure, NIGHT_RATIO, FULL_MOON_E, WX_PRESETS } from './skywx.js';
 import { VolumeClouds, canRenderHalfFloat } from './clouds.js';
 import { CelestialSphere } from './celestial.js';
 
 const D2R = Math.PI / 180;
 const DOME_R = 39000;
-const MOON_BOOST = 20;         // moonlit sky: scotopic adaptation on top of the exposure (moonlight is 1/400000 of sunlight)
-const SUN_GAIN = 3.3;          // DirectionalLight intensity of an unobstructed high Sun (keeps the materials' tuning)
-const MOON_GAIN = 0.42;        // ... of a high full Moon
+const SKY_GAIN = 2.0;          // sky radiance relative to the single-scattering model (measured diffuse / direct ratio)
+const ENV_SHARE = 0.5;         // the part of the sky irradiance the environment map carries (the hemisphere light the rest)
+const HEMI_CAP = 3.0;          // cap on the sky irradiance fed to the hemisphere + environment (display units)
+const MOON_SKY = 3.0;          // display radiance scale of the moonlit sky (scotopic look: the eye sees it, the exposure does not)
+const MOON_LIGHT = 0.42;       // DirectionalLight irradiance of a high full Moon (display units)
+const NIGHT_FLOOR = 0.035;     // starlight / airglow floor of the hemisphere light so ships never go black
 const WRAP = 420000;           // stable-coordinate wrap: a common multiple of every cloud noise tile (m)
 const WMAP = 60000;
 
@@ -48,7 +57,7 @@ uniform vec2 uCamXZ; uniform vec2 uWindOff; uniform vec2 uWindOffHi; uniform flo
 uniform float uCover; uniform float uHigh; uniform float uBase; uniform float uThick; uniform float uCbTop; uniform float uCb; uniform float uStratus; uniform float uDens; uniform float uHazeDist;
 uniform vec3 uLightDir; uniform vec3 uLightCol; uniform vec3 uDiffCol; uniform vec3 uHiLightCol; uniform vec3 uAmbTop; uniform vec3 uAmbBot;
 uniform vec3 uFogRad; uniform float uFogVis; uniform float uFogH; uniform vec3 uFogSun;
-uniform float uFlash; uniform vec3 uFlashDir;
+uniform float uFlash; uniform vec3 uFlashDir; uniform float uOut;
 varying vec3 vDir; varying vec3 vR1; varying vec3 vM1; varying vec3 vR2; varying vec3 vM2; varying vec3 vMs; varying vec3 vTv;
 #define A_RE 6360000.0
 float a_phaseR(float mu) { return 0.0596831 * (1.0 + mu * mu); }
@@ -140,7 +149,7 @@ void main() {
   float path = d.y > 0.0005 ? min(uFogH / d.y, 80000.0) : 80000.0;
   float tf = exp(-3.912 * path / max(uFogVis, 30.0));
   col = mix(uFogRad + uFogSun * hg(mu1, 0.7) * (1.0 - tf), col, tf); T *= tf;
-  gl_FragColor = vec4(col, T);
+  gl_FragColor = vec4(col * uOut, T);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -166,16 +175,6 @@ function domeGeometry(radius, nAz = 72, rings = 30) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setIndex(idx);
   return g;
-}
-
-/** three.js r160 ACESFilmic (for colours that must match tone-mapped output, e.g. scene fog). */
-function acesTone(c, exposure = 1) {
-  const v = c.map((x) => (x * exposure) / 0.6);
-  const m1 = [[0.59719, 0.07600, 0.02840], [0.35458, 0.90834, 0.13383], [0.04823, 0.01566, 0.83777]];
-  const m2 = [[1.60475, -0.10208, -0.00327], [-0.53108, 1.10813, -0.07276], [-0.07367, -0.00605, 1.07602]];
-  const mul = (m, x) => [0, 1, 2].map((i) => m[0][i] * x[0] + m[1][i] * x[1] + m[2][i] * x[2]);
-  const a = mul(m1, v).map((x) => (x * (x + 0.0245786) - 0.000090537) / (x * (0.983729 * x + 0.4329510) + 0.238081));
-  return mul(m2, a).map((x) => Math.max(0, Math.min(1, x)));
 }
 
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
@@ -213,7 +212,7 @@ export class SkySystem {
       uCover: { value: 0.3 }, uHigh: { value: 0.1 }, uBase: { value: 1200 }, uThick: { value: 1500 }, uCbTop: { value: 9000 }, uCb: { value: 0 }, uStratus: { value: 0 }, uDens: { value: 0.03 }, uHazeDist: { value: 40000 },
       uLightDir: { value: V3(0, 1, 0) }, uLightCol: { value: V3(10, 10, 10) }, uDiffCol: { value: V3(10, 10, 10) }, uHiLightCol: { value: V3(10, 10, 10) }, uAmbTop: { value: V3(0.3, 0.35, 0.4) }, uAmbBot: { value: V3(0.1, 0.11, 0.12) },
       uFogRad: { value: V3(0.5, 0.55, 0.6) }, uFogVis: { value: 30000 }, uFogH: { value: 250 }, uFogSun: { value: V3() },
-      uFlash: { value: 0 }, uFlashDir: { value: V3(0, 1, 0) },
+      uFlash: { value: 0 }, uFlashDir: { value: V3(0, 1, 0) }, uOut: { value: 1 },
     };
     this.mat = new THREE.ShaderMaterial({
       uniforms: this.u, vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide, depthWrite: false, depthTest: true, fog: false,
@@ -241,9 +240,32 @@ export class SkySystem {
     this.cur = null; this.override = null;
     const pre = urlParam('wx'); if (pre && WX_PRESETS[pre]) this.override = { ...WX_PRESETS[pre] };
     this.windOff = new THREE.Vector2(); this.windOffHi = new THREE.Vector2();
-    this.lat0 = null; this.slow = null; this.slowAt = -1e9; this.K = 14; this.sunVis = 1; this.moonVis = 1;
+    this.lat0 = null; this.slow = null; this.slowAt = -1e9; this.sunVis = 1; this.moonVis = 1;
+    this.buildExposure(); this.K = this.kCurve(60);
     this.fogNear = 3000; this.fogFar = 15000;
     this.state = {};
+  }
+  /**
+   * The exposure curve, from the model itself: zenith luminance of a clear standard sky (30 km visibility) per
+   * elevation, and the daytime exposure that puts a sunlit 18 % grey at display 0.45 under a 60 deg Sun.
+   */
+  buildExposure() {
+    const mieRef = mieForVisibility(30000);
+    const el = (e) => { const r = e * D2R; return [0, Math.sin(r), -Math.cos(r)]; };
+    const sky = (e, dir) => { const L = el(e); return skyRadiance(10, dir, L, mieRef, skyAmbient(10, L, mieRef), 12); };
+    const tab = [];
+    for (let e = -24; e <= 90; e += 3) tab.push(luminance(sky(e, [0, 1, 0])));
+    const lzenAt = (e) => {
+      const x = Math.max(0, Math.min(tab.length - 1.001, (e + 24) / 3)), i = Math.floor(x), f = x - i;
+      return tab[i] * (1 - f) + tab[i + 1] * f;
+    };
+    const zen60 = sky(60, [0, 1, 0]), hor60 = sky(60, [0, 0.035, 0.9994]);
+    const avg60 = lerp3(zen60, hor60, 0.55);                                   // the mean the hemisphere light gets
+    const eSun = luminance(transmittance(10, Math.sin(60 * D2R), mieRef));
+    const eSky = Math.PI * luminance(avg60) * SKY_GAIN;
+    this.kDay = calibrateDayExposure(eSun, eSky, 0.45);
+    this.kCurve = exposureCurve(this.kDay, lzenAt(60), lzenAt, twilightLuminance);
+    this.exposureInfo = { kDay: this.kDay, eSun, eSky, kNight: this.kDay * NIGHT_RATIO };
   }
   tierOpts(t) { return t === 'high' ? { scale: 0.5, steps: 44 } : { scale: 0.34, steps: 30 }; }
   setTier(t) {
@@ -350,23 +372,20 @@ export class SkySystem {
       };
     }
     const S = this.slow;
-    // ---- exposure (eye adaptation), smoothed
+    // ---- exposure: a fixed curve of the Sun's elevation (never of the weather, never drifting)
     const Ltw = twilightLuminance(sun.trueElevDeg ?? sun.elevDeg);
-    // the eye adapts partly to an overcast: half-weight the deck's own (physical) brightness
-    const tauDeck = P.dens * 1.2 * (P.thick + P.cb * (P.cbTop - P.base - P.thick) * 0.6);
-    const deckPhys = luminance(S.TsunCloud) * (0.159 / (1 + 0.11 * tauDeck)) * Math.max(0.05, sunDir[1] + 0.1);
-    const Kt = exposureFor(S.lzenSun * (1 - 0.5 * P.cover) + deckPhys * 0.5 * P.cover + Ltw);
-    this.K = jump ? Kt : this.K + (Kt - this.K) * (1 - Math.exp(-dt / 1.5));
+    this.K = this.kCurve(sun.trueElevDeg ?? sun.elevDeg);
     if ((jump || snapped) && this.vol) this.vol.histValid = false;   // no ghost of the old sky after a time jump / debug weather
-    const K = this.K;
-    const mB = S.moonE * MOON_BOOST;
+    const K = this.K, Ks = K * SKY_GAIN;
+    // the moonlit sky in display units (physical moonlight is 1/400000 of the Sun: no exposure shows it, the eye does)
     const moonUp = sstep(-0.05, 0.05, moon.elev);
+    const mB = (MOON_SKY * moonPhaseLaw((moon.phaseAngle || 0) / D2R) * moonUp) / Ks;
     // ---- clouds: what the sky dome and the volumetric pass need
-    const lightIsSun = sun.elevDeg > -4 || luminance(S.TsunCloud) * 1 > luminance(S.TmoonCloud) * mB;
+    const lightIsSun = sun.elevDeg > -4 || luminance(S.TsunCloud) * K > luminance(S.TmoonCloud) * Ks * mB;
     const lightDir = lightIsSun ? sunDir : moonDir;
-    const sunC = mul3(S.TsunCloud, K), moonC = mul3(S.TmoonCloud, K * mB * moonUp * 0.35);   // moonlit cloud: light grey, not daylight
+    const sunC = mul3(S.TsunCloud, K), moonC = mul3(S.TmoonCloud, Ks * mB * 0.35);   // moonlit cloud: light grey, not daylight
     const lightCol = lightIsSun ? add3(sunC, moonC, 0.0) : moonC;
-    const ambClear = add3(mul3(S.ambS, K), S.ambM, K * mB);
+    const ambClear = add3(mul3(S.ambS, Ks), S.ambM, Ks * mB);
     const ambTop = mul3(ambClear, 1.9);
     // diffuse light through clouds is whiter than the direct beam (skylight mixed in)
     const lLum = luminance(lightCol), diffCol = [0.5 * lightCol[0] + 0.5 * lLum * 0.93, 0.5 * lightCol[1] + 0.5 * lLum, 0.5 * lightCol[2] + 0.5 * lLum * 1.1];
@@ -389,11 +408,11 @@ export class SkySystem {
     // light from below: the sky- and sun-lit sea when clear, the dim sea under a deck when overcast
     const ambBot = lerp3(add3(mul3(ambClear, 0.55), mul3(lightCol, 0.03 * Math.max(0, lightDir[1]))), mul3(deckDiff, 0.35), Math.min(1, P.cover));
     const base = add3(deckDiff, ambBot, 1.0);
-    const twZ = [0.45 / 0.611 * Ltw * K, 0.62 / 0.611 * Ltw * K, 1.0 / 0.611 * Ltw * K];
-    const twG = [1.0 / 0.69 * Ltw * K * 2.5, 0.62 / 0.69 * Ltw * K * 2.5, 0.35 / 0.69 * Ltw * K * 2.5];
-    const zenClear = add3(add3(mul3(S.zenS, K), S.zenM, K * mB), twZ);
+    const twZ = [0.45 / 0.611 * Ltw * Ks, 0.62 / 0.611 * Ltw * Ks, 1.0 / 0.611 * Ltw * Ks];
+    const twG = [1.0 / 0.69 * Ltw * Ks * 2.5, 0.62 / 0.69 * Ltw * Ks * 2.5, 0.35 / 0.69 * Ltw * Ks * 2.5];
+    const zenClear = add3(add3(mul3(S.zenS, Ks), S.zenM, Ks * mB), twZ);
     let horClear = mul3(add3(twZ, twG, 0.3), 1);
-    for (let a = 0; a < 8; a++) horClear = add3(horClear, add3(mul3(S.horS[a], K), S.horM[a], K * mB), 1 / 8);
+    for (let a = 0; a < 8; a++) horClear = add3(horClear, add3(mul3(S.horS[a], Ks), S.horM[a], Ks * mB), 1 / 8);
     const airglow = [0.0022, 0.0030, 0.0058];
     const top = lerp3(add3(zenClear, airglow), base, Math.min(1, cover * 1.05));
     // CIE overcast sky: the horizon is darker than the zenith (L ~ 1 + 2 sin(elevation)); broken cloud crowds the horizon
@@ -402,7 +421,7 @@ export class SkySystem {
     // fog colour: the horizon in the camera's azimuth, under the deck
     const fwd = new THREE.Vector3(); this.camera.getWorldDirection(fwd);
     const fa = ((Math.atan2(fwd.x, -fwd.z) / (Math.PI * 2)) * 8 + 8) % 8, i0 = Math.floor(fa) % 8, i1 = (i0 + 1) % 8, ft = fa - Math.floor(fa);
-    const horAz0 = lerp3(add3(mul3(S.horS[i0], K), S.horM[i0], K * mB), add3(mul3(S.horS[i1], K), S.horM[i1], K * mB), ft);
+    const horAz0 = lerp3(add3(mul3(S.horS[i0], Ks), S.horM[i0], Ks * mB), add3(mul3(S.horS[i1], Ks), S.horM[i1], Ks * mB), ft);
     const sunAz = Math.atan2(sunDir[0], -sunDir[2]), camAz = Math.atan2(fwd.x, -fwd.z);
     const horAz = add3(add3(horAz0, twZ), twG, Math.pow(Math.max(0, Math.cos(camAz - sunAz)), 3));
     let fogRad = lerp3(add3(horAz, airglow, 1.3), mul3(base, 0.8), coverH);
@@ -411,8 +430,8 @@ export class SkySystem {
     // ---- the uniforms
     const u = this.u;
     u.uSunDir.value.set(...sunDir); u.uMoonDir.value.set(...moonDir); u.uCamH.value = camH; u.uMie.value = mie;
-    u.uSunE.value.set(K, K, K);
-    u.uMoonE.value.set(K * mB, K * mB * 0.97, K * mB * 0.92);
+    u.uSunE.value.set(Ks, Ks, Ks);
+    u.uMoonE.value.set(Ks * mB, Ks * mB * 0.97, Ks * mB * 0.92);
     u.uAmb.value.set(ambClear[0], ambClear[1], ambClear[2]);
     const disc = mul3(S.Tsun, 14700 * K), dm = Math.max(disc[0], disc[1], disc[2], 1e-6), ds = Math.min(1, 7 / dm);
     u.uSunDisc.value.set(disc[0] * ds, disc[1] * ds, disc[2] * ds);
@@ -458,29 +477,32 @@ export class SkySystem {
     // ---- lights
     const sunUp = sstep(-0.01, 0.03, sunDir[1]);
     const Ts = S.Tsun, tsMax = Math.max(Ts[0], Ts[1], Ts[2], 1e-6);
-    const adaptL = Math.min(2.2, Math.sqrt(K / 14));
     // dense fog / mist (visibility < 5 km) also dims the beam on its slant path through the fog layer
     const fogT = (dir) => { const V = w.visibility; if (V >= 5000) return 1; const t = Math.exp(-3.912 * Math.min((V < 1500 ? 140 : 260) / Math.max(dir[1], 0.03), 20000) / V); return 1 - (1 - t) * sstep(5000, 1500, V); };
-    const sunI = SUN_GAIN * tsMax * adaptL * sunUp * this.sunVis * fogT(sunDir);
+    // the Sun: irradiance = transmittance x exposure, nothing else (three.js physical lights: radiance = albedo E cos / pi)
+    const sunI = tsMax * K * sunUp * this.sunVis * fogT(sunDir);
     const mT = S.Tmoon, mtMax = Math.max(mT[0], mT[1], mT[2], 1e-6);
-    const moonI = MOON_GAIN * moonPhaseLaw((moon.phaseAngle || 0) / D2R) * mtMax * sstep(0, 0.12, moonDir[1]) * this.moonVis * (1 - sunUp) * fogT(moonDir);
+    const moonI = MOON_LIGHT * moonPhaseLaw((moon.phaseAngle || 0) / D2R) * mtMax * sstep(0, 0.12, moonDir[1]) * this.moonVis * (1 - sunUp) * fogT(moonDir);
     this.sunLight.color.setRGB(Ts[0] / tsMax, Ts[1] / tsMax, Ts[2] / tsMax);
     this.sunLight.intensity = sunI;
     this.sunLight.position.set(sunDir[0], Math.max(0.02, sunDir[1]), sunDir[2]).multiplyScalar(3000).add(cam); this.sunLight.target.position.copy(cam);
     this.moonLight.color.setRGB(0.62 * mT[0] / mtMax, 0.72 * mT[1] / mtMax, 0.95 * mT[2] / mtMax);
     this.moonLight.intensity = moonI;
     this.moonLight.position.set(moonDir[0], Math.max(0.02, moonDir[1]), moonDir[2]).multiplyScalar(3000).add(cam); this.moonLight.target.position.copy(cam);
-    // hemisphere: the mean sky radiance (x pi = irradiance), a dark sea below; a little scotopic floor at night
+    // sky irradiance on an upward face = pi x the mean sky radiance (clouds mixed in), capped, with a starlight floor;
+    // the hemisphere light carries (1 - ENV_SHARE) of it (all of it indoors / without an environment map), the
+    // environment map the rest (standard materials only, see updateEnv)
     const envActive = this.envOn && !c.indoors;
     const skyAvg = lerp3(lerp3(zenClear, horClear, 0.55), base, Math.min(1, cover));
-    const floor = 0.035;
-    const hs = [Math.max(skyAvg[0], floor * 0.75), Math.max(skyAvg[1], floor * 0.9), Math.max(skyAvg[2], floor * 1.4)];
+    const hs = [Math.max(skyAvg[0], NIGHT_FLOOR * 0.75), Math.max(skyAvg[1], NIGHT_FLOOR * 0.9), Math.max(skyAvg[2], NIGHT_FLOOR * 1.4)];
     const hsMax = Math.max(hs[0], hs[1], hs[2]);
     this.hemi.color.setRGB(hs[0] / hsMax, hs[1] / hsMax, hs[2] / hsMax);
     const seaIrr = add3(mul3(hs, 0.25), [sunI * 0.04, sunI * 0.045, sunI * 0.05]);
     const sgm = Math.max(seaIrr[0], seaIrr[1], seaIrr[2], 1e-6);
     this.hemi.groundColor.setRGB(seaIrr[0] / sgm * 0.6, seaIrr[1] / sgm * 0.65, seaIrr[2] / sgm * 0.7);
-    this.hemi.intensity = Math.min(4, Math.PI * hsMax * (envActive ? 0.6 : 1.0));
+    const eSky = Math.min(HEMI_CAP, Math.PI * hsMax);
+    this.hemi.intensity = eSky * (envActive ? 1 - ENV_SHARE : 1);
+    this.envShare = envActive ? Math.min(ENV_SHARE, HEMI_CAP / Math.max(1e-6, Math.PI * hsMax) * ENV_SHARE) : 0;
     // ---- fog: the scene fog is mixed in display space after tone mapping, so give it the tone-mapped colour
     const fogDisp = acesTone(fogRad, this.renderer.toneMappingExposure || 1);
     if (this.scene.fog) {
@@ -496,7 +518,7 @@ export class SkySystem {
     // ---- celestial sphere
     const lsky = S.lzenSun + Ltw + S.lzenMoonPhys + 3e-9;
     const limit = limitingMagnitude(lsky);
-    const moonBright = Math.min(1.8, 0.038 * 1.2 * K);
+    const moonBright = 1.6;                                                    // the disc itself (display): bright, never clipped
     const T = S.Tmoon, tm = Math.max(T[0], T[1], T[2], 1e-6);
     this.celestial.update({
       lat: c.lat, lon: c.lon, unix: c.unix, sun, moon, limitMag: limit, extK: 0.2 + mie * 1500,
@@ -507,16 +529,17 @@ export class SkySystem {
     // ---- environment map
     this.updateEnv(now, c.indoors, { sun: sunDir, K, cover, mode });
 
-    const sunLitOcean = sunUp > 0.01 || !(moonUp > 0);
-    const oceanDir = sunLitOcean ? new THREE.Vector3(sunDir[0], Math.max(-0.2, sunDir[1]), sunDir[2]).normalize() : new THREE.Vector3(...moonDir);
-    const oceanCol = sunLitOcean
-      ? new THREE.Color(Ts[0] / tsMax, Ts[1] / tsMax, Ts[2] / tsMax).multiplyScalar(Math.min(1.2, tsMax * 1.15 * this.sunVis * fogT(sunDir) * Math.max(sunUp, 0.02)))
-      : new THREE.Color(0.62, 0.72, 0.95).multiplyScalar(0.3 * moonPhaseLaw((moon.phaseAngle || 0) / D2R) * this.moonVis * moonUp);
+    // the ocean: the Sun through setSun (its glitter path; fades out with the Sun), the Moon as a SEPARATE light
+    // (ocean.setMoon, water builder) - never the Moon through the Sun's path, whose glitter saturates to a white disc
+    const oceanDir = new THREE.Vector3(sunDir[0], Math.max(-0.2, sunDir[1]), sunDir[2]).normalize();
+    const oceanCol = new THREE.Color(Ts[0] / tsMax, Ts[1] / tsMax, Ts[2] / tsMax).multiplyScalar(Math.min(1.2, tsMax * 1.15 * this.sunVis * fogT(sunDir) * Math.max(sunUp, 0.02)));
+    const moonCol = new THREE.Color(0.62 * mT[0] / mtMax, 0.72 * mT[1] / mtMax, 0.95 * mT[2] / mtMax).multiplyScalar(0.25 * moonPhaseLaw((moon.phaseAngle || 0) / D2R) * this.moonVis * moonUp * (1 - sunUp));
+    const moonDirV = new THREE.Vector3(...moonDir);
     const gloom = THREE.MathUtils.clamp(cover * 0.45 + P.rain * 0.2 + P.cb * 0.3, 0, 0.88);
     this.state = {
       sun, moon, day: sun.day, night, gloom, K, limit, sunVis: this.sunVis, cover, params: P, weather: w,
       top: new THREE.Color(top[0], top[1], top[2]), hor: new THREE.Color(hor[0], hor[1], hor[2]),
-      oceanDir, oceanCol, tier: this.tier, cloudMode: mode, deck: base, lightCol,
+      oceanDir, oceanCol, moonDir: moonDirV, moonCol, sunI, moonI, eSky, tier: this.tier, cloudMode: mode, deck: base, lightCol, exposure: this.exposureInfo,
     };
     if (fx) { fx.setSkyLight?.(this.state.hor); fx.set?.({ ...w, night }); }
     return this.state;
@@ -534,9 +557,9 @@ export class SkySystem {
     if (!moved || now - this.envAt < minGap) { if (this.envRT && sc.environment !== this.envRT.texture) sc.environment = this.envRT.texture; return; }
     try {
       if (!this.pmrem) this.pmrem = new THREE.PMREMGenerator(this.renderer);
-      const prevMode = this.u.uCloudMode.value; this.u.uCloudMode.value = 1;
+      const prevMode = this.u.uCloudMode.value; this.u.uCloudMode.value = 1; this.u.uOut.value = this.envShare || ENV_SHARE;
       const rt = this.pmrem.fromScene(this.envScene, 0, 0.1, 200);
-      this.u.uCloudMode.value = prevMode;
+      this.u.uCloudMode.value = prevMode; this.u.uOut.value = 1;
       const old = this.envRT; this.envRT = rt;
       sc.environment = rt.texture;
       if (old) old.dispose();

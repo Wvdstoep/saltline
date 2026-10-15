@@ -95,13 +95,14 @@ void main() {
   float slant = dot(uWind, tang) / max(uFall, 0.5);         // wind across the line of sight slants the streaks
   float y = vL.y + uTime * uFall;
   float x = along + vL.y * slant;
-  float streak = n(vec2(x * 0.9, y * 0.03)) * 0.6 + n(vec2(x * 2.3, y * 0.07)) * 0.4;
-  streak = pow(streak, 2.5);
+  // fine, short grain (never long bars): many thin streaks about 4 m tall, a grey veil underneath
+  float streak = n(vec2(x * 2.4, y * 0.25)) * 0.5 + n(vec2(x * 5.1, y * 0.6)) * 0.5;
+  streak = pow(streak, 3.0);
   float gust = 0.45 + 0.9 * n(vec2(along * 0.006 + uTime * 0.05, uTime * 0.07));
   float hgt = smoothstep(-6.0, 4.0, vL.y) * (1.0 - smoothstep(60.0, 180.0, vL.y));
-  float a = uI * (0.08 + 0.55 * streak) * gust * hgt;
+  float a = uI * (0.07 + 0.22 * streak) * gust * hgt;
   if (a < 0.003) discard;
-  gl_FragColor = vec4(uCol, min(a, 0.6));
+  gl_FragColor = vec4(uCol, min(a, 0.28));
 }`;
 
 const SPRAY_VERT = /* glsl */`

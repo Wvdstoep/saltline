@@ -96,6 +96,7 @@ class App {
     this.weatherFx = new WeatherFX(this.scene, this.camera);
     this.skySys = new SkySystem({ scene: this.scene, camera: this.camera, renderer: this.renderer, sun: this.sun, hemi: this.hemi, phone: isTouch(), weatherFx: this.weatherFx });
     this.sky = this.skySys.dome; this.celestial = this.skySys.celestial;
+    import('./shiplights.js').then((m) => { this.shipLights = new m.ShipLights(this); }).catch((e) => console.warn('[shiplights] unavailable', e));   // deck floodlights + searchlight (Shift+L)
     window.saltlineSky = (x) => this.skySys.setOverride(x);   // debug / screenshots: 'clear'|'fair'|'overcast'|'rain'|'storm'|'fog'|'snow'|{...}|null; also ?wx=storm
     this.weatherFx.onThunder = (k, delayS) => setTimeout(() => this.sound?.event('thunder', k), delayS * 1000);   // light first, then the sound
     // Debug / screenshots: ?bft=0..12 (or window.saltlineSea(n), null = real weather) forces this client's sea state,
@@ -1366,7 +1367,9 @@ class App {
     const sk = this.skySys.update({ dt, lat, lon, unix: nowS, wx: this.wx, anchor, indoors: !!this.interior?.active });
     const day = sk.day, gloom = sk.gloom;
     this.dayK = day; this.gloomK = gloom;   // IV2 HV8: daylight through the interior windows
-    this.ocean.setSun(sk.oceanDir, sk.oceanCol, sk.night, sk.top, sk.hor);
+    this.ocean.setSun(sk.oceanDir, sk.oceanCol, sk.night, sk.top, sk.hor);   // the Sun only: the Moon is a separate light (no white glitter disc at night)
+    this.ocean.setMoon?.(sk.moonDir, sk.moonCol);                              // water builder: moon direction + display colour
+    this.shipLights?.update(dt, sk, this.ocean);
     if (this.skySys.override) this.ocean.setRain?.(sk.weather.rain || 0);
     const night = 1 - day; this.night = night;
     if (this.weatherFx?.state) this.weatherFx.state.night = night;
