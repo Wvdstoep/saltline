@@ -19,14 +19,30 @@
 // cached with reference counts, 512×128 on phones, 1024×256 others, 2048×512 own ship). Reflections come from
 // scene.environment (the sky builder's PMREM) — this module never builds its own environment; diffuse IBL is scaled
 // down (uEnvDiffuse) because the hemisphere light already supplies the ambient term.
+// Photo textures (HD plan phase 1, own ship): enableSkinTextures() adds SKIN_TEX once the texlib.js sets have arrived —
+// painted-steel normal + roughness and rusted-steel albedo / normal / roughness mapped triplanar in the ship frame
+// (vShipPos, vShipNrm), the rust photo blended in by the procedural rust mask; non-slip or teak photo on the deck
+// (planar, planks fore-and-aft). Phones (SKIN_LITE) take the dominant projection only: one fetch per map. The normal
+// is built in the ship frame and turned into view space from screen derivatives (exact for a rigid frame), so legacy
+// parts with a baked shipPos need no extra matrices. A driver that refuses the textured program falls back to the
+// procedural skin (guardSkinTex), and a missing set simply never switches the textures on.
 import * as THREE from 'three';
 import { skinKindOf, PRESETS, letteringKey } from './shipskinfmt.js';
+import { getMaterialSet, meanLinear, tilesPerMetre } from './texlib.js';
 
 const HAS_DOM = typeof document !== 'undefined' && typeof document.createElement === 'function';
 
 // ------------------------------------------------------------------------------------------------ GLSL
-const VERT_PARS = /* glsl */`attribute vec3 shipPos; varying vec3 vShipPos;`;
-const VERT = /* glsl */`vShipPos = shipPos;`;
+const VERT_PARS = /* glsl */`attribute vec3 shipPos; varying vec3 vShipPos;
+#ifdef SKIN_TEX
+attribute vec3 shipNrm; varying vec3 vShipNrm;
+#endif
+`;
+const VERT = /* glsl */`vShipPos = shipPos;
+#ifdef SKIN_TEX
+vShipNrm = shipNrm;
+#endif
+`;
 
 const FRAG_PARS = /* glsl */`
 uniform float uWear; uniform float uFlood; uniform float uAge; uniform float uNight; uniform float uEnvDiffuse; uniform float uMode; uniform float uDeckMode;
@@ -68,10 +84,48 @@ uniform vec4 uNameStern;  // zTransom, yc, w, h
 uniform vec4 uDraft;      // zFwd, zMid, zAft, top (m above keel)
 uniform vec3 uMarkCol; uniform vec3 uNameCol;
 #endif
+#ifdef SKIN_TEX
+uniform sampler2D uTxPN; uniform sampler2D uTxPO; uniform sampler2D uTxRA; uniform sampler2D uTxRN; uniform sampler2D uTxRO;
+#if SKIN_KIND == 2
+uniform sampler2D uTxDA; uniform sampler2D uTxDN; uniform sampler2D uTxDO; uniform vec3 uTxDM;
+#endif
+uniform vec4 uTxS;   // tiles per metre: paint, rust, deck; paint normal strength
+varying vec3 vShipNrm;
+vec3 txN(vec4 t, float k) { vec3 n = t.xyz * 2.0 - 1.0; n.xy *= k; return n; }
+// tangent-space normal → ship frame per projection (right-handed, T x B = N): X (-sx z, y), Y (x, -sy z), Z (sz x, y)
+vec3 txAxX(vec3 t, float s) { return vec3(s * t.z, t.y, -s * t.x); }
+vec3 txAxY(vec3 t, float s) { return vec3(t.x, s * t.z, -s * t.y); }
+vec3 txAxZ(vec3 t, float s) { return vec3(s * t.x, t.y, s * t.z); }
+vec4 txTri(sampler2D s, float sc, vec3 w, vec2 ux, vec2 uy, vec2 uz) {
+#ifdef SKIN_LITE
+  return texture2D(s, (ux * w.x + uy * w.y + uz * w.z) * sc);
+#else
+  return texture2D(s, ux * sc) * w.x + texture2D(s, uy * sc) * w.y + texture2D(s, uz * sc) * w.z;
+#endif
+}
+vec3 txTriN(sampler2D s, float sc, float k, vec3 w, vec3 sg, vec2 ux, vec2 uy, vec2 uz) {
+#ifdef SKIN_LITE
+  vec3 t = txN(texture2D(s, (ux * w.x + uy * w.y + uz * w.z) * sc), k);
+  return txAxX(t, sg.x) * w.x + txAxY(t, sg.y) * w.y + txAxZ(t, sg.z) * w.z;
+#else
+  return txAxX(txN(texture2D(s, ux * sc), k), sg.x) * w.x + txAxY(txN(texture2D(s, uy * sc), k), sg.y) * w.y + txAxZ(txN(texture2D(s, uz * sc), k), sg.z) * w.z;
+#endif
+}
+/** a ship-frame vector in view space, from the screen derivatives of the ship-frame and view positions (rigid frames) */
+vec3 txToView(vec3 v, vec3 P, vec3 V) {
+  vec3 a = dFdx(P), b = dFdy(P), a2 = dFdx(V), b2 = dFdy(V);
+  float la = max(length(a), 1e-8), lb = max(length(b), 1e-8);
+  a /= la; a2 /= la; b /= lb; b2 /= lb;
+  vec3 c = cross(a, b), c2 = cross(a2, b2);
+  vec3 k = vec3(dot(v, cross(b, c)), dot(v, cross(c, a)), dot(v, c)) / max(dot(c, c), 1e-6);
+  return k.x * a2 + k.y * b2 + k.z * c2;
+}
+#endif
 `;
 
 const FRAG_MAIN = /* glsl */`
 float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0.0;
+vec3 skinTxN = vec3(0.0);
 {
   vec3 P = vShipPos;
   vec3 dpx = dFdx(P), dpy = dFdy(P);
@@ -86,6 +140,29 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0
   float n1 = wnoise(P * 0.9) * 0.55 + wnoise(P * 3.1) * 0.45;
   vec3 rustCol = mix(vec3(0.42, 0.17, 0.06), vec3(0.2, 0.08, 0.04), n1);
   float rust = 0.0;
+#ifdef SKIN_TEX
+  // triplanar in the ship frame on the smooth hull normal (faceted screen normal where a part has none)
+  vec3 txNg = dot(vShipNrm, vShipNrm) > 0.25 ? normalize(vShipNrm) : nS;
+  vec3 txW = txNg * txNg; txW *= txW; txW /= max(txW.x + txW.y + txW.z, 1e-5);
+#ifdef SKIN_LITE
+  { float wx = step(max(txW.y, txW.z), txW.x); float wy = (1.0 - wx) * step(txW.z, txW.y); txW = vec3(wx, wy, 1.0 - wx - wy); }
+#endif
+  vec3 txSg = vec3(txNg.x < 0.0 ? -1.0 : 1.0, txNg.y < 0.0 ? -1.0 : 1.0, txNg.z < 0.0 ? -1.0 : 1.0);
+  vec2 txUX = vec2(-txSg.x * P.z, P.y), txUY = vec2(P.x, -txSg.y * P.z), txUZ = vec2(txSg.z * P.x, P.y);
+  rustCol = mix(rustCol, txTri(uTxRA, uTxS.y, txW, txUX, txUY, txUZ).rgb, 0.85);
+#if SKIN_KIND == 2
+  // deck photo: planar, u fore-and-aft (planks and grain run along the ship), frame T = -z, B = -x, N = up
+  vec2 txUD = vec2(-P.z, -P.x) * uTxS.z;
+  vec4 txDA = texture2D(uTxDA, txUD), txDO = texture2D(uTxDO, txUD);
+  vec3 txDt = txN(texture2D(uTxDN, txUD), 1.0);
+  vec3 txNA = txNg.y > 0.7 ? normalize(vec3(-txDt.y, txDt.z, -txDt.x)) : txNg;   // only the walking surface, not the edges of raised decks
+  vec3 txNB = txNA;
+#else
+  vec4 txPO = txTri(uTxPO, uTxS.x, txW, txUX, txUY, txUZ), txRO = txTri(uTxRO, uTxS.y, txW, txUX, txUY, txUZ);
+  vec3 txNA = normalize(txTriN(uTxPN, uTxS.x, uTxS.w, txW, txSg, txUX, txUY, txUZ) + txNg * 1e-3);
+  vec3 txNB = normalize(txTriN(uTxRN, uTxS.y, 1.0, txW, txSg, txUX, txUY, txUZ) + txNg * 1e-3);
+#endif
+#endif
 #if SKIN_KIND == 3 && defined( USE_MAP )
   float fa = diffuseColor.a; diffuseColor.a = 1.0;
   skinGlass = 1.0 - smoothstep(0.86, 0.94, fa);
@@ -218,8 +295,13 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0
   if (uDeckMode < 0.5) {
     // non-slip grain, faint plate seams, walkways, edge rust
     float grain = wh(floor(P * 37.0));
+#ifdef SKIN_TEX
+    col *= mix(vec3(1.0), txDA.rgb / uTxDM, 0.6);
+    skinRough += (txDO.g - 0.59) * 0.5;
+#else
     col *= 0.95 + 0.1 * grain * near;
     skinRough += 0.06 * (grain - 0.5) * near;
+#endif
     float d = min(seamDist(P.x, 2.4), seamDist(P.z + h1(floor(P.x / 2.4)) * 9.0, 9.0));
     float bead = 1.0 - smoothstep(0.0, 0.018 + 0.6 * mpp, d);
     skinH += 0.004 * bead * near; col *= 1.0 - 0.07 * bead * mid;
@@ -239,7 +321,12 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0
     float off = h1(pi) * bl, bi = floor((P.z + off) / bl), fz = fract((P.z + off) / bl);
     float caulk = max(1.0 - smoothstep(0.0, 0.006 + 0.5 * mpp, min(fx, 1.0 - fx) * pw), 1.0 - smoothstep(0.0, 0.006 + 0.5 * mpp, min(fz, 1.0 - fz) * bl));
     col *= 0.86 + 0.24 * h1(pi * 7.13 + bi * 1.7);
+#ifdef SKIN_TEX
+    col *= mix(vec3(1.0), txDA.rgb / uTxDM, 0.8);
+    skinRough += (txDO.g - 0.5) * 0.5;
+#else
     col *= 0.9 + 0.1 * wnoise(vec3(P.x * 70.0, P.z * 1.2, pi));
+#endif
     col = mix(col, vec3(0.43, 0.41, 0.38), 0.45 * grime);
     col = mix(col, vec3(0.02), caulk * mid);
     skinH -= 0.002 * caulk * near;
@@ -276,6 +363,22 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0
   col = mix(col, rustCol, clamp(rust * 0.8, 0.0, 1.0) * 0.8);
   skinRough += 0.2 * rust;
 #endif
+#ifdef SKIN_TEX
+  {
+    // the rust photo's normal and roughness where the procedural mask says rust, painted steel elsewhere
+    float txR = clamp(rust, 0.0, 1.0);
+    skinTxN = normalize(mix(txNA, txNB, txR));
+#if SKIN_KIND == 2
+    ao *= mix(1.0, txDO.r, 0.5);
+#else
+    skinRough += (txPO.g - 0.56) * 0.5 * (1.0 - txR) + (txRO.g - 0.78) * 0.5 * txR;
+    ao *= mix(1.0, txPO.r, 0.5);
+#endif
+#if SKIN_KIND == 3
+    skinTxN = normalize(mix(skinTxN, txNg, skinGlass));
+#endif
+  }
+#endif
   skinRough += 0.3 * w + 0.12 * grime;
   // sky occlusion: faces that look down see less sky (the hemisphere light cannot tell)
   ao *= 0.82 + 0.18 * clamp(nS.y * 0.5 + 0.5, 0.0, 1.0);   // nS (screen derivatives) faces the viewer, so its y is the true up
@@ -293,6 +396,17 @@ float skinH = 0.0, skinRough = 0.0, skinGlass = 0.0, skinLit = 0.0, skinWork = 0
 const ROUGH = /* glsl */`roughnessFactor = clamp(mix(roughnessFactor + skinRough, 0.05, skinGlass), 0.04, 1.0);`;
 const METAL = /* glsl */`metalnessFactor = mix(metalnessFactor, 0.0, skinGlass);`;
 const BUMP = /* glsl */`
+#ifdef SKIN_TEX
+{
+  vec3 tv = txToView(skinTxN, vShipPos, -vViewPosition);
+  if (dot(tv, tv) > 1e-6) {
+    normal = normalize(tv);
+#ifdef DOUBLE_SIDED
+    normal *= faceDirection;
+#endif
+  }
+}
+#endif
 #ifndef SKIN_LITE
 {
   vec3 bpx = dFdx(vShipPos), bpy = dFdy(vShipPos);
@@ -328,6 +442,10 @@ export function skinUniforms() {
     uWork: { value: 0 }, uFix: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
     uLetter: { value: null }, uGlyph: { value: null }, uNameBow: { value: new THREE.Vector4(0, 0, 0, 0) }, uNameStern: { value: new THREE.Vector4(0, 0, 0, 0) },
     uDraft: { value: new THREE.Vector4(-20, 0, 20, 0) }, uMarkCol: { value: new THREE.Color(0xf4f4f0) }, uNameCol: { value: new THREE.Color(0xffffff) },
+    // photo textures (SKIN_TEX, own ship): painted steel normal / ORM, rusted steel albedo / normal / ORM, deck set
+    uTxPN: { value: null }, uTxPO: { value: null }, uTxRA: { value: null }, uTxRN: { value: null }, uTxRO: { value: null },
+    uTxDA: { value: null }, uTxDN: { value: null }, uTxDO: { value: null }, uTxDM: { value: new THREE.Vector3(0.73, 0.73, 0.73) },
+    uTxS: { value: new THREE.Vector4(0.5, 0.67, 1, 0.85) },
   };
 }
 const HULL_ONLY = ['uLetter', 'uGlyph', 'uNameBow', 'uNameStern', 'uDraft', 'uMarkCol', 'uNameCol'];
@@ -372,7 +490,7 @@ export function makeSkinMaterial(kind, color, p = {}) {
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + EMIT)
       .replace('#include <lights_fragment_maps>', THREE.ShaderChunk.lights_fragment_maps.replace(IBL_FROM, IBL_TO));
   };
-  m.customProgramCacheKey = () => `shipskin${sk}${p.lite ? 'L' : ''}`;
+  m.customProgramCacheKey = () => `shipskin${sk}${p.lite ? 'L' : ''}${m.defines && 'SKIN_TEX' in m.defines ? 'T' : ''}`;
   return m;
 }
 
@@ -442,7 +560,7 @@ let SKIN_OFF = false;
 export function skinDisabled() { return SKIN_OFF; }
 function fallBack(m) {
   m.onBeforeCompile = () => {}; m.customProgramCacheKey = () => 'shipskin-off';
-  if (m.defines) { delete m.defines.SKIN_KIND; delete m.defines.SKIN_LITE; }
+  if (m.defines) { delete m.defines.SKIN_KIND; delete m.defines.SKIN_LITE; delete m.defines.SKIN_TEX; }
   m.needsUpdate = true;
 }
 /**
@@ -464,6 +582,63 @@ export function guardSkin(group, mats) {
         if (prog && prog.diagnostics && prog.diagnostics.runnable === false && material.userData.skinKind) {
           console.warn('[shipskin] skin shader not supported here, using plain materials');
           SKIN_OFF = true; for (const m of list) fallBack(m);
+        }
+      } catch { /* diagnostics only */ }
+      if (--left <= 0) o.onAfterRender = prev;
+    };
+  });
+}
+
+// ------------------------------------------------------------------------------------------------ photo textures (HD)
+let TEX_OFF = false;
+/** true once the textured skin failed to link on this device (the procedural skin stays) */
+export function skinTexDisabled() { return TEX_OFF; }
+/** the library sets a ship's textured skin uses (deck: teak for laid-teak decks, non-slip paint otherwise) */
+export function skinTexSets(deckMode) { return ['painted_steel', 'rusted_steel', deckMode ? 'teak' : 'nonslip']; }
+/**
+ * Switch a ship's skin materials to the photo textures (SKIN_TEX) once the library sets have loaded. U: the ship's
+ * skinUniforms() (filled by ship.js applySkin first: uMode decides the paint normal's strength), opts { deckMode }.
+ * Returns a handle { release(), enabled, ready } (release when the ship is disposed) or null when textures are off here.
+ */
+export function enableSkinTextures(group, mats, U, opts = {}) {
+  const list = (mats || []).filter((m) => m && m.userData && m.userData.skinKind);
+  if (TEX_OFF || SKIN_OFF || !list.length || !U || !('uTxPN' in U)) return null;
+  const names = skinTexSets(opts.deckMode);
+  const sets = names.map((n) => getMaterialSet(n));
+  const handle = {
+    enabled: false, released: false, sets: names,
+    release() { if (this.released) return; this.released = true; for (const s of sets) s.release(); },
+  };
+  handle.ready = Promise.all(sets.map((s) => s.ready)).then(() => {
+    if (handle.released || TEX_OFF || SKIN_OFF || !sets.every((s) => s.loaded)) return handle;
+    const [p, r, d] = sets;
+    U.uTxPN.value = p.normal; U.uTxPO.value = p.orm; U.uTxRA.value = r.albedo; U.uTxRN.value = r.normal; U.uTxRO.value = r.orm;
+    U.uTxDA.value = d.albedo; U.uTxDN.value = d.normal; U.uTxDO.value = d.orm;
+    U.uTxDM.value.set(...meanLinear(names[2]));
+    // gelcoat yachts (uMode 1) are faired smooth: only a hint of the paint's orange peel
+    U.uTxS.value.set(tilesPerMetre(names[0]), tilesPerMetre(names[1]), tilesPerMetre(names[2]), U.uMode.value >= 0.5 && U.uMode.value < 1.5 ? 0.25 : 0.85);
+    for (const m of list) { m.defines = { ...(m.defines || {}), SKIN_TEX: '' }; m.needsUpdate = true; }
+    handle.enabled = true;
+    if (group) guardSkinTex(group, list);
+    return handle;
+  });
+  return handle;
+}
+/** like guardSkin for the textured variant: a refused program drops SKIN_TEX (procedural skin), never the whole skin */
+export function guardSkinTex(group, list) {
+  let left = 3;
+  group.traverse((o) => {
+    if (!o.isMesh) return;
+    const ms = Array.isArray(o.material) ? o.material : [o.material];
+    if (!ms.some((m) => list.includes(m))) return;
+    const prev = o.onAfterRender;
+    o.onAfterRender = function (renderer, scene, camera, geometry, material) {
+      try {
+        const prog = renderer.properties.get(material)?.currentProgram;
+        if (prog && prog.diagnostics && prog.diagnostics.runnable === false && material.defines && 'SKIN_TEX' in material.defines) {
+          console.warn('[shipskin] textured skin not supported here, keeping the procedural skin');
+          TEX_OFF = true;
+          for (const m of list) { if (m.defines) delete m.defines.SKIN_TEX; m.needsUpdate = true; }
         }
       } catch { /* diagnostics only */ }
       if (--left <= 0) o.onAfterRender = prev;

@@ -133,9 +133,16 @@ export function hullForm(ga) {
 const ROWS_BELOW = [[1, 0.995, 0.97, 0.9, 0.78, 0.6, 0.38, 0.18, 0], [1, 0.97, 0.75, 0.35, 0], [1, 0.6, 0]];
 /** rows above the waterline: fractions of the local freeboard (deckAt) */
 const ROWS_ABOVE = [[0.25, 0.5, 0.75, 0.92, 1], [0.5, 1], [1]];
+/** HD plan phase 1 (own ship, LOD0): 13 rows below the waterline, dense at the bilge turn and the keel; 10 above with
+ * extra rows where the flare / knuckle bends the side under the deck edge */
+export const ROWS_BELOW_HD = [1, 0.998, 0.99, 0.975, 0.95, 0.91, 0.85, 0.76, 0.64, 0.5, 0.34, 0.17, 0];
+export const ROWS_ABOVE_HD = [0.12, 0.25, 0.38, 0.5, 0.62, 0.74, 0.84, 0.92, 0.97, 1];
+/** loft stations of the own ship's HD hull (desktop / phone) */
+export const HD_STATIONS = { desktop: 90, phone: 45 };
 
 /**
- * Loft the hull into plain arrays. opts: { lod 0|1|2, stations, bootH (m above WL), band: [y0, y1] | null }.
+ * Loft the hull into plain arrays. opts: { lod 0|1|2, stations, bootH (m above WL), band: [y0, y1] | null, hd (LOD0: the
+ * HD row set) }.
  * Returns { side: { pos, idx, groups: [{ start, count, mat }] }, deck: { pos, idx }, transom: { pos, idx }, rows, stations }
  * where mat ∈ 'boot' | 'hull' | 'band'. Indices are triangle lists (counter-clockwise seen from outside).
  */
@@ -147,8 +154,9 @@ export function loftHull(ga, opts = {}) {
   const band = opts.band && lod < 2 ? opts.band : null;
   // row definitions: { y(z) }
   const rowDefs = [];
-  for (const s of ROWS_BELOW[lod]) rowDefs.push({ kind: 'below', s, y: () => -s * hf.T });
-  const above = [...ROWS_ABOVE[lod]];
+  const hd = !!opts.hd && lod === 0;
+  for (const s of hd ? ROWS_BELOW_HD : ROWS_BELOW[lod]) rowDefs.push({ kind: 'below', s, y: () => -s * hf.T });
+  const above = [...(hd ? ROWS_ABOVE_HD : ROWS_ABOVE[lod])];
   const extra = [];
   if (lod < 2) extra.push({ boot: true });
   if (band) extra.push({ band: 0 }, { band: 1 });
