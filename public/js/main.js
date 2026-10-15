@@ -1479,6 +1479,7 @@ class App {
     if (this.weatherFx?.state) this.weatherFx.state.night = night;
     this.wwMesh?.setNight(night);                                                            // signal glow size
     for (const m of this.harborMeshes.values()) m.userData.setNight?.(night, this.time);
+    this.terrain.setNight?.(Math.max(night, 0.5 * gloom));                                   // city layer: lit windows (storms light a few)
     for (const m of this.platformMeshes.values()) m?.userData.setNight?.(night, this.time);
     const lightsOn = night > 0.5;
     if (this.lightsOn !== lightsOn) {

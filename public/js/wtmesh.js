@@ -583,7 +583,7 @@ export function buildStructures(tile, opts = {}) {
   // --- buildings: largest first, capped by count and by the vertex budget ----------------------------------------
   const maxB = opts.maxBuildings ?? BUDGET.desktop.buildings, minH = opts.minBuildingH || 0;
   const list = [];
-  for (const b of v.buildings || []) {
+  for (const b of opts.noBuildings ? [] : v.buildings || []) {     // noBuildings: the city layer (citymesh.js) draws them
     if (!b.r || b.r.length < 6 || !(b.h >= minH)) { if (b && b.r) counts.buildingsSkipped++; continue; }
     list.push({ b, a: Math.abs(ringArea(b.r)) });
   }
