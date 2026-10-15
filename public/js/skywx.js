@@ -54,11 +54,47 @@ export function cloudParams(w = {}) {
   return { cover, high, base, thick, cbTop, cb, stratus, dens, rain, snow, vis };
 }
 
+/** three.js r160 ACESFilmic tone mapping (per channel, exposure folded in) - for colours that must match the output. */
+export function acesTone(c, exposure = 1) {
+  const v = c.map((x) => (x * exposure) / 0.6);
+  const m1 = [[0.59719, 0.07600, 0.02840], [0.35458, 0.90834, 0.13383], [0.04823, 0.01566, 0.83777]];
+  const m2 = [[1.60475, -0.10208, -0.00327], [-0.53108, 1.10813, -0.07276], [-0.07367, -0.00605, 1.07602]];
+  const mul = (m, x) => [0, 1, 2].map((i) => m[0][i] * x[0] + m[1][i] * x[1] + m[2][i] * x[2]);
+  const a = mul(m1, v).map((x) => (x * (x + 0.0245786) - 0.000090537) / (x * (0.983729 * x + 0.4329510) + 0.238081));
+  return mul(m2, a).map((x) => Math.max(0, Math.min(1, x)));
+}
+export const linearToSrgb = (l) => (l <= 0.0031308 ? 12.92 * l : 1.055 * Math.pow(l, 1 / 2.4) - 0.055);
+/** Tone-mapper input (grey) that displays as sRGB value `srgb` (bisection on the ACES curve). */
+export function acesInputFor(srgb) {
+  let lo = 0, hi = 20;
+  for (let i = 0; i < 48; i++) { const mid = (lo + hi) / 2; if (linearToSrgb(acesTone([mid, mid, mid])[1]) < srgb) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
+}
+
 /**
- * Eye/camera adaptation: exposure multiplier for sky radiance (units of top-of-atmosphere solar irradiance = 1)
- * from the zenith luminance the Sun produces. 14 at a high Sun, rising as it gets darker (partial adaptation,
- * exponent 0.75: twilight stays a readable deep blue), capped at 4000 x (reached in nautical twilight).
+ * Exposure: a FIXED curve of the Sun's elevation (no adaptation that drifts with the weather).
+ *  kDay      the daytime exposure (calibrateDayExposure: a sunlit 18 % grey displays as mid grey)
+ *  lzen(e)   the clear-sky zenith luminance the model gives at elevation e (model units, Sun = 1)
+ *  ltw(e)    the twilight term (twilightLuminance)
+ * Above the reference elevation the exposure is kDay; as the Sun sets the scene gets darker and the exposure rises
+ * with exponent 0.65 of the darkening (partial compensation: dusk stays dusk), capped at kDay * NIGHT_RATIO.
  */
+export const NIGHT_RATIO = 1200;
+export function exposureCurve(kDay, lzenRef, lzenAt, ltwAt) {
+  return (elevDeg) => {
+    const L = Math.max(1e-12, lzenAt(elevDeg) + ltwAt(elevDeg));
+    return kDay * Math.min(NIGHT_RATIO, Math.max(1, Math.pow(lzenRef / L, 0.65)));
+  };
+}
+/**
+ * Daytime exposure so that an 18 % grey facing the Sun displays as sRGB `target` (0.45 by default): the Sun's
+ * irradiance eSun (model units, TOA = 1), the sky irradiance eSky on an upward face (same units).
+ */
+export function calibrateDayExposure(eSun, eSky, target = 0.45) {
+  const grey = (0.18 / Math.PI) * (eSun + eSky);
+  return acesInputFor(target) / Math.max(1e-9, grey);
+}
+/** Kept for the HUD / old callers: the exposure the old adaptive rule gave (not used for rendering any more). */
 export function exposureFor(lzenSun) {
   const L = Math.max(1e-12, lzenSun);
   return 14 * clamp(Math.pow(0.02 / L, 0.75), 1, 4000);
