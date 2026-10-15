@@ -1415,6 +1415,7 @@ class App {
     if (this.terrain.version !== this.depthVersion) { this.depthVersion = this.terrain.version; this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), true); }
     else this.ocean.rebuildDepth(mp.x, mp.z, (x, z) => this.heightLocal(x, z), false);
     this.ocean.update(this.time, this.camera.position.x, this.camera.position.z, dt);
+    if (this.lighting && !this.oceanLightTried) { this.oceanLightTried = true; this.ocean.attachLighting?.(this.lighting); }   // FFT OCEAN: sun shadow on the desktop sea (lighting.js hook; absent = unshadowed)
     this.governOceanQuality(now);
     this.updateSound(dt, now, ashore);
     this.shipVisual(this.myMesh, this.ship.lat, this.ship.lon, this.ship.hdg, this.ship.spd, this.myVis, this.you.flooding, dt, !!this.you.docked);
