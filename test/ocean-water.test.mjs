@@ -1,35 +1,88 @@
 // Sea rendering: mobile-safe shader tiers, ripple / glitter energy, analytic Kelvin wakes and the local wake simulation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Ocean, OCEAN_SHADERS } from '../public/js/ocean2.js';
+import { Ocean, OCEAN_SHADERS, SEA_RUNGS, seaShader, seaBudget } from '../public/js/ocean2.js';
+import { glslBudget, budgetFits } from '../public/js/glslbudget.js';
 import { buildWaveKernel, kernelResponse, maxStableDt, stepCPU, hullShape, hullHead, convolutionGLSL } from '../public/js/wakesim.js';
 
 const fakeScene = () => ({ add() {}, remove() {}, fog: null });
 
 // ---------------------------------------------------------------------------------------------- shader hygiene
-/** Uniform rows a GLSL ES implementation may need, unpacked (each declaration / array element = its own rows). */
-function uniformRows(src) {
-  const rows = { float: 1, int: 1, bool: 1, vec2: 1, vec3: 1, vec4: 1, mat2: 2, mat3: 3, mat4: 4 };
-  const defs = Object.fromEntries([...src.matchAll(/#define\s+(\w+)\s+(\d+)/g)].map((m) => [m[1], +m[2]]));
-  let n = 0;
-  for (const m of src.matchAll(/uniform\s+(\w+)\s+([^;]+);/g)) {
-    if (!(m[1] in rows)) continue; // samplers live in texture units
-    for (const part of m[2].split(',')) {
-      const a = part.match(/\[(\w+)\]/);
-      n += rows[m[1]] * (a ? (/^\d+$/.test(a[1]) ? +a[1] : defs[a[1]]) : 1);
+// A phone GPU (Adreno 660 through ANGLE: 256 uniform vectors per stage, 31 varyings) must link every rung it may be
+// given. Budget per stage: 224 vec4 (32 below 256), 28 varyings; counted the conservative way (glslbudget.js: every
+// scalar / vec takes a whole row, arrays count every element, three.js's own uniforms and fog / tone mapping included).
+const PHONE = { isWebGL2: true, precision: 'highp', maxFragmentUniforms: 256, maxVertexUniforms: 256, maxVaryings: 31, maxTextures: 16, maxVertexTextures: 16 };
+const DESKTOP = { ...PHONE, maxFragmentUniforms: 1024, maxVertexUniforms: 4096, maxVaryings: 30 };
+
+test('glslBudget: counts three.js built-ins, arrays, only used uniforms, and varyings', () => {
+  const vert = '#define N 4\nuniform vec4 uA[N]; uniform float uUnused; uniform mat3 uM;\nvarying vec3 vP; varying float vQ;\n#include <fog_pars_vertex>\nvoid main() { vec4 mvPosition = viewMatrix * vec4(uM * uA[1].xyz, 1.0); vP = mvPosition.xyz; vQ = 1.0; gl_Position = projectionMatrix * mvPosition;\n#include <fog_vertex>\n}';
+  const frag = 'uniform vec3 uC;\nvarying vec3 vP; varying float vQ;\n#include <fog_pars_fragment>\nvoid main() { gl_FragColor = vec4(uC * vP * vQ, 1.0);\n#include <tonemapping_fragment>\n#include <fog_fragment>\n}';
+  const b = glslBudget(vert, frag);
+  assert.equal(b.vertex.uniforms, 4 + 3 + 4 + 4, 'uA[4] + mat3 + viewMatrix + projectionMatrix; uUnused is not counted');
+  assert.equal(b.fragment.uniforms, 1 + 3 + 1, 'uC + fogColor/fogNear/fogFar + toneMappingExposure');
+  assert.equal(b.varyings, 3, 'vP, vQ, vFogDepth');
+  assert.ok(budgetFits(b, PHONE) && !budgetFits({ ...b, fragment: { ...b.fragment, uniforms: 240 } }, PHONE));
+});
+
+test('every sea shader rung fits a 256-vector phone GPU with 32 vectors to spare', () => {
+  for (let lvl = 0; lvl < 3; lvl++) {
+    for (const r of SEA_RUNGS[lvl]) {
+      const b = seaBudget(lvl, r);
+      assert.ok(b.vertex.uniforms <= 224, `${r.name}: vertex needs ${b.vertex.uniforms} uniform vectors`);
+      assert.ok(b.fragment.uniforms <= 224, `${r.name}: fragment needs ${b.fragment.uniforms} uniform vectors`);
+      assert.ok(b.varyings <= 28, `${r.name}: ${b.varyings} varyings`);
+      assert.ok(b.fragment.samplers <= 8 && b.vertex.samplers <= 2, `${r.name}: samplers ${b.vertex.samplers}+${b.fragment.samplers}`);
     }
   }
-  return n;
-}
-const THREE_FRAG_BUILTINS = 7 + 4; // viewMatrix, cameraPosition, isOrthographic, toneMappingExposure + fog uniforms
+  // the lite tier is the phone's safety net: a wide margin, not a scrape
+  for (const r of SEA_RUNGS[1]) {
+    const b = seaBudget(1, r);
+    assert.ok(Math.max(b.vertex.uniforms, b.fragment.uniforms) <= 128, `${r.name}: lite must fit in half the phone's 256 (${b.vertex.uniforms}/${b.fragment.uniforms})`);
+  }
+});
 
-test('sea shaders fit the uniform budgets their tier is chosen for', () => {
-  const full = uniformRows(OCEAN_SHADERS.full.frag + OCEAN_SHADERS.full.cut) + THREE_FRAG_BUILTINS;
-  const lite = uniformRows(OCEAN_SHADERS.lite.frag + OCEAN_SHADERS.lite.cut) + THREE_FRAG_BUILTINS;
-  const liteV = uniformRows(OCEAN_SHADERS.lite.vert) + 20;
-  assert.ok(full <= 200, `full fragment shader needs ${full} uniform vectors (init() requires 200, WebGL2 guarantees 224)`);
-  assert.ok(lite <= 64, `lite fragment shader needs ${lite} uniform vectors (init() requires 64)`);
-  assert.ok(liteV <= 96, `lite vertex shader needs ${liteV} uniform vectors (init() requires 96)`);
+test('sea shader rungs: a uniform declared in both stages is declared identically (else the program does not link)', () => {
+  const decls = (src) => {
+    const out = new Map();
+    const defs = Object.fromEntries([...src.matchAll(/#define\s+(\w+)\s+(\d+)/g)].map((m) => [m[1], m[2]]));
+    for (const m of src.matchAll(/\buniform\s+(\w+)\s+([^;]+);/g)) {
+      for (const part of m[2].split(',')) {
+        const pm = part.trim().match(/^(\w+)\s*(?:\[\s*(\w+)\s*\])?/);
+        if (pm) out.set(pm[1], `${m[1]}[${pm[2] ? defs[pm[2]] ?? pm[2] : 1}]`);
+      }
+    }
+    return out;
+  };
+  for (let lvl = 0; lvl < 3; lvl++) {
+    for (const r of SEA_RUNGS[lvl]) {
+      const s = seaShader(lvl, r), v = decls(s.vert), f = decls(s.frag);
+      for (const [name, t] of v) if (f.has(name)) assert.equal(f.get(name), t, `${r.name}: ${name} is ${t} in the vertex and ${f.get(name)} in the fragment shader`);
+    }
+  }
+});
+
+test('GPU limits pick the rung: desktop keeps the full look, a 256-vector phone starts on full-lean, mediump gets vertex lite', () => {
+  const pick = (caps) => { const o = new Ocean(fakeScene()); o.init({ capabilities: caps }); return o; };
+  const d = pick(DESKTOP);
+  assert.equal(d.matLevel, 2); assert.equal(SEA_RUNGS[2][d.rung[2]].name, 'full');
+  assert.match(d.diag().budget.full, /^full V\d+\/F\d+ vec4/);
+  const p = pick(PHONE);
+  assert.equal(p.matLevel, 2); assert.equal(SEA_RUNGS[2][p.rung[2]].name, 'full-lean');
+  assert.equal(p.matOk[0], true, 'the basic tier is self-tested too (never "untested")');
+  assert.ok(p.tierLog.some((l) => /full: skipped/.test(l)));
+  const m = pick({ ...PHONE, isWebGL2: false, precision: 'mediump', maxFragmentUniforms: 224 });
+  assert.equal(m.matLevel, 1); assert.equal(SEA_RUNGS[1][m.rung[1]].name, 'lite-vertex');
+});
+
+test('a rung that fails to link steps to the next rung of the same tier before dropping a tier', () => {
+  const o = new Ocean(fakeScene());
+  o.init({ capabilities: PHONE });
+  o.failTier(2, 'program failed to link: (empty log)');
+  assert.equal(o.matLevel, 2); assert.equal(SEA_RUNGS[2][o.rung[2]].name, 'full-min');
+  assert.equal(o.mesh.material, o.mats[2]); assert.equal(o.mesh.material.name, 'ocean-full-min');
+  o.failTier(2, 'again');
+  assert.equal(o.matLevel, 1, 'no full rung left → lite');
+  assert.equal(o.mesh.material.name, 'ocean-lite');
 });
 
 test('sea shaders: constant loop bounds, no continue, no reversed smoothstep edges', () => {
@@ -147,4 +200,35 @@ test('quality tiers: the lowest quality uses the lite shader, GPU limits cap the
   o.init({ capabilities: { isWebGL2: false, precision: 'mediump', maxFragmentUniforms: 224, maxVertexUniforms: 256, maxVaryings: 15, maxTextures: 16, maxVertexTextures: 16 } });
   assert.equal(o.matLevel, 1);
   assert.equal(o.far.material, o.mats[1]);
+});
+
+test('own ship track: a turning ship leaves a curved, evenly resampled track that feeds Kelvin slot 0', () => {
+  const o = new Ocean(fakeScene());
+  o.setSea({ windSpd: 6, windDir: 240, waveH: 0.5, wavePeriod: 5 });
+  const key = {}, R = 150, U = 7;   // a full circle of 150 m radius at ~13.6 kn
+  let t = 0;
+  for (let i = 0; i < 60 * 70; i++) {
+    t += 1 / 60;
+    const a = (U * t) / R;
+    o.feedShip(key, { x: R * Math.sin(a), z: -R * Math.cos(a) + R, hdg: Math.PI / 2 + a, spd: U / 0.514444, length: 60, beam: 10, own: true });
+    if (i % 4 === 0) o.update(t, 0, 0, 4 / 60); 
+  }
+  const P = o.trackPts;
+  assert.equal(P.length, 16);
+  assert.equal(P[0].age, 0);
+  for (let j = 1; j < P.length; j++) { assert.ok(P[j].s > P[j - 1].s && P[j].age >= P[j - 1].age, 'newest first, metres and age grow'); assert.ok(Math.abs(Math.hypot(P[j].x, P[j].z - R) - R) < 3, 'points lie on the circle'); }
+  assert.equal(o.kel[0].trk, 1);
+  o.prepare(null, { matrixWorld: { elements: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,30,0,1] } });
+  assert.equal(o.uniforms.uTrkN.value, 16); assert.equal(o.uniforms.uKelC.value[0].w, 1);
+});
+
+test('moon glitter and searchlight pools are fed to the uniforms (and cleared)', () => {
+  const o = new Ocean(fakeScene());
+  o.setMoon({ x: 0, y: 2, z: 0 }, { r: 1, g: 1, b: 0.9 });
+  assert.ok(Math.abs(o.uniforms.uMoonDir.value.y - 1) < 1e-9 && o.uniforms.uMoonCol.value.r > 0 && o.uniforms.uMoonCol.value.r < 1, 'a dim second light');
+  o.setMoon(null, null); assert.equal(o.uniforms.uMoonCol.value.r, 0);
+  const spot = { pos: { x: 1, y: 8, z: 2 }, dir: { x: 0, y: -1, z: 0 }, color: { r: 1, g: 1, b: 1 }, cone: 0.95, range: 120 };
+  o.setSpotLights([spot, spot, spot]); assert.equal(o.uniforms.uSpotN.value, 2, 'at most two');
+  assert.equal(o.uniforms.uSpot.value[0].w, 120);
+  o.setSpotLights([]); assert.equal(o.uniforms.uSpotN.value, 0);
 });
