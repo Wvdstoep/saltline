@@ -146,7 +146,8 @@ const THREE = await import('three');
 const { Interior } = await import('../public/js/interior.js');
 const { buildInteriorV2 } = await import('../public/js/iv2draw.js');
 const { WalkMap } = await import('../public/js/walker.js');
-const { CruiseCrowd, wantsCrowd, poseGeometry } = await import('../public/js/iv2crowd.js');
+const { CruiseCrowd, wantsCrowd, clipOf, HI_COUNT } = await import('../public/js/iv2crowd.js');
+const PPL = await import('../public/js/people.js');
 
 function world(deck, phone, hour, id = 'cruise362') {
   const pl = planFromGA(id, { deck }), map = new WalkMap(pl);
@@ -166,23 +167,33 @@ function run(W, phone, frames = 30) {
   for (let i = 0; i < frames; i++) crowd.frame(W.I, 0.25);
   return crowd;
 }
-const snap = (c) => JSON.stringify([...c.meshes.values()].map((m) => [m.userData.pose, m.count, Array.from(m.instanceMatrix.array.slice(0, m.count * 16)).map((v) => Math.round(v * 1000))]));
+const snap = (c) => JSON.stringify([...c.meshes.values()].map((m) => [m.userData.pose, m.count, Array.from(m.instanceMatrix.array.slice(0, m.count * 16)).map((v) => Math.round(v * 1000)), Array.from(m.geometry.attributes.iA.array.slice(0, m.count * 4)).map((v) => Math.round(v * 100))]));
+/** drawn people whose VAT frame lies in one of these clips */
+const inClips = (c, names) => { let n = 0; for (const p of [c.hi, c.lo]) for (let k = 0; k < p.count; k++) { const f = p.iA.array[k * 4]; if (names.some((nm) => f >= PPL.CLIP_START[nm] && f < PPL.CLIP_START[nm] + PPL.CLIPS[nm][0])) n++; } return n; };
 
 test('render: only cruise ships on v2 plans get a crowd', () => {
   assert.ok(wantsCrowd(plan)); assert.ok(!wantsCrowd({ v: 1, gen: 'cruise' })); assert.ok(!wantsCrowd(planFromGA('ultramax64'))); assert.ok(!wantsCrowd(null));
 });
 
-test('render: pose meshes are ~600 triangles of one geometry each, with a part per box', () => {
-  for (const pose of P.POSES) { const g = poseGeometry(pose); assert.equal(g.index.count / 3, P.poseTris(pose)); assert.ok(g.attributes.aPart.count === g.attributes.position.count); g.dispose(); }
+test('render: two instanced people meshes (people.js): LOD0 ≤ 2,000 triangles near, LOD1 ≤ 560 for the rest; every planned pose has a clip', () => {
+  assert.ok(PPL.personTris(0) <= 2000 && PPL.personTris(0) >= 1200, String(PPL.personTris(0)));
+  assert.ok(PPL.personTris(1) <= 560, String(PPL.personTris(1)));
+  const t = 3.3;
+  for (const pose of P.POSES) for (const mode of ['sit', 'stand', 'walk', 'tray', 'dance', 'swim', 'lie', 'play']) {
+    const [clip, ph] = clipOf({ mode, phase: 1.2, s0: 2, speed: 1.1 }, pose, t);
+    assert.ok(PPL.CLIPS[clip], pose + ' → ' + clip); assert.ok(Number.isFinite(ph));
+  }
+  assert.equal(clipOf({ mode: 'sit' }, 'clapA', 1)[0], 'clap'); assert.equal(clipOf({ mode: 'walk', s0: 0, speed: 1 }, 'walkB', 1)[0], 'walk'); assert.equal(clipOf({ mode: 'tray', s0: 0, speed: 1 }, 'tray', 1)[0], 'tray');
+  assert.ok(HI_COUNT.desk <= 12 && HI_COUNT.phone <= 4);
 });
 
-test('render: theatre during the show on a desktop — people, within 110, ≤ 11 draw calls, ≤ 80k triangles', () => {
+test('render: theatre during the show on a desktop — people, within 110, 2 draw calls, ≤ 80k triangles', () => {
   const W = world('d4', false, 18.9); stand(W, 'theatre', 0.55);
   const c = run(W, false);
   assert.ok(c.stats.drawn > 40 && c.stats.drawn <= 110, `${c.stats.drawn}`);
-  assert.ok(c.stats.calls >= 2 && c.stats.calls <= 11, `${c.stats.calls}`); assert.ok(c.stats.tris <= 80000, `${c.stats.tris}`);
+  assert.ok(c.stats.calls === 2, `${c.stats.calls}`); assert.ok(c.stats.hi <= HI_COUNT.desk && c.stats.hi > 0, `${c.stats.hi}`); assert.ok(c.stats.tris <= 80000, `${c.stats.tris}`);
   for (const m of c.meshes.values()) assert.ok(m.count <= 110);
-  const sitting = c.meshes.get('sit').count + c.meshes.get('clapA').count + c.meshes.get('clapB').count; assert.ok(sitting > 30, `${sitting} seated`);
+  const sitting = inClips(c, ['sit', 'clap']); assert.ok(sitting > 30, `${sitting} seated`);
   c.dispose(); assert.equal(c.group.parent, null);
 });
 
@@ -192,10 +203,10 @@ test('render: the same ship, spot and hour draw the same people; another hour or
   W.I.app.shipTimeNow = () => 4 * 3600; assert.notEqual(snap(run(W, false)), a);
 });
 
-test('render: a phone draws at most 32 people in at most 6 meshes', () => {
+test('render: a phone draws at most 32 people in 2 meshes (4 at LOD0)', () => {
   const W = world('d4', true, 19.2); stand(W, 'restaurant', 0.5);
   const c = run(W, true);
-  assert.ok(c.stats.drawn > 3 && c.stats.drawn <= 32, `${c.stats.drawn}`); assert.ok(c.stats.calls <= 6 && c.meshes.size <= 6, `${c.stats.calls}`);
+  assert.ok(c.stats.drawn > 3 && c.stats.drawn <= 32, `${c.stats.drawn}`); assert.ok(c.stats.calls <= 2 && c.meshes.size === 2, `${c.stats.calls}`); assert.ok(c.stats.hi <= HI_COUNT.phone);
   c.dispose();
 });
 

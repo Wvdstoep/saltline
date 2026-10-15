@@ -1,0 +1,337 @@
+{
+ "note": "generated from public/js/people.js (TILES, SKIN_TONES, TILE_PAD) — scripts/people-atlas.py draws this layout",
+ "grid": 8,
+ "pad": 0.03,
+ "skins": [
+  15845541,
+  14726287,
+  13012579,
+  10118720,
+  7226665,
+  16111292,
+  14263930,
+  9067066
+ ],
+ "tiles": [
+  {
+   "name": "face_m0",
+   "kind": "true",
+   "mean": 14004626
+  },
+  {
+   "name": "face_m1",
+   "kind": "true",
+   "mean": 13016959
+  },
+  {
+   "name": "face_m2",
+   "kind": "true",
+   "mean": 11501144
+  },
+  {
+   "name": "face_m3",
+   "kind": "true",
+   "mean": 9001785
+  },
+  {
+   "name": "face_m4",
+   "kind": "true",
+   "mean": 6438437
+  },
+  {
+   "name": "face_m5",
+   "kind": "true",
+   "mean": 14269862
+  },
+  {
+   "name": "face_m6",
+   "kind": "true",
+   "mean": 12620652
+  },
+  {
+   "name": "face_m7",
+   "kind": "true",
+   "mean": 8081460
+  },
+  {
+   "name": "face_f0",
+   "kind": "true",
+   "mean": 14070419
+  },
+  {
+   "name": "face_f1",
+   "kind": "true",
+   "mean": 13082751
+  },
+  {
+   "name": "face_f2",
+   "kind": "true",
+   "mean": 11566680
+  },
+  {
+   "name": "face_f3",
+   "kind": "true",
+   "mean": 9001785
+  },
+  {
+   "name": "face_f4",
+   "kind": "true",
+   "mean": 6438437
+  },
+  {
+   "name": "face_f5",
+   "kind": "true",
+   "mean": 14335655
+  },
+  {
+   "name": "face_f6",
+   "kind": "true",
+   "mean": 12686445
+  },
+  {
+   "name": "face_f7",
+   "kind": "true",
+   "mean": 8081460
+  },
+  {
+   "name": "hair_short",
+   "kind": "tint",
+   "mean": 10263708
+  },
+  {
+   "name": "hair_side",
+   "kind": "tint",
+   "mean": 10329501
+  },
+  {
+   "name": "hair_curly",
+   "kind": "tint",
+   "mean": 9408399
+  },
+  {
+   "name": "hair_long",
+   "kind": "tint",
+   "mean": 9737364
+  },
+  {
+   "name": "hair_bun",
+   "kind": "tint",
+   "mean": 10263708
+  },
+  {
+   "name": "hat_hard_yellow",
+   "kind": "true",
+   "mean": 10980375
+  },
+  {
+   "name": "hat_hard_white",
+   "kind": "true",
+   "mean": 11250342
+  },
+  {
+   "name": "hat_officer",
+   "kind": "true",
+   "mean": 6382698
+  },
+  {
+   "name": "hat_bandana",
+   "kind": "true",
+   "mean": 11085615
+  },
+  {
+   "name": "hat_beanie",
+   "kind": "tint",
+   "mean": 12961221
+  },
+  {
+   "name": "top_tee",
+   "kind": "tint",
+   "mean": 14145495
+  },
+  {
+   "name": "top_polo",
+   "kind": "tint",
+   "mean": 14277081
+  },
+  {
+   "name": "top_shirt",
+   "kind": "tint",
+   "mean": 14540253
+  },
+  {
+   "name": "top_stripes",
+   "kind": "tint",
+   "mean": 11974326
+  },
+  {
+   "name": "top_floral",
+   "kind": "tint",
+   "mean": 13487565
+  },
+  {
+   "name": "top_tank",
+   "kind": "tint",
+   "mean": 14079702
+  },
+  {
+   "name": "top_blouse",
+   "kind": "tint",
+   "mean": 14935011
+  },
+  {
+   "name": "top_hoodie",
+   "kind": "tint",
+   "mean": 13684944
+  },
+  {
+   "name": "top_blazer",
+   "kind": "tint",
+   "mean": 13290186
+  },
+  {
+   "name": "uni_hivis_orange",
+   "kind": "true",
+   "mean": 11822148
+  },
+  {
+   "name": "uni_hivis_yellow",
+   "kind": "true",
+   "mean": 10660674
+  },
+  {
+   "name": "uni_officer",
+   "kind": "true",
+   "mean": 13553614
+  },
+  {
+   "name": "uni_captain",
+   "kind": "true",
+   "mean": 2107193
+  },
+  {
+   "name": "uni_waiter",
+   "kind": "true",
+   "mean": 6974059
+  },
+  {
+   "name": "uni_dealer",
+   "kind": "true",
+   "mean": 9989494
+  },
+  {
+   "name": "uni_chef",
+   "kind": "true",
+   "mean": 15790316
+  },
+  {
+   "name": "uni_performer",
+   "kind": "true",
+   "mean": 10914609
+  },
+  {
+   "name": "uni_cleaner",
+   "kind": "true",
+   "mean": 4551323
+  },
+  {
+   "name": "uni_coverall",
+   "kind": "true",
+   "mean": 13921330
+  },
+  {
+   "name": "uni_scrubs",
+   "kind": "true",
+   "mean": 10142926
+  },
+  {
+   "name": "uni_steward",
+   "kind": "true",
+   "mean": 14803679
+  },
+  {
+   "name": "uni_host",
+   "kind": "true",
+   "mean": 2239044
+  },
+  {
+   "name": "uni_pirate",
+   "kind": "true",
+   "mean": 8942171
+  },
+  {
+   "name": "top_bare",
+   "kind": "tint",
+   "mean": 14342874
+  },
+  {
+   "name": "top_swim",
+   "kind": "tint",
+   "mean": 14013909
+  },
+  {
+   "name": "bot_trousers",
+   "kind": "tint",
+   "mean": 13882323
+  },
+  {
+   "name": "bot_jeans",
+   "kind": "tint",
+   "mean": 12763842
+  },
+  {
+   "name": "bot_chinos",
+   "kind": "tint",
+   "mean": 14145495
+  },
+  {
+   "name": "bot_hivis",
+   "kind": "true",
+   "mean": 3292763
+  },
+  {
+   "name": "bot_coverall",
+   "kind": "true",
+   "mean": 13855538
+  },
+  {
+   "name": "bot_uniform",
+   "kind": "true",
+   "mean": 1778230
+  },
+  {
+   "name": "bot_swim",
+   "kind": "tint",
+   "mean": 13816530
+  },
+  {
+   "name": "shoe_sneaker",
+   "kind": "tint",
+   "mean": 14145495
+  },
+  {
+   "name": "shoe_leather",
+   "kind": "tint",
+   "mean": 10329501
+  },
+  {
+   "name": "shoe_boot",
+   "kind": "true",
+   "mean": 2498844
+  },
+  {
+   "name": "shoe_bare",
+   "kind": "tint",
+   "mean": 14606046
+  },
+  {
+   "name": "plain",
+   "kind": "true",
+   "mean": 16777215
+  },
+  {
+   "name": "prop_tray",
+   "kind": "true",
+   "mean": 12106944
+  }
+ ]
+}

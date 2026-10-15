@@ -18,6 +18,7 @@ import { buildFromGA } from './shipgen.js';                                     
 import { exteriorGA } from './gaext.js';                                          // Lane C's shared/ships/ga.js in shipgen's shape
 import { gaReady, baseOf, defaultLivery } from '/shared/ships/index.js';
 import { makeSkinMaterial, skinUniforms, acquireLettering, releaseLettering, glyphTexture, guardSkin, enableSkinTextures } from './shipskin.js';
+import { crewFigures } from './people.js';                                         // deck crew as real people (scale reference)
 import { plateGrid, weathering, nameLayout, draftStations, walkwayFor, deckLanes, texSizes, markColorFor, hullModeOf, deckModeOf, trafficLivery } from './shipskinfmt.js';
 
 // ----------------------------------------------------------------------------------------------- skin (wear) materials
@@ -432,12 +433,7 @@ function makeCtx(g, C, cls, seed) {
   };
   /** a crew member (~1.8 m, hi-vis vest) standing on y — the human scale reference */
   ctx.crewSpots = [];
-  ctx.crew = (x, y, z, ry = 0) => {
-    const c = Math.cos(ry), s2 = Math.sin(ry);
-    for (const side of [-1, 1]) pb.geo(new THREE.CapsuleGeometry(0.1, 0.72, 2, 6), P.overall, x + side * 0.11 * c, y + 0.46, z - side * 0.11 * s2);
-    pb.geo(new THREE.CapsuleGeometry(0.2, 0.42, 2, 8), P.hivis, x, y + 1.22, z);
-    pb.sphere(0.12, P.skin, x, y + 1.72, z, 8);
-  };
+  ctx.crew = (x, y, z, ry = 0) => { (ctx.crewFigs ||= []).push([x, y, z, ry]); };   // people.js: drawn as real people after the builder (crewFigures)
   /** rail around the hull outline at deck level (sampled from the hull shape; bow + sides + stern) */
   ctx.hullRail = (shape, y, inset = 0.35) => {
     const pts = shape.getPoints(10).map((p) => [p.x * (1 - inset / (B / 2)), -p.y * (1 - inset / (L / 2))]);
@@ -914,8 +910,7 @@ const BUILDERS = {
     for (const z of [-0.35, 0.35]) rod(B / 2 + 0.05, deckY + 0.7, z, B / 2 + 0.55, deckY + 4.2, z, 0.025, P.wood);
     for (let k = 0; k < 6; k++) { const f = k / 5; box(0.03, 0.03, 0.7, P.wood, B / 2 + 0.1 + 0.45 * f, deckY + 1.0 + 3.1 * f, 0); }
     const man = (x, z, ry) => {
-      pb.geo(new THREE.CapsuleGeometry(0.2, 0.45, 2, 8), P.overall, x, deckY + 0.95, z);
-      pb.sphere(0.13, P.skin, x, deckY + 1.55, z, 8);
+      (ctx.crewFigs ||= []).push([x, deckY, z, ry, 'pirate', 'hold']);   // people.js (crewFigures): a pirate holding the rifle
       pb.rod(x + 0.15, deckY + 0.95, z, x + 0.15 + Math.sin(ry) * 0.5, deckY + 1.1, z - Math.cos(ry) * 0.5, 0.02, P.black);   // rifle
     };
     man(-0.3, -L * 0.12, 0.3); man(0.35, L * 0.02, -0.4); man(0, L * 0.3, 0);
@@ -1028,6 +1023,7 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
   const { L, B, draft, freeboard } = ctx;
   // crew-sized scale reference (one per spot, at most three; none on derelicts / the helicopter)
   if (!ctx.lightsOff && key !== 'helicopter') for (const [x, y, z] of ctx.crewSpots.slice(0, 3)) { try { ctx.crew(x, y, z); } catch { /* decoration only */ } }
+  if (ctx.crewFigs?.length) { try { g.add(crewFigures(ctx.crewFigs, seed)); } catch (e) { console.warn('[ship] crew figures', e); } }   // people.js: one merged mesh, near by only
   // deck floodlights and the bridge searchlight (fittings + emissive lenses; the sky builder attaches the real lights)
   let work = null;
   try { work = workLightFixtures(ctx, key, opts); } catch (e) { console.warn('[ship] work lights failed', cls, e); }

@@ -194,6 +194,9 @@ function loadKTX2(url) {
   });
 }
 
+/** One KTX2 texture outside the material library (people.js atlas): same transcoder and queue; rejects when off / in node. */
+export function loadKTX2Texture(url) { return loadKTX2(url); }
+
 const SETS = new RefCache((name) => createSet(name), (set) => destroySet(set));
 function createSet(name) {
   const info = LIB[name];
