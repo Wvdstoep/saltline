@@ -77,13 +77,15 @@ export function acesInputFor(srgb) {
  *  lzen(e)   the clear-sky zenith luminance the model gives at elevation e (model units, Sun = 1)
  *  ltw(e)    the twilight term (twilightLuminance)
  * Above the reference elevation the exposure is kDay; as the Sun sets the scene gets darker and the exposure rises
- * with exponent 0.65 of the darkening (partial compensation: dusk stays dusk), capped at kDay * NIGHT_RATIO.
+ * with exponent EXPOSURE_EXP of the darkening (partial compensation: dusk stays dusk), capped at kDay * NIGHT_RATIO.
+ * 0.65 over-brightened the sunset (a sunlit grey at 3 deg read 0.76); 0.5 keeps it near 0.55.
  */
 export const NIGHT_RATIO = 1200;
+export const EXPOSURE_EXP = 0.5;
 export function exposureCurve(kDay, lzenRef, lzenAt, ltwAt) {
   return (elevDeg) => {
     const L = Math.max(1e-12, lzenAt(elevDeg) + ltwAt(elevDeg));
-    return kDay * Math.min(NIGHT_RATIO, Math.max(1, Math.pow(lzenRef / L, 0.65)));
+    return kDay * Math.min(NIGHT_RATIO, Math.max(1, Math.pow(lzenRef / L, EXPOSURE_EXP)));
   };
 }
 /**

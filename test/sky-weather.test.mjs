@@ -90,3 +90,33 @@ test('exposure: a fixed curve of sun elevation, calibrated so sunlit 18 % grey d
   assert.equal(K(60), kDay); assert.equal(K(80), kDay);
   assert.ok(K(10) > kDay && K(2) > K(10) && K(-20) === kDay * NIGHT_RATIO, 'rises as the Sun sets, capped at night');
 });
+
+// Phones (Adreno 6xx: 256 uniform vec4 per stage, 31 varying vectors): every sky / cloud / weather shader stays far
+// below. Each float/int/vecN uniform takes a full vec4 slot (Adreno packs nothing), mat3 3, mat4 4, arrays per element;
+// samplers use texture units, not vectors. three.js injects matrices, camera, fog and tone-mapping uniforms (+24).
+test('shader budgets: uniform vectors and varyings of the sky shaders fit a phone', async () => {
+  const fs = await import('node:fs');
+  const SLOTS = { float: 1, int: 1, bool: 1, vec2: 1, vec3: 1, vec4: 1, ivec2: 1, ivec3: 1, ivec4: 1, mat2: 2, mat3: 3, mat4: 4 };
+  const INJECTED = 24, LIMIT = 200;
+  const rows = [];
+  for (const f of ['sky.js', 'clouds.js', 'celestial.js', 'weather.js', 'shiplights.js']) {
+    const src = fs.readFileSync(new URL(`../public/js/${f}`, import.meta.url), 'utf8');
+    for (const m of src.matchAll(/\/\* glsl \*\/`([\s\S]*?)`/g)) {
+      const glsl = m[1];
+      let vec = 0, vary = 0;
+      for (const u of glsl.matchAll(/uniform\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;]+);/g)) {
+        const slots = SLOTS[u[1]]; if (slots === undefined) continue;          // samplers
+        for (const name of u[2].split(',')) { const a = name.match(/\[(\d+)\]/); vec += slots * (a ? +a[1] : 1); }
+      }
+      for (const v of glsl.matchAll(/varying\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;]+);/g)) vary += v[2].split(',').length * (SLOTS[v[1]] || 1);
+      rows.push({ f, vec: vec + INJECTED, vary });
+    }
+  }
+  assert.ok(rows.length >= 10, `found ${rows.length} shaders`);
+  for (const r of rows) {
+    assert.ok(r.vec < LIMIT, `${r.f}: ${r.vec} uniform vectors`);
+    assert.ok(r.vary <= 15, `${r.f}: ${r.vary} varyings`);
+  }
+  const worst = rows.reduce((a, b) => (b.vec > a.vec ? b : a));
+  assert.ok(worst.vec < 120, `worst ${worst.f} ${worst.vec}`);
+});

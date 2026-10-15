@@ -22,7 +22,7 @@ import * as THREE from 'three';
 import { solarPosition, lunarPosition } from '/shared/astro.js';
 import { ATMOS_GLSL, skyRadiance, skyAmbient, transmittance, mieForVisibility, luminance, MIE_G } from './atmos.js';
 import { weatherMap, sampleMap } from './skynoise.js';
-import { cloudParams, limitingMagnitude, moonPhaseLaw, twilightLuminance, acesTone, exposureCurve, calibrateDayExposure, NIGHT_RATIO, FULL_MOON_E, WX_PRESETS } from './skywx.js';
+import { cloudParams, limitingMagnitude, moonPhaseLaw, twilightLuminance, acesTone, acesInputFor, exposureCurve, calibrateDayExposure, NIGHT_RATIO, FULL_MOON_E, WX_PRESETS } from './skywx.js';
 import { VolumeClouds, canRenderHalfFloat } from './clouds.js';
 import { CelestialSphere } from './celestial.js';
 
@@ -33,6 +33,8 @@ const ENV_SHARE = 0.5;         // the part of the sky irradiance the environment
 const HEMI_CAP = 3.0;          // cap on the sky irradiance fed to the hemisphere + environment (display units)
 const MOON_SKY = 3.0;          // display radiance scale of the moonlit sky (scotopic look: the eye sees it, the exposure does not)
 const MOON_LIGHT = 0.42;       // DirectionalLight irradiance of a high full Moon (display units)
+const OVERCAST_GREY = 0.35;    // display value of a 0.18 grey at noon under a plain overcast (sRGB)
+const STORM_GREY = 0.21;       // ... under a storm deck: dark and moody, still readable
 const NIGHT_FLOOR = 0.035;     // starlight / airglow floor of the hemisphere light so ships never go black
 const WRAP = 420000;           // stable-coordinate wrap: a common multiple of every cloud noise tile (m)
 const WMAP = 60000;
@@ -75,17 +77,21 @@ vec4 clouds2D(vec3 d) {
   vec4 wm = texture2D(uWeather, (P + uWindOff) / 60000.0);
   float cell = smoothstep(0.55, 0.92, wm.g) * uCb;
   float cov = clamp(uCover + cell * 0.45, 0.0, 1.0);
-  float covered = smoothstep(1.0 - cov - 0.06, 1.0 - cov + 0.22, wm.r);
+  float covered = smoothstep(1.0 - cov - 0.03, 1.0 - cov + mix(0.12, 0.24, uStratus), wm.r);
   covered = max(covered, cell * smoothstep(0.62, 0.9, wm.g));
   if (covered < 0.003) return vec4(0.0, 0.0, 0.0, 1.0);
+  // near the horizon a plane projection stretches any fine texture into radial bands: there only the
+  // large-scale cover is used (the billows fade out between 9 and 2 deg elevation)
+  float hz = smoothstep(0.035, 0.16, d.y);
   float b1 = texture2D(uWeather, (P + uWindOff) / 7000.0).r;
   float b2 = texture2D(uWeather, (P + uWindOff) / 1400.0 + 0.5).b;
-  float bill = b1 * 0.7 + b2 * 0.3;
-  float dens = clamp((bill - (1.0 - covered)) / max(covered, 0.1), 0.0, 1.0) * covered;
-  dens = mix(dens, covered * (0.72 + 0.28 * bill), uStratus * (1.0 - cell));
+  float bill = mix(0.55, b1 * 0.7 + b2 * 0.3, hz);
+  float dens = clamp((bill - (1.0 - covered)) / max(covered * 0.6, 0.06), 0.0, 1.0) * covered;
+  // a stratus deck: thicker and thinner patches (weather map B) and lumps, never a flat sheet
+  dens = mix(dens, covered * (0.5 + 0.25 * bill + 0.35 * wm.b), uStratus * (1.0 - cell));
   float colH = mix(uThick, uCbTop - uBase, cell);
   float sig = uDens * 0.35;
-  float tauV = sig * colH * dens * min(1.0 / max(d.y, 0.06), 7.0) * 0.5;
+  float tauV = sig * colH * dens * min(1.0 / max(d.y, 0.06), 7.0) * 0.5 * mix(0.6, 1.0, hz);
   float T = exp(-tauV);
   // light: the column towards the light, and diffuse transmission through the whole column
   vec2 P2 = P + uLightDir.xz / max(uLightDir.y, 0.12) * colH * 0.5;
@@ -266,8 +272,13 @@ export class SkySystem {
     this.kDay = calibrateDayExposure(eSun, eSky, 0.45);
     this.kCurve = exposureCurve(this.kDay, lzenAt(60), lzenAt, twilightLuminance);
     this.exposureInfo = { kDay: this.kDay, eSun, eSky, kNight: this.kDay * NIGHT_RATIO };
+    // irradiance under a deck, relative to a clear sky at the same Sun: chosen so an 18 % grey reads
+    // OVERCAST_GREY (0.37) under a plain overcast and STORM_GREY (0.21) under a storm at noon (a clear noon reads 0.45)
+    const xNoon = acesInputFor(0.45);
+    this.deckRatio = { over: acesInputFor(OVERCAST_GREY) / xNoon, storm: acesInputFor(STORM_GREY) / xNoon };
+    this.exposureInfo.deckRatio = this.deckRatio;
   }
-  tierOpts(t) { return t === 'high' ? { scale: 0.5, steps: 44 } : { scale: 0.34, steps: 30 }; }
+  tierOpts(t) { return t === 'high' ? { scale: 0.5, steps: 96 } : { scale: 0.5, steps: 48 }; }   // resolution 0.5 minimum (lower read as streaks)
   setTier(t) {
     if (t === this.tier) return;
     this.tier = t;
@@ -316,7 +327,7 @@ export class SkySystem {
     const r = sampleMap(this.wmData, this.wmN, u, v, 0), g = sampleMap(this.wmData, this.wmN, u, v, 1);
     const cell = sstep(0.55, 0.92, g) * P.cb;
     const cov = Math.min(1, P.cover + cell * 0.45);
-    const covered = Math.max(sstep(1 - cov - 0.06, 1 - cov + 0.22, r), cell * sstep(0.62, 0.9, g));
+    const covered = Math.max(sstep(1 - cov - 0.03, 1 - cov + 0.12 + 0.12 * P.stratus, r), cell * sstep(0.62, 0.9, g));   // = the shaders' edge
     return { covered, cell };
   }
 
@@ -404,10 +415,26 @@ export class SkySystem {
     // ---- sky colours for the ocean, fog and hemisphere (display radiance), with the cloud deck mixed in
     const cover = P.cover;
     const tauCol = P.dens * 1.2 * (P.thick + P.cb * (P.cbTop - P.base - P.thick) * 0.6);   // optical depth of the deck (stratus ~30)
-    const deckDiff = mul3(diffCol, (0.159 / (1 + 0.11 * tauCol)) * Math.max(0.05, lightDir[1] + 0.1));
+    let deckDiff = mul3(diffCol, (0.159 / (1 + 0.11 * tauCol)) * Math.max(0.05, lightDir[1] + 0.1));
     // light from below: the sky- and sun-lit sea when clear, the dim sea under a deck when overcast
-    const ambBot = lerp3(add3(mul3(ambClear, 0.55), mul3(lightCol, 0.03 * Math.max(0, lightDir[1]))), mul3(deckDiff, 0.35), Math.min(1, P.cover));
-    const base = add3(deckDiff, ambBot, 1.0);
+    let ambBot = lerp3(add3(mul3(ambClear, 0.55), mul3(lightCol, 0.03 * Math.max(0, lightDir[1]))), mul3(deckDiff, 0.35), Math.min(1, P.cover));
+    let base = add3(deckDiff, ambBot, 1.0);
+    // calibration: the two-stream deck alone left a storm at noon nearly black (0.18 grey -> 0.06). The light under a
+    // deck is the cloud-transmitted DIFFUSE light: its irradiance = the clear-sky irradiance at this Sun x a ratio
+    // between "overcast" and "storm" (deckRatio, from the calibrated display values). The deck radiance seen from
+    // below is that irradiance / pi; the cloud shaders get the same lift (uDiffCol, uAmbBot) so sky and scene agree.
+    let deckLift = 1;
+    {
+      const eClearNow = luminance(S.Tsun) * K * sstep(-0.01, 0.03, sunDir[1]) + Math.PI * luminance(lerp3(add3(mul3(S.zenS, Ks), S.zenM, Ks * mB), add3(mul3(S.horS[0], Ks), S.horM[0], Ks * mB), 0.55));
+      const storminess = Math.min(1, Math.max(P.cb, P.rain * 0.7));
+      const ratio = this.deckRatio.over + (this.deckRatio.storm - this.deckRatio.over) * storminess;
+      const want = (eClearNow * ratio) / Math.PI, have = Math.max(1e-6, luminance(base));
+      if (want > have && P.cover > 0.05) {
+        deckLift = Math.min(40, want / have);
+        deckDiff = mul3(deckDiff, deckLift); ambBot = mul3(ambBot, deckLift); base = mul3(base, deckLift);
+      }
+    }
+    this.deckLift = deckLift;
     const twZ = [0.45 / 0.611 * Ltw * Ks, 0.62 / 0.611 * Ltw * Ks, 1.0 / 0.611 * Ltw * Ks];
     const twG = [1.0 / 0.69 * Ltw * Ks * 2.5, 0.62 / 0.69 * Ltw * Ks * 2.5, 0.35 / 0.69 * Ltw * Ks * 2.5];
     const zenClear = add3(add3(mul3(S.zenS, Ks), S.zenM, Ks * mB), twZ);
@@ -417,16 +444,17 @@ export class SkySystem {
     const top = lerp3(add3(zenClear, airglow), base, Math.min(1, cover * 1.05));
     // CIE overcast sky: the horizon is darker than the zenith (L ~ 1 + 2 sin(elevation)); broken cloud crowds the horizon
     const coverH = Math.pow(Math.min(1, cover), 0.7);
-    const hor = lerp3(add3(horClear, airglow, 1.3), mul3(base, 0.75), coverH);
+    // under a deck the horizon is a LIGHTER band (the air between the sea and the far cloud base scatters light)
+    const hor = lerp3(add3(horClear, airglow, 1.3), mul3(base, 1.12), coverH);
     // fog colour: the horizon in the camera's azimuth, under the deck
     const fwd = new THREE.Vector3(); this.camera.getWorldDirection(fwd);
     const fa = ((Math.atan2(fwd.x, -fwd.z) / (Math.PI * 2)) * 8 + 8) % 8, i0 = Math.floor(fa) % 8, i1 = (i0 + 1) % 8, ft = fa - Math.floor(fa);
     const horAz0 = lerp3(add3(mul3(S.horS[i0], Ks), S.horM[i0], Ks * mB), add3(mul3(S.horS[i1], Ks), S.horM[i1], Ks * mB), ft);
     const sunAz = Math.atan2(sunDir[0], -sunDir[2]), camAz = Math.atan2(fwd.x, -fwd.z);
     const horAz = add3(add3(horAz0, twZ), twG, Math.pow(Math.max(0, Math.cos(camAz - sunAz)), 3));
-    let fogRad = lerp3(add3(horAz, airglow, 1.3), mul3(base, 0.8), coverH);
+    let fogRad = lerp3(add3(horAz, airglow, 1.3), mul3(base, 1.12), coverH);
     // rain and storms grey the air further
-    fogRad = lerp3(fogRad, mul3(base, 0.9), Math.min(0.6, P.rain * 0.5 + P.cb * 0.3));
+    fogRad = lerp3(fogRad, mul3(base, 1.0), Math.min(0.6, P.rain * 0.5 + P.cb * 0.3));
     // ---- the uniforms
     const u = this.u;
     u.uSunDir.value.set(...sunDir); u.uMoonDir.value.set(...moonDir); u.uCamH.value = camH; u.uMie.value = mie;
@@ -442,7 +470,7 @@ export class SkySystem {
     u.uCamXZ.value.set(sx, sz); u.uWindOff.value.copy(this.windOff); u.uWindOffHi.value.copy(this.windOffHi); u.uHiAngle.value = hiDir;
     u.uCover.value = cover; u.uHigh.value = P.high; u.uBase.value = P.base; u.uThick.value = P.thick; u.uCbTop.value = P.cbTop; u.uCb.value = P.cb; u.uStratus.value = P.stratus; u.uDens.value = P.dens;
     u.uHazeDist.value = THREE.MathUtils.clamp(w.visibility * 2.2, 3000, 90000);
-    u.uLightDir.value.set(...lightDir); u.uLightCol.value.set(...lightCol); u.uDiffCol.value.set(...diffCol);
+    u.uLightDir.value.set(...lightDir); u.uLightCol.value.set(...lightCol); u.uDiffCol.value.set(...mul3(diffCol, deckLift));
     const hi = lightIsSun ? mul3(S.TsunHi, K) : moonC;
     u.uHiLightCol.value.set(...hi);
     u.uAmbTop.value.set(...ambTop); u.uAmbBot.value.set(...ambBot);
@@ -465,7 +493,7 @@ export class SkySystem {
       const ok = this.vol.render(this.camera, {
         uCam: new THREE.Vector3(sx, camH, sz), uWindOff: this.windOff, uTime: (now / 1000) % 10000,
         uCover: cover, uBase: P.base, uThick: P.thick, uCbTop: P.cbTop, uCb: P.cb, uStratus: P.stratus, uDens: P.dens, uRain: P.rain * (1 - 0.5 * P.snow),
-        uLightDir: new THREE.Vector3(...lightDir), uLightCol: new THREE.Vector3(...lightCol), uDiffCol: new THREE.Vector3(...diffCol),
+        uLightDir: new THREE.Vector3(...lightDir), uLightCol: new THREE.Vector3(...lightCol), uDiffCol: new THREE.Vector3(...mul3(diffCol, deckLift)),
         uAmbTop: new THREE.Vector3(...ambTop), uAmbBot: new THREE.Vector3(...ambBot),
         uHazeDist: u.uHazeDist.value, uFlashPos: fp, uFlash: flash,
       });
