@@ -16,6 +16,10 @@
 // Queries (same surface as HarborGeomSet where it matters): heightAt (D14), heightAtC11, maskAt, sdfAt, entryNear —
 // terrain.js and collision.js fall through to them. Budgets (wtmesh.js BUDGET): desktop ≤ 150 MB geometry / 25 D14
 // meshes / 2 worker builds at a time, phone ≤ 50 MB / 9 / 1; decoded tiles LRU 400 / 150; ≤ 4 fetches in flight.
+// City layer (cityscape.js / citymesh.js): every D14 tile also gets its buildings with facades and roofs, trees and
+// container stacks (one building draw call per tile, instanced trees / boxes). Buildings are NOT hidden inside harbour
+// patches (the patch only draws its ~300 largest buildings): the patch's own footprints are passed to the builder and
+// skipped instead, so a harbour shows every building of the map once. `?city=0` / localStorage saltline.city=0: off.
 import * as THREE from 'three';
 import { WT, tileKey, tilesInRadius, cellOf, tileHeightAt, tileMaskAt, tileFToLatLon, decodeTile } from '/shared/wtformat.js';
 import { LAYERS } from '/shared/constants.js';
@@ -23,6 +27,8 @@ import { fromLocal, toLocal } from '/shared/geo.js';
 import { tileFrame, placement, boxPlacement, terrainIndex, tileSDF, buildTile, BUDGET, LOD, WT_TO_PATCH } from './wtmesh.js';
 import { setWorldTiles } from './collision.js';
 import { setShoreField } from './ocean2.js';
+import { buildCity, packExclude } from './citymesh.js';
+import { makeBuildingMaterial, buildingMesh, treeMeshes, containerMesh, cityBytes } from './cityscape.js';
 
 const MAX_FETCH = 4;
 const MORPH_MS = 600, GROW_MS = 400;
@@ -114,11 +120,12 @@ function makeTerrainMaterial(clip, detailUniforms = null) {
       sh.uniforms.uDetailTone = detailUniforms.uDetailTone;
     }
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float morphY; uniform float uMorph;\nvarying vec3 vWorldPos;')
+      .replace('#include <common>', '#include <common>\nattribute float morphY; uniform float uMorph;\nvarying vec3 vWorldPos; varying float vSlNy;')
+      .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n  vSlNy = objectNormal.y;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n  transformed.y = mix(morphY, transformed.y, uMorph);\n  vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     if (detailUniforms) {
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform sampler2D uDetailDrape; uniform float uDetailOn; uniform vec4 uDetailBox; uniform float uDetailTone; varying vec3 vWorldPos;')
+        .replace('#include <common>', '#include <common>\nuniform sampler2D uDetailDrape; uniform float uDetailOn; uniform vec4 uDetailBox; uniform float uDetailTone; varying vec3 vWorldPos; varying float vSlNy;')
         .replace('#include <color_fragment>', `#include <color_fragment>
   if (uDetailOn > 0.5) {
     vec2 dUv = vec2((vWorldPos.x - uDetailBox.x) / (uDetailBox.z - uDetailBox.x), (vWorldPos.z - uDetailBox.y) / (uDetailBox.w - uDetailBox.y));
@@ -130,7 +137,9 @@ function makeTerrainMaterial(clip, detailUniforms = null) {
         diffuseColor.rgb = mix(diffuseColor.rgb, detailRgb * uDetailTone * 0.9, edge * 0.95);
       }
     }
-  }`);
+  }
+  // cliffs: steep land faces read as rock (the imagery smears there); quays and beaches at sea level keep their colour
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.40, 0.38, 0.35) * (0.85 + 0.3 * fract(sin(dot(floor(vWorldPos.xz * 0.4), vec2(12.9898, 78.233))) * 43758.5453)), (1.0 - smoothstep(0.6, 0.82, vSlNy)) * smoothstep(1.5, 4.0, vWorldPos.y) * 0.5);`);
     }
   };
   m.customProgramCacheKey = () => `saltline-wt-terrain-drape-${detailUniforms ? 1 : 0}`;
@@ -138,9 +147,16 @@ function makeTerrainMaterial(clip, detailUniforms = null) {
 }
 
 // ------------------------------------------------------------------------------------------------ shared instance geometry
+/** A square strut of thickness t from a to b (inclined members: A-frames, forestays, bracing). */
+function strut(a, b, t) {
+  const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]), L = d.length();
+  const g = new THREE.BoxGeometry(t, L, t);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()));
+  return g.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+}
 function mergeBoxes(boxes) {
-  // boxes: [w, h, d, x, y, z] → one BufferGeometry
-  const geos = boxes.map(([w, h, d, x, y, z]) => new THREE.BoxGeometry(w, h, d).translate(x, y, z));
+  // boxes: [w, h, d, x, y, z] or a ready BufferGeometry (indexed, with normals) → one BufferGeometry
+  const geos = boxes.map((b) => (b.isBufferGeometry ? b : new THREE.BoxGeometry(b[0], b[1], b[2]).translate(b[3], b[4], b[5])));
   let n = 0, ni = 0; for (const g of geos) { n += g.attributes.position.count; ni += g.index.count; }
   const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), idx = new Uint16Array(ni);
   let o = 0, oi = 0;
@@ -157,18 +173,50 @@ let SHARED = null;
 function shared() {
   if (SHARED) return SHARED;
   // ship-to-shore gantry for h = 1 (scaled by the crane height); the boom points along −z (north) at hdg 0
+  // (h = apex of the A-frame; portal legs 0.62 h apart across the rails ≈ 30 m on a 50 m crane, boom outreach ≈ 1.05 h
+  // over the water, backreach 0.35 h with the machinery house, forestays from the apex to the boom)
+  const LX = 0.17, LZ = 0.15, BY = 0.64, AZ = 0.13;
   const sts = mergeBoxes([
-    [0.025, 0.66, 0.025, -0.2, 0.33, -0.12], [0.025, 0.66, 0.025, 0.2, 0.33, -0.12], [0.025, 0.66, 0.025, -0.2, 0.33, 0.12], [0.025, 0.66, 0.025, 0.2, 0.33, 0.12],
-    [0.44, 0.03, 0.03, 0, 0.64, -0.12], [0.44, 0.03, 0.03, 0, 0.64, 0.12], [0.44, 0.02, 0.02, 0, 0.2, -0.12], [0.44, 0.02, 0.02, 0, 0.2, 0.12],
-    [0.05, 0.035, 1.5, -0.08, 0.66, -0.4], [0.05, 0.035, 1.5, 0.08, 0.66, -0.4], [0.14, 0.02, 1.5, 0, 0.68, -0.4],
-    [0.2, 0.07, 0.16, 0, 0.71, 0.12], [0.03, 0.3, 0.03, 0, 0.83, 0.05],
+    [0.032, BY, 0.032, -LX, BY / 2, -LZ], [0.032, BY, 0.032, LX, BY / 2, -LZ], [0.032, BY, 0.032, -LX, BY / 2, LZ], [0.032, BY, 0.032, LX, BY / 2, LZ],
+    [0.03, 0.035, 2 * LZ + 0.04, -LX, 0.045, 0], [0.03, 0.035, 2 * LZ + 0.04, LX, 0.045, 0],                 // sill beams (bogies)
+    [2 * LX + 0.03, 0.04, 0.04, 0, BY - 0.02, -LZ], [2 * LX + 0.03, 0.04, 0.04, 0, BY - 0.02, LZ],           // portal girders
+    [0.035, 0.035, 2 * LZ, -LX, BY - 0.02, 0], [0.035, 0.035, 2 * LZ, LX, BY - 0.02, 0],
+    [2 * LX, 0.02, 0.02, 0, 0.3, -LZ], [2 * LX, 0.02, 0.02, 0, 0.3, LZ],                                       // portal ties
+    strut([-LX, 0.06, LZ], [-LX, BY - 0.04, -LZ], 0.014), strut([LX, 0.06, LZ], [LX, BY - 0.04, -LZ], 0.014),   // side bracing
+    [0.045, 0.055, 1.42, -0.065, BY + 0.03, -0.36], [0.045, 0.055, 1.42, 0.065, BY + 0.03, -0.36],             // boom girders (z +0.35 … −1.07)
+    [0.13, 0.012, 1.42, 0, BY + 0.005, -0.36],                                                                  // trolley rails / walkway
+    [0.2, 0.08, 0.15, 0, BY + 0.1, 0.27],                                                                       // machinery house
+    [0.08, 0.05, 0.07, 0, BY - 0.03, -0.32], [0.035, 0.035, 0.035, 0.03, BY - 0.075, -0.32],                   // trolley + operator cab
+    [0.03, 1 - BY, 0.03, -0.065, (1 + BY) / 2, AZ], [0.03, 1 - BY, 0.03, 0.065, (1 + BY) / 2, AZ],             // A-frame posts
+    [0.16, 0.03, 0.035, 0, 1, AZ],
+    strut([-0.065, BY + 0.05, -0.05], [-0.065, 0.99, AZ], 0.022), strut([0.065, BY + 0.05, -0.05], [0.065, 0.99, AZ], 0.022),
+    strut([-0.06, 0.99, AZ], [-0.06, BY + 0.06, -0.62], 0.012), strut([0.06, 0.99, AZ], [0.06, BY + 0.06, -0.62], 0.012),   // forestays
+    strut([-0.06, 0.99, AZ], [-0.06, BY + 0.06, -1.02], 0.01), strut([0.06, 0.99, AZ], [0.06, BY + 0.06, -1.02], 0.01),
+    strut([0, 0.99, AZ], [0, BY + 0.1, 0.34], 0.014),                                                           // backstay
   ]);
-  const tower = mergeBoxes([[0.06, 1, 0.06, 0, 0.5, 0], [0.04, 0.04, 0.8, 0, 0.97, -0.25], [0.12, 0.1, 0.12, 0, 0.9, 0.05]]);
-  const tank = new THREE.CylinderGeometry(1, 1, 1, 20, 1).translate(0, 0.5, 0);
+  // mobile harbour / portal crane: slewing tower, luffed lattice jib, counterweight
+  const tower = mergeBoxes([
+    [0.07, 0.62, 0.07, 0, 0.31, 0], [0.22, 0.05, 0.22, 0, 0.03, 0], [0.14, 0.1, 0.18, 0, 0.66, 0.06], [0.1, 0.08, 0.08, 0, 0.62, 0.17],
+    strut([0, 0.66, -0.02], [0, 1.0, -0.75], 0.035), strut([0, 0.72, 0.02], [0, 1.0, -0.75], 0.012), strut([0, 0.92, 0.05], [0, 0.71, 0.0], 0.02),
+  ]);
+  // storage tank: shell + a low dome roof (scaled r × h × r) and a top ring
+  const tank = mergeBoxes([
+    new THREE.CylinderGeometry(1, 1, 1, 24, 1, true).translate(0, 0.5, 0),
+    new THREE.SphereGeometry(1, 24, 4, 0, Math.PI * 2, 0, Math.PI * 0.2).scale(1, 0.35, 1).translate(0, 1 - 0.35 * Math.cos(Math.PI * 0.2), 0),
+    new THREE.CylinderGeometry(1.01, 1.01, 0.03, 24, 1, true).translate(0, 0.985, 0),
+  ]);
   const light = new THREE.CylinderGeometry(0.55, 1, 1, 10, 1).translate(0, 0.5, 0);
+  // lighthouse for h = 1 (scaled 2.6 × h × 2.6): tapered tower, gallery, lantern, cap; the lantern glows (lantern mesh)
+  const lighthouse = mergeBoxes([
+    new THREE.CylinderGeometry(0.62, 1, 0.84, 14, 1).translate(0, 0.42, 0),
+    new THREE.CylinderGeometry(0.95, 0.95, 0.025, 14, 1).translate(0, 0.85, 0),
+    new THREE.CylinderGeometry(0.06, 0.6, 0.07, 10, 1).translate(0, 0.995, 0),
+  ]);
+  const lantern = new THREE.CylinderGeometry(0.45, 0.45, 0.1, 10, 1).translate(0, 0.91, 0);
+  const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff1c4 });
   const mat = applyClip(new THREE.MeshLambertMaterial({ color: 0xffffff }), 'd14');
   const structMat = applyClip(new THREE.MeshLambertMaterial({ vertexColors: true }), 'd14');
-  SHARED = { sts, tower, tank, light, mat, structMat, index: new Map() };
+  SHARED = { sts, tower, tank, light, lighthouse, lantern, lampMat, mat, structMat, index: new Map() };
   return SHARED;
 }
 function sharedIndex(lod) {
@@ -176,6 +224,12 @@ function sharedIndex(lod) {
   let a = S.index.get(lod);
   if (!a) { a = new THREE.BufferAttribute(terrainIndex(lod), 1); S.index.set(lod, a); }
   return a;
+}
+/** Light instances [x, y, z, kind, colour, h] split: lighthouses (kind 0) or the rest. */
+function lightsOf(arr, lighthouses) {
+  const out = [];
+  for (let i = 0; i + 5 < arr.length; i += 6) if ((arr[i + 3] === 0) === lighthouses) for (let k = 0; k < 6; k++) out.push(arr[i + k]);
+  return Float32Array.from(out);
 }
 const CRANE_COLOURS = [0x2f6db5, 0xc8392b, 0xe9e6dc, 0xf2b632, 0x2e8b57];
 const LIGHT_COLOURS = [0xd03025, 0x25a040, 0xf0c020, 0xf2f2ee, 0x202020];
@@ -219,6 +273,12 @@ export class WorldTileSet {
     this.failStreak = 0; this.pauseUntil = 0;
     this.miss = { 11: 0, 14: 0 }; this.zPause = { 11: 0, 14: 0 }; this.okZ = {};   // a zoom the server keeps answering 404 for is paused
     this.workers = [];
+    // city layer (buildings with facades, trees, containers)
+    let cityOn = opts.city !== false;
+    try { if (localStorage.getItem('saltline.city') === '0' || /[?&]city=0\b/.test(location.search)) cityOn = false; } catch { /* storage blocked */ }
+    this.cityOn = cityOn;
+    this.cityMat = null;
+    this.patchBld = new Map();           // harbour patch id → { latMin, latMax, lonMin, lonMax, rings: [[[lat, lon], …], …] }
     this.useWorker = opts.worker !== false && typeof Worker !== 'undefined';
     this.shown = false;
     setWorldTiles(this);
@@ -248,6 +308,52 @@ export class WorldTileSet {
   /** Harbour patch footprints (lat/lon boxes): D14 detail is hidden inside them (patches keep precedence). */
   /** Bridge ids drawn by wwmesh (registry): their D14 slabs are skipped on the next (re)build of a tile. */
   setSkipIds(ids) { const k = [...ids].sort().join('|'); if (k === this.skipKey) return; this.skipKey = k; this.skipIds = new Set(ids); }
+  /**
+   * The buildings a harbour patch draws itself (geom.features.buildings, [lat, lon] rings; null removes): the city layer
+   * skips the same footprints. D14 tiles under the patch are rebuilt (their city meshes change).
+   */
+  setPatchBuildings(id, buildings) {
+    const key = String(id), old = this.patchBld.get(key);
+    if (!buildings || !buildings.length) { if (!this.patchBld.delete(key)) return; }
+    else {
+      const rings = []; let latMin = Infinity, latMax = -Infinity, lonMin = Infinity, lonMax = -Infinity;
+      for (const b of buildings.slice(0, 320)) {
+        const r = (b?.pts || []).filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+        if (r.length < 3) continue;
+        rings.push(r);
+        for (const p of r) { if (p[0] < latMin) latMin = p[0]; if (p[0] > latMax) latMax = p[0]; if (p[1] < lonMin) lonMin = p[1]; if (p[1] > lonMax) lonMax = p[1]; }
+      }
+      if (!rings.length) { if (!this.patchBld.delete(key)) return; } else this.patchBld.set(key, { latMin, latMax, lonMin, lonMax, rings });
+    }
+    // rebuild only the D14 tiles under the old / new footprints
+    const boxes = [old, this.patchBld.get(key)].filter(Boolean);
+    for (const e of this.entries.values()) {
+      if (e.z !== WT.Z_DETAIL || !(e.mesh || e.building)) continue;
+      const f = e.frame;
+      if (boxes.some((p) => !(p.latMax < f.latS || p.latMin > f.latN || p.lonMax < f.lonW || p.lonMin > f.lonE))) e.dirty = true;
+    }
+    this.pumpBuild();
+  }
+  /** Patch footprints over a D14 tile, packed in tile fractions for citymesh.js, or null. */
+  excludeFor(e) {
+    if (!this.patchBld.size) return null;
+    const f = e.frame, rings = [];
+    const n2 = 2 ** e.z, mercY = (lat) => { const r = lat * D2R; return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n2 - e.y; };
+    for (const p of this.patchBld.values()) {
+      if (p.latMax < f.latS || p.latMin > f.latN || p.lonMax < f.lonW || p.lonMin > f.lonE) continue;
+      for (const r of p.rings) {
+        const fr = new Array(r.length * 2);
+        let inside = false;
+        for (let i = 0; i < r.length; i++) {
+          const fx = (r[i][1] - f.lonW) / f.dlon, fy = mercY(r[i][0]);
+          fr[i * 2] = fx; fr[i * 2 + 1] = fy;
+          if (fx > -0.02 && fx < 1.02 && fy > -0.02 && fy < 1.02) inside = true;
+        }
+        if (inside) rings.push(fr);
+      }
+    }
+    return rings.length ? packExclude(rings) : null;
+  }
   setPatchBoxes(boxes) { this.patchBoxes = (boxes || []).filter(Boolean); this.updateClips(); this.shoreDirty = true; }
   /** The server's `wt` push ({t:'wt', k:'14/x/y', rev}): refetch that tile (keeps the old mesh until the new one). */
   onPush(m) {
@@ -323,11 +429,13 @@ export class WorldTileSet {
   }
   stats() {
     let d14 = 0, c11 = 0, bytes = 0, data = 0, raw = 0, missing = 0, verts = 0, tris = 0;
+    const city = { buildings: 0, pitched: 0, excluded: 0, trees: 0, containers: 0 };
     for (const e of this.entries.values()) {
+      const cc = e.mesh?.cityCounts; if (cc) for (const k in city) city[k] += cc[k] || 0;
       if (e.mesh) { if (e.z === WT.Z_DETAIL) d14++; else c11++; bytes += e.mesh.bytes; verts += e.mesh.verts; tris += e.mesh.tris; }
       if (e.data) data++; if (e.raw) raw += e.raw.byteLength; if (e.missing) missing++;
     }
-    return { enabled: this.enabled, meta: this.metaState, d14, c11, geomMB: +(bytes / 1048576).toFixed(1), verts, tris, decoded: data, rawMB: +(raw / 1048576).toFixed(1), missing, inflight: this.inflight, building: this.building, loading: this.loading(), ...this.st, buildMsAvg: this.st.built ? +(this.st.buildMs / this.st.built).toFixed(1) : 0 };
+    return { enabled: this.enabled, meta: this.metaState, d14, c11, geomMB: +(bytes / 1048576).toFixed(1), verts, tris, decoded: data, rawMB: +(raw / 1048576).toFixed(1), missing, inflight: this.inflight, building: this.building, loading: this.loading(), city, ...this.st, buildMsAvg: this.st.built ? +(this.st.buildMs / this.st.built).toFixed(1) : 0 };
   }
   dispose() {
     for (const e of this.entries.values()) { this.dropMesh(e); e.abort?.abort(); }
@@ -481,6 +589,7 @@ export class WorldTileSet {
     const far = e.want === 'far';
     const o = { lod: e.lod, structures: e.z === WT.Z_DETAIL, maxBuildings: this.B.buildings, maxVerts: this.B.structVerts, minBuildingH: far ? 6 : 0 };
     if (this.skipIds?.size) o.skipIds = [...this.skipIds];              // registry bridges (wwmesh) — structured-clone friendly
+    if (this.cityOn && e.z === WT.Z_DETAIL) o.city = { want: e.want === 'c11' ? 'far' : e.want, mobile: this.mobile, exclude: this.excludeFor(e) };
     // coarse heights over the tile for the morph (what the coarse world shows there now)
     const n = COARSE_N, h = new Float32Array((n + 1) * (n + 1));
     for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
@@ -504,8 +613,10 @@ export class WorldTileSet {
     setTimeout(() => {
       try {
         const t = decodeTile(new Uint8Array(e.raw));
-        const r = buildTile(t, opts);
-        this.onBuilt({ id, ok: true, tile: { z: t.z, x: t.x, y: t.y, flags: t.flags, n: t.n, rev: t.rev, uniformH: t.uniformH, srcHash: t.srcHash, contentHash: t.contentHash, mask: t.mask, height: t.height, src: t.vectors?.src ?? null, ov: t.vectors?.ov ?? null }, terrain: r.terrain, structures: r.structures, bytes: r.bytes, ms: r.ms });
+        const r = buildTile(t, opts.city ? { ...opts, noBuildings: true } : opts);
+        let city = null;
+        if (opts.city && t.z === WT.Z_DETAIL && t.mask) { try { city = buildCity(t, opts.city); } catch { city = null; } }
+        this.onBuilt({ id, ok: true, tile: { z: t.z, x: t.x, y: t.y, flags: t.flags, n: t.n, rev: t.rev, uniformH: t.uniformH, srcHash: t.srcHash, contentHash: t.contentHash, mask: t.mask, height: t.height, src: t.vectors?.src ?? null, ov: t.vectors?.ov ?? null }, terrain: r.terrain, structures: r.structures, city, bytes: r.bytes, ms: r.ms });
       } catch (err) { this.onBuilt({ id, ok: false, error: String(err?.message || err) }); }
     }, 0);
   }
@@ -577,9 +688,9 @@ export class WorldTileSet {
       m.structures = sm; m.tris += st.tris; m.verts += st.verts;
     }
     if (st?.inst) {
-      const mk = (geo, arr, fill) => {
+      const mk = (geo, arr, fill, mat = S.mat) => {
         const k = arr.length / 6; if (!k) return null;
-        const im = new THREE.InstancedMesh(geo, S.mat, k);
+        const im = new THREE.InstancedMesh(geo, mat, k);
         const M4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), sc = new THREE.Vector3(), c = new THREE.Color(), Y = new THREE.Vector3(0, 1, 0);
         for (let i = 0; i < k; i++) { fill(arr, i * 6, p, q, sc, c, Y); M4.compose(p, q, sc); im.setMatrixAt(i, M4); im.setColorAt(i, c); }
         im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
@@ -593,7 +704,9 @@ export class WorldTileSet {
         mk(S.sts, Float32Array.from(sts), fillCrane),
         mk(S.tower, Float32Array.from(other), fillCrane),
         mk(S.tank, st.inst.tanks, (a, o, p, q, sc, c) => { p.set(a[o], a[o + 1] - 0.3, a[o + 2]); q.identity(); sc.set(a[o + 3], a[o + 4], a[o + 3]); c.setHex(0xd8d6d0); }),
-        mk(S.light, st.inst.lights, (a, o, p, q, sc, c) => {
+        mk(S.lighthouse, lightsOf(st.inst.lights, true), (a, o, p, q, sc, c) => { p.set(a[o], a[o + 1], a[o + 2]); q.identity(); sc.set(2.6, a[o + 5], 2.6); c.setHex(LIGHT_COLOURS[a[o + 4]] === 0x202020 ? 0xf2f2ee : LIGHT_COLOURS[a[o + 4]] ?? 0xf2f2ee); }),
+        mk(S.lantern, lightsOf(st.inst.lights, true), (a, o, p, q, sc, c) => { p.set(a[o], a[o + 1], a[o + 2]); q.identity(); sc.set(2.6, a[o + 5], 2.6); c.setHex(0xffffff); }, S.lampMat),
+        mk(S.light, lightsOf(st.inst.lights, false), (a, o, p, q, sc, c) => {
           const kind = a[o + 3], h = a[o + 5]; p.set(a[o], a[o + 1], a[o + 2]); q.identity();
           if (kind === 0) { sc.set(2.6, h, 2.6); c.setHex(LIGHT_COLOURS[a[o + 4]] === 0x202020 ? 0xf2f2ee : LIGHT_COLOURS[a[o + 4]] ?? 0xf2f2ee); }
           else if (kind === 2) { p.y = -0.6; sc.set(1.1, 2.6, 1.1); c.setHex(LIGHT_COLOURS[a[o + 4]] ?? 0xf0c020); }
@@ -601,9 +714,21 @@ export class WorldTileSet {
         }),
       ]) if (im) { im.name = `wt-${e.key}-inst`; m.inst.push(im); }
     }
+    // city layer: buildings (one draw call), trees, containers — never clipped by harbour patches (see excludeFor)
+    m.city = [];
+    if (msg.city) {
+      if (!this.cityMat) this.cityMat = makeBuildingMaterial(this.detailUniforms, this.mobile);
+      const bm = buildingMesh(msg.city, this.cityMat);
+      if (bm) m.city.push(bm);
+      for (const t of treeMeshes(msg.city.inst?.trees)) m.city.push(t);
+      const cm = containerMesh(msg.city.inst?.boxes); if (cm) m.city.push(cm);
+      for (const o of m.city) { o.matrixAutoUpdate = false; o.name = `wt-${e.key}-${o.name}`; }
+      m.bytes += cityBytes(msg.city); m.verts += msg.city.verts || 0; m.tris += msg.city.tris || 0;
+      m.cityCounts = msg.city.counts;
+    }
     // grow-in for structures (scale y about the tile datum) — only on a tile's first appearance
     const grow = first ? now : -1e9;
-    for (const o of [m.structures, ...m.inst]) {
+    for (const o of [m.structures, ...m.inst, ...m.city]) {
       if (!o) continue;
       o.onBeforeRender = () => {
         const k = Math.min(1, (performance.now() - grow) / GROW_MS);
@@ -615,7 +740,7 @@ export class WorldTileSet {
     const old = e.mesh;
     e.mesh = m;
     this.place(e);
-    this.group.add(terrain); if (m.structures) this.group.add(m.structures); for (const im of m.inst) this.group.add(im);
+    this.group.add(terrain); if (m.structures) this.group.add(m.structures); for (const im of m.inst) this.group.add(im); for (const o of m.city) this.group.add(o);
     if (old) this.disposeMesh(old);
     this.updateClips();
     this.shoreDirty = true;
@@ -627,7 +752,7 @@ export class WorldTileSet {
     const m = e.mesh; if (!m) return;
     const p = placement(e.frame, this.origin);
     m.base.set(1, 0, p.s, p.tx, 0, 1, 0, 0, 0, 0, 1, p.tz, 0, 0, 0, 1);
-    for (const o of [m.terrain, m.structures, ...m.inst]) {
+    for (const o of [m.terrain, m.structures, ...m.inst, ...(m.city || [])]) {
       if (!o) continue;
       o.matrix.copy(m.base); o.matrixWorldNeedsUpdate = true;
     }
@@ -643,6 +768,7 @@ export class WorldTileSet {
     m.terrain.geometry.index = null; m.terrain.geometry.dispose();       // the index is shared per LOD: never disposed
     if (m.structures) { this.group.remove(m.structures); m.structures.geometry.dispose(); }
     for (const im of m.inst) { this.group.remove(im); im.dispose?.(); }
+    for (const o of m.city || []) { this.group.remove(o); if (o.isInstancedMesh) o.dispose(); else o.geometry.dispose(); }   // shared geometry / materials stay
   }
   /** Clip rectangles: patches → D14, D14 (+ patches) → C11, D14 + C11 → coarse. */
   setDetailDrape(tex, boxVec) {

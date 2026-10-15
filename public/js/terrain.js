@@ -19,15 +19,19 @@
 // meshes are never rebuilt for it: their fragments are discarded (clip rectangles, wtiles.js CLIP) inside the footprint
 // of an attached finer mesh, in the same frame the finer mesh is attached, so there is never a hole. Height lookups
 // follow the server stack's order: harbour patch → D14 → L1 region → C11 (outside L1) → L0 global.
+// City layer (cityscape.js): D14 tiles carry the buildings / trees / containers; harbour patches tell the tile set which
+// footprints they draw themselves (setPatchBuildings); trees are also planted where the z18 satellite drape around the
+// ship shows canopy (SatTrees); setNight(k) drives the lit windows. Steep land in the drape shader reads as rock.
 // `update(lat, lon, camera)` takes the camera (optional) for the focus point; `?wt=0` / localStorage saltline.wt=0 off.
 // Scale reference (documented for main.js): ships are 1:1; the default chase camera is distance = max(60, 2.6 × ship
 // length) at pitch 0.32 rad, which keeps quays, buildings and hull in proportion next to the 10 m patch coast.
 import * as THREE from 'three';
 import { TILE, LAYERS, PATCH, decodeHeight, decodePatchHeight, GEO } from '/shared/constants.js';
 import { toLocal, haversine } from '/shared/geo.js';
-import { patchHeightAt, computeSDF } from './harborgeom.js';
+import { patchHeightAt, patchMaskAt, computeSDF } from './harborgeom.js';
 import { setShoreField } from './ocean2.js';
 import { WorldTileSet, applyClip } from './wtiles.js';
+import { SatTrees, setCityNight } from './cityscape.js';
 
 export const VSCALE = 1; // the world is rendered 1:1 — real metres horizontally and vertically
 /** Default chase camera for the 1:1 world (§4): main.js applies it. */
@@ -300,7 +304,9 @@ function makeDrapeMaterial(clip = null, detailUniforms = null) {
         diffuseColor.rgb = mix(diffuseColor.rgb, detailRgb * uDetailTone * 0.85 + diffuseColor.rgb * shade * 0.15, edge * 0.95);
       }
     }
-  }`);
+  }
+  // cliffs: steep land faces read as rock (the drape smears there); sea-level quays and beaches keep their colour
+  if (vDrapeW > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.40, 0.38, 0.35) * (0.85 + 0.3 * fract(sin(dot(floor(vWorldPos.xz * 0.4), vec2(12.9898, 78.233))) * 43758.5453)), (1.0 - smoothstep(0.6, 0.82, normalize(vDrapeN).y)) * smoothstep(1.5, 4.0, vWorldPos.y) * 0.5);`);
   };
   m.customProgramCacheKey = () => `saltline-drape-${detailUniforms ? 'detail' : 'base'}`;
   return clip ? applyClip(m, clip) : m;
@@ -338,6 +344,23 @@ export class Terrain {
     try { wtOn = localStorage.getItem('saltline.wt') !== '0' && !/[?&]wt=0\b/.test(location.search); } catch { /* storage blocked */ }
     this.wtiles = new WorldTileSet({ parent: this.group, origin: this.origin, halfRes: this.halfRes, enabled: wtOn, coarseAt: (lat, lon, z) => this.coarseHeightAt(lat, lon, z), shoreField: (e) => buildShoreField(e) });
     this.wtVersion = 0;
+    this.satTrees = this.wtiles?.cityOn ? new SatTrees(this.group, { mobile: this.halfRes }) : null;
+  }
+  /** 0 day … 1 night: lit windows of the city layer (main.js updateDayNight). */
+  setNight(k) { setCityNight(k); }
+  /** Ground height where a satellite tree may stand (dry land, not a building / quay), else null. */
+  treeGroundAt(lat, lon) {
+    for (const p of this.patches.values()) {
+      const b = p.bbox;
+      if (lat < b.latMin || lat > b.latMax || lon < b.lonMin || lon > b.lonMax) continue;
+      if (patchMaskAt(p.entry, lat, lon) !== M.LAND) return null;
+      const h = patchHeightAt(p.entry, lat, lon);
+      return h != null && h > 0.4 ? h : null;
+    }
+    const m = this.wtiles?.maskAt(lat, lon);
+    if (m != null && m !== 1) return null;            // WT.MASK.LAND = 1 (buildings, quays, water excluded)
+    const h = this.heightAt(lat, lon);
+    return h != null && h > 0.4 ? h : null;
   }
   refreshBoatDrapeBox() {
     if (!this.boatDrape || !this.boatDrapeLatLonBox) return;
@@ -355,6 +378,7 @@ export class Terrain {
     for (const p of this.patches.values()) this.placePatch(p);
     this.refreshBoatDrapeBox();
     this.wtiles?.setOrigin(origin);
+    this.satTrees?.setOrigin(origin);
   }
   layerDef(level) { return LAYERS[level]; }
   tileOf(level, lat, lon) {
@@ -540,6 +564,7 @@ export class Terrain {
       this.detailUniforms.uDetailOn.value = 0;
       this.detailUniforms.uDetailDrape.value = blankTexture();
       if (this.wtiles) this.wtiles.setDetailDrape(null, null);
+      this.satTrees?.reset();
       for (const t of this.tiles.values()) this.dropRegionDrape(t);
     } else this.updateDrapes();
   }
@@ -602,6 +627,11 @@ export class Terrain {
     const s = this.shipPos;
     if (s) this.updateBoatDrape(s);
     for (const d of [this.boatDrape, this.boatDrapeNext]) { d?.pump(); d?.flush(); }
+    // satellite trees once the ship's z18 drape is complete (once per drape)
+    const bd = this.boatDrape;
+    if (this.satTrees && bd && bd.uploaded && bd.loaded === bd.tiles.length && this.boatDrapeLatLonBox && MapTiles.isSat?.()) {
+      try { this.satTrees.build(bd, this.boatDrapeLatLonBox, (la, lo) => this.treeGroundAt(la, lo), this.origin, pxToLon, pxToLat); } catch { /* keep going without */ }
+    }
     for (const t of this.tiles.values()) {
       if (t.level !== 1 || !t.mesh) continue;
       if (!s) continue;
@@ -748,6 +778,7 @@ export class Terrain {
     PATCHES.set(String(entry.id), p);
     this.group.add(mesh);
     try { p.shore = buildShoreField(entry); } catch { p.shore = null; }
+    this.wtiles?.setPatchBuildings?.(entry.id, entry.geom?.features?.buildings || null);   // the city layer skips these footprints
     this.placePatch(p);
     this.rebuildAffectedTiles(entry.bbox);
     this.wtiles?.setPatchBoxes([...this.patches.values()].map((q) => q.bbox));
@@ -760,6 +791,7 @@ export class Terrain {
     this.group.remove(p.mesh); p.mesh.geometry.dispose(); p.mat.dispose();
     p.drape?.dispose();
     if (p.shore) { setShoreField(p.id, null); p.shore.tex.dispose(); }
+    this.wtiles?.setPatchBuildings?.(id, null);
     this.patches.delete(id);
     if (PATCHES.get(String(id)) === p) PATCHES.delete(String(id));
     if (rebuild) { this.rebuildAffectedTiles(p.bbox); this.version++; }
@@ -828,7 +860,7 @@ export class Terrain {
     return h == null ? null : h < 0 ? h - 4 : h;
   }
   dispose() {
-    this.wtiles?.dispose(); this.boatDrape?.dispose(); this.boatDrapeNext?.dispose(); this.boatDrape = this.boatDrapeNext = null;
+    this.satTrees?.dispose(); this.wtiles?.dispose(); this.boatDrape?.dispose(); this.boatDrapeNext?.dispose(); this.boatDrape = this.boatDrapeNext = null;
     for (const id of [...this.patches.keys()]) this.removePatch(id, false);
     for (const [key, t] of [...this.tiles]) this.dropTile(key, t);
     this.scene.remove(this.group); this.mat.dispose();
