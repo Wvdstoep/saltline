@@ -139,3 +139,22 @@ test('rust never swallows a damaged hull: coverage saturates well below full and
   assert.ok(f.includes('rust = min(rust, 0.85);'), 'rust is capped');
   assert.ok(!f.includes('1.0 - w * 1.15'), 'the old threshold that painted the whole ship at low condition is gone');
 });
+
+test('rust is runs from openings and small flakes, never blotches; the house only gets faint sill / deck-line runs', () => {
+  const m = makeSkinMaterial('hull', 0x8b2b1a, { uniforms: skinUniforms(), preset: 'paint' });
+  const shader = { uniforms: {}, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader };
+  m.onBeforeCompile(shader);
+  const f = shader.fragmentShader;
+  assert.ok(f.includes('rust = max(rust, seamRun * 0.75);'), 'weld seams bleed rust downwards');
+  assert.ok(f.includes('rust = runs * max(sill, deckFoot)'), 'the house rust is anchored to sills and the deck line');
+  const code = f.replace(/\/\/[^\n]*/g, '');
+  assert.ok(!/\bpatch\b/.test(code), "no 'patch' identifier (reserved word in GLSL ES 3.00)");
+  assert.ok(!f.includes('smoothstep(1.0 - wr, 1.0 - wr + 0.22, n1)'), 'the large-cell blotch term is gone');
+});
+
+test('instanced fittings take the skin in the ship frame (instance matrix applied to shipPos)', () => {
+  const m = makeSkinMaterial('paint', 0xffffff, { uniforms: skinUniforms() });
+  const shader = { uniforms: {}, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader };
+  m.onBeforeCompile(shader);
+  assert.ok(shader.vertexShader.includes('vShipPos = (instanceMatrix * vec4(shipPos, 1.0)).xyz;'));
+});

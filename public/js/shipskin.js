@@ -38,9 +38,19 @@ const VERT_PARS = /* glsl */`attribute vec3 shipPos; varying vec3 vShipPos;
 attribute vec3 shipNrm; varying vec3 vShipNrm;
 #endif
 `;
-const VERT = /* glsl */`vShipPos = shipPos;
+// instanced fittings (shipgen.js Parts.imat): shipPos is the unit part, the instance matrix places it in the ship frame
+const VERT = /* glsl */`
+#ifdef USE_INSTANCING
+vShipPos = (instanceMatrix * vec4(shipPos, 1.0)).xyz;
+#else
+vShipPos = shipPos;
+#endif
 #ifdef SKIN_TEX
+#ifdef USE_INSTANCING
+vShipNrm = normalize(mat3(instanceMatrix) * shipNrm);
+#else
 vShipNrm = shipNrm;
+#endif
 #endif
 `;
 
@@ -174,12 +184,17 @@ vec3 skinTxN = vec3(0.0);
   float mott = wnoise(P * 0.33 + 17.0);
   col *= 0.95 + 0.1 * mott * (1.0 - skinGlass);
   col = mix(col, vec3(dot(col, vec3(0.3333))), 0.22 * grime * mott * (1.0 - skinGlass));
-  // rust patches grow with wear (hull condition) but never swallow the ship: a badly damaged hull is still mostly paint
-  // with streaks and patches (at w = 1 about a third of the surface), never a rust-coloured block
-  float streakN = wnoise(vec3(P.x * 4.0, P.y * 0.35, P.z * 4.0));
-  float wr = 0.55 * w;                                            // coverage saturates well below full
-  rust = smoothstep(1.0 - wr, 1.0 - wr + 0.22, n1) * (0.6 + 0.4 * streakN);
-  rust += smoothstep(1.0 - wr * 0.8, 1.0 - wr * 0.8 + 0.1, streakN) * 0.45 * w;
+  // rust is where water runs and where paint breaks: thin vertical RUNS (tall narrow noise cells) that only start at an
+  // opening or a seam — scuppers, hawse pipes, weld seams, the deck line, window sills — and a few small flakes
+  // (patches ~0.3–0.8 m) on a worn hull. Coverage saturates well below full (at w = 1 well under a fifth of the
+  // surface) and is never a camouflage of blotches: the generic term here is the flake term only; each surface class
+  // below anchors the runs to its own openings.
+  float streakN = wnoise(vec3(P.x * 5.0, P.y * 0.28, P.z * 5.0));
+  float runs = smoothstep(0.6 - 0.12 * w, 0.9 - 0.12 * w, streakN);           // sparse thin runs, a few more with wear
+  float patchN = wnoise(P * 2.6) * 0.6 + wnoise(P * 7.0) * 0.4;
+  float wr = 0.55 * w;                                                          // flake coverage scales by wear
+  float rPatch = smoothstep(0.98 - 0.2 * wr, 1.02 - 0.2 * wr, patchN) * step(0.12, w);   // small flakes, none on a sound hull ('patch' is reserved in GLSL ES 3)
+  rust = rPatch * 0.8;
   rust = min(rust, 0.85);
 #if SKIN_KIND == 1
   float side = step(0.35, abs(nS.x));
@@ -189,6 +204,7 @@ vec3 skinTxN = vec3(0.0);
   float under = (1.0 - smoothstep(-0.06, 0.0, P.y)) * (1.0 - step(1.5, uMode));   // uMode 2: the sail yachts' own painted stripes
   col = mix(col, mix(col, vec3(0.33, 0.07, 0.05), 0.65), under);
   // plates and weld beads (steel), hungry-horse ripple between frames
+  float seamRun = 0.0;
   if (uPlate.x > 0.0) {
     vec2 q = transom > 0.5 ? vec2(P.x, P.y) : vec2(P.z, P.y);
     float row = floor(q.y / uPlate.x);
@@ -200,6 +216,10 @@ vec3 skinTxN = vec3(0.0);
     col *= 1.0 - 0.14 * bead * mid;
     col *= 1.0 + 0.035 * (1.0 - smoothstep(0.0, 0.06 + mpp, abs(d - 0.03))) * mid * uPlate.z;   // light catching the bead's edge
     skinH += 0.006 * (0.5 + 0.5 * cos(6.2832 * q.x / 0.8)) * (0.25 + grime) * side * mid * (0.6 + 0.4 * h1(row));
+    // rust bleeding DOWN from a weld seam: a short run under the horizontal seam, on some plates only (gate per plate)
+    float below = (row + 1.0) * uPlate.x - q.y;                                   // distance below the seam above this plate
+    float gate = step(0.72 - 0.3 * w, h1(row * 7.0 + floor((q.x + h1(row + 3.0) * uPlate.y) / uPlate.y) * 3.0 + 1.0));
+    seamRun = (1.0 - smoothstep(0.0, 0.25 + 0.7 * w, below)) * runs * gate * (0.3 + grime) * steel;
   }
   // waterline: slime / weed band and brown staining fading upwards
   float wlBand = (1.0 - smoothstep(0.0, 0.5 + 0.9 * grime, P.y)) * smoothstep(-0.5, -0.05, P.y);
@@ -233,6 +253,7 @@ vec3 skinTxN = vec3(0.0);
     hStreak *= side * steel;
   }
   rust = max(rust, max(sStreak * 0.85, hStreak));
+  rust = max(rust, seamRun * 0.75);
   // gelcoat yachts: no rust, a little yellowing at the waterline only
   rust *= steel;
   // lettering: raised name at both bows (top row of the lettering texture), name + port on the transom
@@ -311,7 +332,8 @@ vec3 skinTxN = vec3(0.0);
     col = mix(col, uWalk * (0.95 + 0.1 * grain), lane);
     float edge = inZ * max(1.0 - smoothstep(0.035, 0.05 + mpp, abs(ax - lo)), 1.0 - smoothstep(0.035, 0.05 + mpp, abs(ax - hi)));
     col = mix(col, vec3(0.78, 0.55, 0.04), edge * mid);
-    rust = max(rust, smoothstep(hb - 1.4, hb - 0.1, ax) * smoothstep(0.45, 0.8, wnoise(P * 1.7)) * (0.15 + grime) * 0.8);
+    // deck-edge rust: only right at the waterway / bulwark foot where water stands, broken into short runs
+    rust = max(rust, smoothstep(hb - 0.7, hb - 0.05, ax) * smoothstep(0.55, 0.85, wnoise(vec3(P.x * 3.0, 0.0, P.z * 0.6))) * (0.1 + grime) * 0.7);
     col = mix(col, rustCol, clamp(rust, 0.0, 1.0) * 0.85);
     skinRough += 0.1 * rust;
   } else {
@@ -334,6 +356,14 @@ vec3 skinTxN = vec3(0.0);
 #elif SKIN_KIND == 3
   float rain = smoothstep(0.55, 0.9, wnoise(vec3((P.x + P.z) * 5.0, P.y * 0.45, 3.0))) * (0.15 + grime);
   col *= 1.0 - 0.16 * rain * (1.0 - skinGlass);
+  // the house never takes hull flakes: only faint runs under the window sills and at the deck line (tier foot)
+  float tyH = fract(P.y / 2.85);
+#ifdef USE_MAP
+  tyH = clamp((fract(vMapUv.y * 4.0) - 0.03) / 0.94, 0.0, 1.0);
+#endif
+  float sill = (1.0 - smoothstep(0.0, 0.18 + 0.25 * w, 0.42 - tyH)) * step(tyH, 0.42);
+  float deckFoot = 1.0 - smoothstep(0.0, 0.1, tyH);
+  rust = runs * max(sill, deckFoot) * (0.12 + 0.35 * w) * step(0.5, 1.0 - uMode);
 #ifdef USE_MAP
   {
     // the facade atlas maps each tier to 0.03..0.97 of a band: AO at the tier's foot (deck line) and under the deck above
