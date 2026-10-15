@@ -74,7 +74,7 @@ test('FFT shaders: desktop-only rungs, no Gerstner arrays, budget fits a 512-vec
   for (const r of FFT_RUNGS) assert.ok(!SEA_RUNGS.flat().includes(r), 'phones never get an FFT rung');
   const s = OCEAN_SHADERS.fft;
   assert.ok(!/uWaveA|uDet\[/.test(s.vert + s.frag), 'the FFT build reads no Gerstner / ripple uniform arrays');
-  assert.ok(/textureLod\(uFftD0/.test(s.vert) && /texture2D\(uFftC1/.test(s.frag));
+  assert.ok(/textureLod\(uFftD, vec3/.test(s.vert) && /texture\(uFftT1, vec3\(fu2, 2\.0\)\)/.test(s.frag), 'cascades are layers of array textures');
   const DESK = { isWebGL2: true, precision: 'highp', maxFragmentUniforms: 1024, maxVertexUniforms: 4096, maxVaryings: 30, maxTextures: 16, maxVertexTextures: 16 };
   for (const r of FFT_RUNGS) {
     const b = seaBudget(2, r);
@@ -150,4 +150,26 @@ test('sun shadow hook (lighting.js contract): only the FFT build samples it; a f
   assert.equal(o.attachLighting({ oceanShadowOk: true, shadowUniforms: () => U, shadowGLSL: glsl }), true);
   assert.equal(o.uniforms.slShadowN, U.slShadowN, 'the lighting\'s live uniform objects are shared, not copied');
   assert.match(o.fftDiag(), /off/, 'no FFT without a renderer');
+});
+
+// three.js gives every sampler of a PROGRAM (vertex + fragment, the shadow chunk included) its own texture unit, and
+// many desktop GPUs (ANGLE / D3D11) have exactly 16: the FFT rung with the sun-shadow chunk once needed 17 and three
+// silently skipped the last one (~540 "Trying to use 16 texture units" warnings per load). Keep 2 units to spare.
+test('texture units per sea program (vertex + fragment + sun-shadow chunk) stay ≤ 14', async () => {
+  const { SHADOW_GLSL } = await import('../public/js/lighting.js');
+  const SAMPLER = /uniform\s+(?:(?:lowp|mediump|highp)\s+)?(?:sampler2D|sampler2DArray|samplerCube|sampler3D|sampler2DShadow)\s+(\w+)/g;
+  const units = (s) => new Set([...`${s.vert}\n${s.frag}`.matchAll(SAMPLER)].map((m) => m[1])).size;
+  const shadow = { glsl: SHADOW_GLSL, fn: 'saltlineShadow' };
+  const counts = {};
+  for (let lvl = 0; lvl < 3; lvl++) for (const r of SEA_RUNGS[lvl]) for (const phone of [false, true]) {
+    const n = units(seaShader(lvl, r, { phone })); counts[r.name] = n;
+    assert.ok(n <= 14, `${r.name}${phone ? ' (phone)' : ''}: ${n} texture units`);
+  }
+  for (const r of FFT_RUNGS) {
+    const n = units(seaShader(2, r, { shadow })); counts[`${r.name}+shadow`] = n;
+    assert.ok(n <= 14, `${r.name} with the sun-shadow chunk: ${n} texture units`);
+    assert.ok(seaShader(2, r, { shadow }).frag.includes('saltlineShadow(vWorld)'));
+  }
+  for (const k of ['foamFft', 'sprayFft']) assert.ok(units(OCEAN_SHADERS[k]) <= 6, `${k}: ${units(OCEAN_SHADERS[k])}`);
+  assert.equal(counts['fft+shadow'], 13, 'fft + shadow: 7 sea + 3 cascade arrays + 3 shadow maps');
 });

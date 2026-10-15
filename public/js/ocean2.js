@@ -117,7 +117,12 @@ export function setShoreField(id, field) {
   if (field && field.tex && Number.isFinite(field.x0) && Number.isFinite(field.z0) && field.size > 0) shoreFields.set(String(id), field);
   else shoreFields.delete(String(id));
 }
-let _noShore = null;
+let _noShore = null, _noArray = null;
+/** 1-texel array texture: what an unbound sampler2DArray reads (a 2D texture there would be a GL error). */
+function noArrayTexture() {
+  if (!_noArray) { _noArray = new THREE.DataArrayTexture(new Uint8Array(4), 1, 1, 1); _noArray.needsUpdate = true; }
+  return _noArray;
+}
 function noShoreTexture() {
   if (!_noShore) { _noShore = new THREE.DataTexture(new Uint8Array([255, 255, 0, 255]), 1, 1, THREE.RGBAFormat); _noShore.needsUpdate = true; }
   return _noShore;
@@ -509,13 +514,13 @@ void main() {
 // Jacobian terms and second moments of all three (mipmapped + anisotropic: far water turns into LEAN roughness, never
 // stripes). Same accumulators and sign convention as the Gerstner path, so normal / foam / wakes below are unchanged.
 const FFT_VERT_PARS = /* glsl */`
-uniform sampler2D uFftD0; uniform sampler2D uFftD1; uniform vec4 uFftOffA; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftTexel;`;
+uniform highp sampler2DArray uFftD; uniform vec4 uFftOffA; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftTexel;`;
 const FFT_VERT_BODY = /* glsl */`
     vec2 fu0 = (rel + uFftOffA.xy) * uFftInvL.x; vec2 fu1 = (rel + uFftOffA.zw) * uFftInvL.y;
-    gDisp += textureLod(uFftD0, fu0, log2(max(1.0, 2.0 * ceff / uFftTexel.x))).xyz * (uFftW.x * rim);
-    gDisp += textureLod(uFftD1, fu1, log2(max(1.0, 2.0 * ceff / uFftTexel.y))).xyz * (uFftW.y * rim);`;
+    gDisp += textureLod(uFftD, vec3(fu0, 0.0), log2(max(1.0, 2.0 * ceff / uFftTexel.x))).xyz * (uFftW.x * rim);
+    gDisp += textureLod(uFftD, vec3(fu1, 1.0), log2(max(1.0, 2.0 * ceff / uFftTexel.y))).xyz * (uFftW.y * rim);`;
 const FFT_FRAG_PARS = /* glsl */`
-uniform sampler2D uFftA1; uniform sampler2D uFftA2; uniform sampler2D uFftB1; uniform sampler2D uFftB2; uniform sampler2D uFftC1;
+uniform highp sampler2DArray uFftT1; uniform highp sampler2DArray uFftT2;
 uniform vec4 uFftOffA; uniform vec2 uFftOffC; uniform vec3 uFftInvL; uniform vec3 uFftW; uniform vec2 uFftBrk;`;
 // m = shelter damping per cascade, pawK = cat's-paw ripple patches (light air), mg = slow amplitude variation that hides
 // the patches' repeat; gBrk = folding crest (Jacobian of the two long cascades below the breaking threshold) on the face
@@ -524,16 +529,16 @@ const FFT_FRAG_BODY = /* glsl */`
   {
     float mg = 0.8 + 0.4 * mix(0.5, groupField(pp + 913.0, 260.0), 1.0 - smoothstep(60.0, 260.0, fp));
     vec2 fu0 = (rel + uFftOffA.xy) * uFftInvL.x; vec2 fu1 = (rel + uFftOffA.zw) * uFftInvL.y; vec2 fu2 = (rel + uFftOffC) * uFftInvL.z;
-    vec4 fa = texture2D(uFftA1, fu0); vec4 fb = texture2D(uFftA2, fu0);
+    vec4 fa = texture(uFftT1, vec3(fu0, 0.0)); vec4 fb = texture(uFftT2, vec3(fu0, 0.0));
     float fw = uFftW.x * m.x;
     gS += fa * fw; gJxz += fb.x * fw; gH += fb.y * fw;
     gSig += vec3(max(0.0, fb.z - fa.x * fa.x), max(0.0, fb.w - fa.y * fa.y), 0.0) * (fw * fw);
-    fa = texture2D(uFftB1, fu1); fb = texture2D(uFftB2, fu1);
+    fa = texture(uFftT1, vec3(fu1, 1.0)); fb = texture(uFftT2, vec3(fu1, 1.0));
     fw = uFftW.y * m.y * mg;
     gS += fa * fw; gJxz += fb.x * fw; gH += fb.y * fw;
     gSig += vec3(max(0.0, fb.z - fa.x * fa.x), max(0.0, fb.w - fa.y * fa.y), 0.0) * (fw * fw);
     if (uFftW.z > 0.0) {
-      fa = texture2D(uFftC1, fu2);
+      fa = texture(uFftT1, vec3(fu2, 2.0));
       fw = uFftW.z * pawK * mg;
       gS.xy += fa.xy * fw;
       gSig += vec3(max(0.0, fa.z - fa.x * fa.x), max(0.0, fa.w - fa.y * fa.y), 0.0) * (fw * fw);
@@ -1094,7 +1099,7 @@ uniform sampler2D uPrev; uniform vec2 uCfF; uniform vec2 uCfFPrev; uniform vec2 
 uniform float uDecMul; uniform float uDecSub; uniform float uDecMul2; uniform float uDecSub2; uniform float uOldK;
 uniform float uThr; uniform float uSoft; uniform float uK; uniform float uSeed; uniform vec2 uGrpOff; uniform float uGrpK;
 uniform sampler2D uShelterTex; uniform vec4 uShelterRect;
-uniform sampler2D uFA1; uniform sampler2D uFA2; uniform sampler2D uFB1; uniform sampler2D uFB2;
+uniform highp sampler2DArray uFT1; uniform highp sampler2DArray uFT2;
 uniform vec4 uFOff; uniform vec2 uFInvL; uniform vec2 uFLod; uniform vec2 uWindF; uniform float uRes;
 varying vec2 vUv;
 ${GLSL_NOISE}
@@ -1115,8 +1120,8 @@ void main() {
   }
   float mL = 1.0 - sh, mM = 1.0 - 0.9 * sh;
   vec2 u0 = (rel + uFOff.xy) * uFInvL.x; vec2 u1 = (rel + uFOff.zw) * uFInvL.y;
-  vec4 a = textureLod(uFA1, u0, uFLod.x) * mL + textureLod(uFB1, u1, uFLod.y) * mM;
-  float jxz = textureLod(uFA2, u0, uFLod.x).x * mL + textureLod(uFB2, u1, uFLod.y).x * mM;
+  vec4 a = textureLod(uFT1, vec3(u0, 0.0), uFLod.x) * mL + textureLod(uFT1, vec3(u1, 1.0), uFLod.y) * mM;
+  float jxz = textureLod(uFT2, vec3(u0, 0.0), uFLod.x).x * mL + textureLod(uFT2, vec3(u1, 1.0), uFLod.y).x * mM;
   float J = (1.0 - a.z) * (1.0 - a.w) - jxz * jxz;
   float grp = groupField(rel + uGrpOff, 42.0);
   float thr = uThr + (grp - 0.5) * uGrpK;
@@ -1190,14 +1195,14 @@ ${rep(4, (c) => `    { vec2 p = uCamRel + d + (hash22(hs * 31.7 + ${c}.0 * 4.1) 
 const SPRAY_VERT_FFT = /* glsl */`
 uniform vec2 uC; uniform vec2 uCamRel; uniform vec2 uCamInv; uniform float uR; uniform float uTime; uniform float uFrac;
 uniform float uThr; uniform float uSoft; uniform vec3 uWindV; uniform float uLevel; uniform float uPx;
-uniform sampler2D uFftD0; uniform sampler2D uFftA1; uniform sampler2D uFftA2; uniform vec4 uFftOffA; uniform vec3 uFftInvL;
+uniform highp sampler2DArray uFftD; uniform highp sampler2DArray uFftT1; uniform highp sampler2DArray uFftT2; uniform vec4 uFftOffA; uniform vec3 uFftInvL;
 attribute vec4 aSeed;
 varying float vA;
 #include <fog_pars_vertex>
 ${GLSL_NOISE}
 float jacAt(vec2 p) {
   vec2 u0 = (p + uFftOffA.xy) * uFftInvL.x;
-  vec4 a = textureLod(uFftA1, u0, 0.0); float jxz = textureLod(uFftA2, u0, 0.0).x;
+  vec4 a = textureLod(uFftT1, vec3(u0, 0.0), 0.0); float jxz = textureLod(uFftT2, vec3(u0, 0.0), 0.0).x;
   return (1.0 - a.z) * (1.0 - a.w) - jxz * jxz;
 }
 void main() {
@@ -1212,7 +1217,7 @@ void main() {
 ${rep(4, (c) => `    { vec2 p = uCamRel + d + (hash22(hs * 31.7 + ${c}.0 * 4.1) - 0.5) * 22.0; float j = jacAt(p); if (j < J) { J = j; sp = p; } }`)}
   }
   if (J > uThr) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
-  vec3 dsp = textureLod(uFftD0, (sp + uFftOffA.xy) * uFftInvL.x, 0.0).xyz;
+  vec3 dsp = textureLod(uFftD, vec3((sp + uFftOffA.xy) * uFftInvL.x, 0.0), 0.0).xyz;
   float r1 = hash12(hs * 17.3), r2 = hash12(hs * 7.9 + 1.1);
   vec3 p0 = vec3(uC.x + sp.x + dsp.x, uLevel + dsp.y + 0.3, uC.y + sp.y + dsp.z);
   vec3 vel = uWindV * (0.25 + 0.4 * r1) + vec3(0.0, 1.2 + 3.2 * r2, 0.0);
@@ -1384,8 +1389,7 @@ export class Ocean {
     });
     // FFT ocean (desktop rungs): cascade textures, world-anchored offsets (m), 1/patch size, cascade weights, texel sizes
     Object.assign(this.uniforms, {
-      uFftD0: { value: noShoreTexture() }, uFftD1: { value: noShoreTexture() }, uFftA1: { value: noShoreTexture() }, uFftA2: { value: noShoreTexture() },
-      uFftB1: { value: noShoreTexture() }, uFftB2: { value: noShoreTexture() }, uFftC1: { value: noShoreTexture() },
+      uFftD: { value: noArrayTexture() }, uFftT1: { value: noArrayTexture() }, uFftT2: { value: noArrayTexture() },
       uFftOffA: { value: new THREE.Vector4() }, uFftOffC: { value: new THREE.Vector2() }, uFftInvL: { value: new THREE.Vector3(1 / FFT_L[0], 1 / FFT_L[1], 1 / FFT_L[2]) },
       uFftW: { value: new THREE.Vector3(1, 1, 1) }, uFftTexel: { value: new THREE.Vector2(FFT_L[0] / 256, FFT_L[1] / 256) }, uFftBrk: { value: new THREE.Vector2(0, 0.05) },
     });
@@ -1431,7 +1435,7 @@ export class Ocean {
     this.foamMat = fq.material;
     // FFT ocean foam pass: the same uniform objects + the long cascades' Jacobian textures (created only when used)
     this.foamUniformsFft = {
-      ...this.foamUniforms, uFA1: this.uniforms.uFftA1, uFA2: this.uniforms.uFftA2, uFB1: this.uniforms.uFftB1, uFB2: this.uniforms.uFftB2,
+      ...this.foamUniforms, uFT1: this.uniforms.uFftT1, uFT2: this.uniforms.uFftT2,
       uFOff: { value: new THREE.Vector4() }, uFInvL: { value: new THREE.Vector2(1 / FFT_L[0], 1 / FFT_L[1]) }, uFLod: { value: new THREE.Vector2() },
       uWindF: { value: new THREE.Vector2(0, 1) }, uRes: { value: 512 },
     };
@@ -1443,7 +1447,7 @@ export class Ocean {
       uWaveA: { value: waveA }, uWaveB: { value: waveB }, uC: this.uniforms.uC, uCamRel: { value: new THREE.Vector2() }, uCamInv: { value: new THREE.Vector2() },
       uR: { value: SPRAY_R }, uTime: { value: 0 }, uFrac: { value: 0 }, uThr: { value: 0 }, uSoft: { value: 0.05 }, uWindV: { value: new THREE.Vector3() },
       uLevel: this.uniforms.uLevel, uPx: { value: 600 }, uCol: { value: new THREE.Color(1, 1, 1) },
-      uFftD0: this.uniforms.uFftD0, uFftA1: this.uniforms.uFftA1, uFftA2: this.uniforms.uFftA2, uFftOffA: this.uniforms.uFftOffA, uFftInvL: this.uniforms.uFftInvL,
+      uFftD: this.uniforms.uFftD, uFftT1: this.uniforms.uFftT1, uFftT2: this.uniforms.uFftT2, uFftOffA: this.uniforms.uFftOffA, uFftInvL: this.uniforms.uFftInvL,
     };
     this.sprayMat = new THREE.ShaderMaterial({ uniforms: this.sprayUniforms, vertexShader: SPRAY_VERT, fragmentShader: SPRAY_FRAG, transparent: true, depthWrite: false, fog: true });
     this.sprayMatGerstner = this.sprayMat; this.sprayMatFft = null;
@@ -1601,10 +1605,8 @@ export class Ocean {
     if (!f || !f.out) return;
     const off = (c) => posMod(X, FFT_L[c]) + 0.5 * f.texel(c), offZ = (c) => posMod(Z, FFT_L[c]) + 0.5 * f.texel(c);
     u.uFftOffA.value.set(off(0), offZ(0), off(1), offZ(1)); u.uFftOffC.value.set(off(2), offZ(2));
-    const o = f.out, nt = noShoreTexture();
-    u.uFftD0.value = o[0].d.texture; u.uFftA1.value = o[0].t1.texture; u.uFftA2.value = o[0].t2.texture;
-    u.uFftD1.value = o[1] ? o[1].d.texture : nt; u.uFftB1.value = o[1] ? o[1].t1.texture : nt; u.uFftB2.value = o[1] ? o[1].t2.texture : nt;
-    u.uFftC1.value = o[2] ? o[2].t1.texture : nt;
+    const o = f.out;
+    u.uFftD.value = o.d.texture; u.uFftT1.value = o.t1.texture; u.uFftT2.value = o.t2.texture;
   }
   /** Build the near (clipmap) grid — kept under ocean.js's method name; `size`/`segs` here are cells-per-ring and cell size. */
   buildNearGrid(n = this.gridN, s0 = this.s0) { return buildClipGrid(n, s0, LEVELS); }

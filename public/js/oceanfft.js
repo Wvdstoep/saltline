@@ -14,14 +14,14 @@
 // h̃(k, t) = h0(k)·e^{iωt} + conj(h0(−k))·e^{−iωt} directly (h0 from a hashed Gaussian and the spectrum — nothing is
 // stored, wind changes are just eased uniforms), ω quantised to multiples of 2π/1000 s so the time can be passed as
 // t mod 1000 s in float precision. Then log2 N horizontal + log2 N vertical Stockham radix-2 passes (natural order in,
-// natural order out, no bit-reversal texture) ping-pong over the atlas. Assemble writes, per cascade, RGBA16F repeat
+// natural order out, no bit-reversal texture) ping-pong over the atlas. Assemble writes, per cascade (= array layer), RGBA16F repeat
 // textures with mipmaps: D = (λDx, Dy, λDz) [vertex displacement, cascades 0–1], T1 = (∂y/∂x, ∂y/∂z, jxx, jzz),
 // T2 = (jxz, y, (∂y/∂x)², (∂y/∂z)²) [cascades 0–1] and for the short cascade T1 = (∂y/∂x, ∂y/∂z, (∂y/∂x)², (∂y/∂z)²).
 // Jacobian terms use ocean2's Gerstner sign convention (jxx = −λ·∂Dx/∂x0), so its normal / whitecap code is reused.
 // The mip chain is the anti-aliasing: far away the mean slope goes to 0 and E[s²] − E[s]² (LEAN) becomes roughness.
 //
 // Cost (N = 256, 3 cascades): atlas 1536×256 → 1 evolve + 16 FFT passes ≈ 6.7 M fragments, 13 M RGBA32F fetches;
-// assemble 8 × 65 k fragments + mip generation. ≈ 0.4–0.8 ms on a mid desktop dGPU, ~2 ms on a strong iGPU (which gets
+// assemble 7 × 65 k fragments + mip generation. ≈ 0.4–0.8 ms on a mid desktop dGPU, ~2 ms on a strong iGPU (which gets
 // N = 128: a quarter of that). Memory: see FFTWaves.memoryBytes (N = 256: 12.6 MB atlas + 5.6 MB outputs).
 import * as THREE from 'three';
 
@@ -163,7 +163,7 @@ export function fftStockhamCPU(re, im) {
 /** Render-target memory (bytes) of the FFT for n texels and nc cascades: atlas ping-pong + mipmapped outputs. */
 export function fftMemoryBytes(n, nc) {
   const atlas = 2 * (2 * nc * n) * n * 16;
-  const outs = Math.min(nc, 2) * 3 + (nc > 2 ? 1 : 0);
+  const outs = 7;                                // array layers: d 2 + t1 3 + t2 2 (allocated whatever nc)
   return atlas + Math.round(outs * n * n * 8 * 4 / 3);
 }
 
@@ -172,7 +172,7 @@ const PASS_VERT = /* glsl */`
 in vec3 position;
 void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const HEAD = /* glsl */`
-precision highp float; precision highp int; precision highp sampler2D;
+precision highp float; precision highp int; precision highp sampler2D; precision highp sampler2DArray;
 out vec4 oc;
 vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
 `;
@@ -266,12 +266,12 @@ void main() {
 }`;
 // self-test probe: every output finite and bounded; g carries the height so the CPU can see the field is not flat
 const PROBE_FRAG = HEAD + /* glsl */`
-uniform sampler2D uD0; uniform sampler2D uT10; uniform sampler2D uT20; uniform sampler2D uT1S; uniform int uN; uniform float uHs;
+uniform sampler2DArray uD; uniform sampler2DArray uT1; uniform sampler2DArray uT2; uniform int uN; uniform int uLast; uniform float uHs;
 bool bad(vec4 v) { return any(isnan(v)) || any(isinf(v)) || any(greaterThan(abs(v), vec4(1e4))) || !(v.x == v.x && v.y == v.y && v.z == v.z && v.w == v.w); }
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   ivec2 q = ivec2(p.x * (uN / 4) + uN / 9, p.y * (uN / 4) + uN / 7);
-  vec4 d = texelFetch(uD0, q, 0), a = texelFetch(uT10, q, 0), b = texelFetch(uT20, q, 0), s = texelFetch(uT1S, q, 0);
+  vec4 d = texelFetch(uD, ivec3(q, 0), 0), a = texelFetch(uT1, ivec3(q, 0), 0), b = texelFetch(uT2, ivec3(q, 0), 0), s = texelFetch(uT1, ivec3(q, uLast), 0);
   bool ok = !(bad(d) || bad(a) || bad(b) || bad(s));
   oc = vec4(ok ? 1.0 : 0.0, clamp(0.5 + d.y / max(0.05, 3.0 * uHs), 0.0, 1.0), ok ? 1.0 : 0.0, 1.0);
 }`;
@@ -303,7 +303,7 @@ export class FFTWaves {
     this.evolveU = { uN: { value: n }, uL: { value: new THREE.Vector3(...FFT_L) }, uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() }, uBoost: { value: new THREE.Vector3(1, 1, 1) }, uWindS: { value: new THREE.Vector4() }, uSwellS: { value: new THREE.Vector4() }, uT: { value: 0 } };
     this.fftU = { uSrc: { value: null }, uN: { value: n }, uS: { value: 2 }, uVert: { value: 0 } };
     this.asmU = { uSrc: { value: null }, uN: { value: n }, uC: { value: 0 }, uMode: { value: 0 }, uChop: { value: 1 } };
-    this.probeU = { uD0: { value: null }, uT10: { value: null }, uT20: { value: null }, uT1S: { value: null }, uN: { value: n }, uHs: { value: 1 } };
+    this.probeU = { uD: { value: null }, uT1: { value: null }, uT2: { value: null }, uLast: { value: 0 }, uN: { value: n }, uHs: { value: 1 } };
     this.mats = { evolve: mk(EVOLVE_FRAG, this.evolveU), fft: mk(FFT_FRAG, this.fftU), asm: mk(ASSEMBLE_FRAG, this.asmU), probe: mk(PROBE_FRAG, this.probeU) };
     const tri = new THREE.BufferGeometry();
     tri.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
@@ -322,11 +322,20 @@ export class FFTWaves {
     const fl = { depthBuffer: false, stencilBuffer: false, type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false };
     this.atlas = [new THREE.WebGLRenderTarget(2 * nc * n, n, fl), new THREE.WebGLRenderTarget(2 * nc * n, n, fl)];
     let aniso = 1; try { aniso = Math.min(8, this.r.capabilities.getMaxAnisotropy()); } catch { /* none */ }
-    const ho = { depthBuffer: false, stencilBuffer: false, type: THREE.HalfFloatType, format: THREE.RGBAFormat, wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: true, anisotropy: aniso };
-    const mkO = () => new THREE.WebGLRenderTarget(n, n, ho);
-    // per cascade: d (vertex displacement), t1, t2 (c0, c1); the short cascade only t1 (slopes + second moments)
-    this.out = [];
-    for (let c = 0; c < nc; c++) this.out.push(c < 2 ? { d: mkO(), t1: mkO(), t2: mkO() } : { d: null, t1: mkO(), t2: null });
+    const ho = { depthBuffer: false, stencilBuffer: false, type: THREE.HalfFloatType, format: THREE.RGBAFormat, wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false, anisotropy: aniso };
+    // the cascades are LAYERS of three array textures (one sampler each in the sea shader: a program's texture units
+    // are shared by both stages and the sun-shadow chunk, 16 on many GPUs): d = vertex displacement [c0, c1],
+    // t1 = slopes + Jacobian [c0, c1] / slopes + second moments [c2], t2 = jxz, height, second moments [c0, c1].
+    // Mipmaps are generated by hand (three r160 only mips 2D / cube render targets).
+    // (three r160's WebGLArrayRenderTarget ignores the texture options: its DataArrayTexture is 8-bit, nearest, clamped
+    // unless they are set on the texture itself)
+    const mkA = (layers) => {
+      const t = new THREE.WebGLArrayRenderTarget(n, n, layers, ho), x = t.texture;
+      x.type = THREE.HalfFloatType; x.format = THREE.RGBAFormat; x.wrapS = x.wrapT = THREE.RepeatWrapping; x.wrapR = THREE.ClampToEdgeWrapping;
+      x.minFilter = THREE.LinearMipmapLinearFilter; x.magFilter = THREE.LinearFilter; x.anisotropy = aniso; x.generateMipmaps = false;
+      return t;
+    };
+    this.out = { d: mkA(2), t1: mkA(3), t2: mkA(2) };
     for (const u of [this.evolveU, this.fftU, this.asmU, this.probeU]) u.uN.value = n;
     this.frames = 0;
     return true;
@@ -382,23 +391,30 @@ export class FFTWaves {
       const au = this.asmU; au.uSrc.value = this.atlas[src].texture;
       for (let c = 0; c < nc; c++) {
         au.uC.value = c; au.uChop.value = c < 2 ? N.chop[c] : 0;
-        const o = this.out[c];
-        if (c < 2) { au.uMode.value = 0; this.pass(this.mats.asm, o.d); au.uMode.value = 1; this.pass(this.mats.asm, o.t1); au.uMode.value = 2; this.pass(this.mats.asm, o.t2); }
-        else { au.uMode.value = 3; this.pass(this.mats.asm, o.t1); }
+        const o = this.out;
+        if (c < 2) { au.uMode.value = 0; this.pass(this.mats.asm, o.d, c); au.uMode.value = 1; this.pass(this.mats.asm, o.t1, c); au.uMode.value = 2; this.pass(this.mats.asm, o.t2, c); }
+        else { au.uMode.value = 3; this.pass(this.mats.asm, o.t1, c); }
       }
     } finally {
       r.setRenderTarget(prevRT); r.autoClear = ac; if (r.xr) r.xr.enabled = xr;
     }
+    for (const t of Object.values(this.out)) this.mips(t);
     this.frames++;
     return N;
   }
-  pass(mat, rt) { this.quad.material = mat; this.r.setRenderTarget(rt); this.r.render(this.scene, this.cam); }
+  pass(mat, rt, layer = 0) { this.quad.material = mat; this.r.setRenderTarget(rt, layer); this.r.render(this.scene, this.cam); }
+  /** Mip chain of an array render target (all layers). */
+  mips(rt) {
+    const r = this.r, gl = r.getContext(), tex = r.properties.get(rt.texture).__webglTexture;
+    if (!tex) return;
+    r.state.bindTexture(gl.TEXTURE_2D_ARRAY, tex); gl.generateMipmap(gl.TEXTURE_2D_ARRAY); r.state.unbindTexture();
+  }
   /** Self-test after a step: all outputs finite and bounded, the height field not flat (when there is a sea). */
   probe(hsExpect = 1) {
     const r = this.r;
     if (!this.out || !this.frames) return { ok: false, why: 'no FFT frame yet' };
-    const p = this.probeU, last = this.out[this.nc - 1];
-    p.uD0.value = this.out[0].d.texture; p.uT10.value = this.out[0].t1.texture; p.uT20.value = this.out[0].t2.texture; p.uT1S.value = last.t1.texture; p.uHs.value = Math.max(0.05, hsExpect);
+    const p = this.probeU;
+    p.uD.value = this.out.d.texture; p.uT1.value = this.out.t1.texture; p.uT2.value = this.out.t2.texture; p.uLast.value = this.nc - 1; p.uHs.value = Math.max(0.05, hsExpect);
     if (!this.probeRT) this.probeRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false, generateMipmaps: false });
     const px = new Uint8Array(64), prevRT = r.getRenderTarget();
     try { this.pass(this.mats.probe, this.probeRT); r.readRenderTargetPixels(this.probeRT, 0, 0, 4, 4, px); } finally { r.setRenderTarget(prevRT); }
@@ -409,12 +425,13 @@ export class FFTWaves {
     let bad = 0, lo = 255, hi = 0;
     for (let i = 0; i < 16; i++) { if (px[i * 4] < 200 || px[i * 4 + 2] < 200) bad++; lo = Math.min(lo, px[i * 4 + 1]); hi = Math.max(hi, px[i * 4 + 1]); }
     if (bad) return { ok: false, why: `${bad}/16 probe texels NaN / out of range` };
-    if (hsExpect > 0.1 && hi - lo < 3) return { ok: false, why: `height field flat (probe ${lo}..${hi})` };
+    // a real sea has crests AND troughs: an 8-bit / clamped target (no negative values) or a flat field fails here
+    if (hsExpect > 0.1 && (hi - lo < 3 || lo > 125 || hi < 131)) return { ok: false, why: `height field flat or one-signed (probe ${lo}..${hi})` };
     return { ok: true, why: '' };
   }
   disposeTargets() {
     if (this.atlas) this.atlas.forEach((t) => t.dispose());
-    if (this.out) for (const o of this.out) for (const t of [o.d, o.t1, o.t2]) if (t) t.dispose();
+    if (this.out) for (const t of Object.values(this.out)) t.dispose();
     this.atlas = null; this.out = null;
   }
   dispose() {
