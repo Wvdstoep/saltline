@@ -372,6 +372,26 @@ export function lockSignals(cs) {
   return [R, R];
 }
 /**
+ * Gate open fraction (0 closed … 1 open) at `head` for a chamber phase, in WIRE terms: `side` is the head the phase
+ * concerns (the server's own state uses 1 − side for 'opening' / 'release'). p = progress of the phase 0…1. Same table
+ * as the client's public/js/wwfmt.js gateFrac, so the server's barrier judge and the drawn gates always agree.
+ */
+export function gateOpenFrac(st, side, head, p = 1) {
+  switch (st) {
+    case 'standsopen': case 'standsOpen': case 'open': return 1;
+    case 'idle': case 'admit': case 'release': return head === side ? 1 : 0;
+    case 'closing': return head === side ? 1 - p : 0;
+    case 'opening': return head === side ? p : 0;
+    default: return 0;
+  }
+}
+/** The same from the server's chamber state cs = { st, side, t0, dur } at time t (s). */
+export function headOpenFrac(cs, head, t) {
+  const side = cs.st === 'opening' || cs.st === 'release' ? 1 - cs.side : cs.side;
+  const p = cs.dur > 0 ? Math.max(0, Math.min(1, (t - cs.t0) / cs.dur)) : 1;
+  return gateOpenFrac(cs.st, side, head, p);
+}
+/**
  * Lock-head bridges with `pairedWith` never open at the same time (§4.8.7). needs = [{ ship, bridge, from, to }] in plan
  * order (seconds the bridge must be open). → { ok: [need], deferred: [ship] }.
  */

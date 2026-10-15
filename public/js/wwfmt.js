@@ -92,6 +92,7 @@ export function chamberPhase(ch) {
   let st = String(ch.st || 'idle'), side = fin(ch.side) ? Number(ch.side) : fin(ch.head) ? Number(ch.head) : 0;
   const m = /^([a-zA-Z_]+)[:(]?(\d)?\)?$/.exec(st);
   if (m) { st = m[1]; if (m[2] != null) side = Number(m[2]); }
+  if (st.toLowerCase() === 'standsopen') st = 'standsOpen';      // the server sends 'standsopen': both heads open, both green
   return { st, side };
 }
 /** Gate open fraction at head h (§4.8.2): admit / idle / release on that side open, closing → 1−p, opening → p. */
@@ -105,6 +106,24 @@ export function gateFrac(ch, head, now) {
     default: return 0;   // levelling, turnaround, out
   }
 }
+/**
+ * Road barrier (slagboom) fraction of a movable span: 0 up (road open) … 1 down. The barriers go down in the first
+ * BOOM_S seconds of the red-green warning (road lights flash from its start), stay down while the span is moving or open,
+ * and rise BOOM_S seconds after the span is closed and locked again. Out of service: road open.
+ */
+export const BOOM_S = 8;
+export function boomFrac(ss, now) {
+  if (!ss) return 0;
+  const el = (now - (absMs(ss.t0) ?? now)) / 1000;
+  switch (ss.st) {
+    case 'warn': return clamp(el / BOOM_S - 0.25, 0, 1);      // lights first (2 s), then the barriers come down
+    case 'opening': case 'open': case 'closing': return 1;
+    case 'closed': return absMs(ss.t0) ? clamp(1 - el / BOOM_S, 0, 1) : 0;
+    default: return 0;
+  }
+}
+/** Road traffic lights flash red while the barriers are coming down, down, or still going up. */
+export const roadStop = (ss, now) => !!ss && (ss.st === 'warn' || ss.st === 'opening' || ss.st === 'open' || ss.st === 'closing' || boomFrac(ss, now) > 0.02);
 export const G = 9.81;
 /** §4.8.4 orifice levelling. μa default 0.7·A/400. */
 export const levelTimeLocal = (A, mua, dh) => (dh > 0 ? (2 * A * Math.sqrt(dh)) / (mua * Math.sqrt(2 * G)) : 0);

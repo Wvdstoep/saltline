@@ -655,6 +655,25 @@ CEMT table (`shared/waterworks.js CEMT`): length × beam × draught (max), stand
 
 ---
 
+### 4.12 Hard barriers: closed gates and closed bridges stop the hull (`server/waterworks.js barrierCheck`, game `onState`)
+
+A closed lock gate and a closed (or too low) bridge span are walls, judged per object on its own geometry and state only —
+a neighbour's walls or state never enter, so a lock and a bridge at one junction can neither cancel nor block each other.
+
+- Lock head h of a chamber is closed when its gate open fraction (`shared/waterworks.js headOpenFrac` = the client's
+  `wwfmt.gateFrac` table in wire terms) is below `GATE_CLOSED_FRAC` 0.25 at every moment of now ± `BARRIER_GRACE_S` 3 s.
+  The closed gate is the plan of its leaves: mitre / sector = two leaves hinge → apex (18° upstream), lift / rolling / drop
+  = one line across the chamber (`chamberFrameXY`, identical to `wwgeom.chamberFrame` + `gateSegments`).
+- A bridge span (straight first → last line point, a … b) is closed for a ship when `clrNow(frac)` < the ship's air draught
+  at every moment of the window (out of service = closed). Fixed spans with estimated clearances (e: 2) never block.
+- `onState` rejects a move whose centre path crosses a closed line, or whose hull (shrunk 1.5 m in length, 0.5 m in beam)
+  newly reaches across it: `Position rejected: <name>: the <side> gates of chamber A are closed — wait for the green light
+  or call <name> on VHF <ch>.` / `<bridge> is closed (clearance 1.6 m, your air draught 17.0 m) — call … ; pass on green.`
+  The ship is stopped and corrected. The grace window only ever lets MORE through, so clock skew never falsely blocks an
+  open object; a ship already lying across a line (a gate closed on it) may move off it.
+- The air-draught strike (§4.7) is unchanged: the client's deck barrier is hw − 1 m thick, so a mast that hits the deck
+  edge still registers the strike, then stops.
+
 ## 5. 3D (lane C: `public/js/wwmesh.js`, `public/js/wwhud.js`, `public/js/wwfmt.js`)
 
 ### 5.1 Ownership and data
@@ -765,6 +784,24 @@ painted, steel lattice, asphalt).
   locks with the chamber symbol, VTS sector boundaries with their channel numbers, marinas (§7.5).
 
 ---
+
+
+### 5.6 Junctions, colliders and road traffic (`wwgeom.js fairwayZones / clipRun / obstacleSdf / activeBarriers`)
+
+- **Zones.** Every object has plan zones in any frame: `structure` (lock walls, bridge deck strip) and `channel` (a chamber's
+  water + 120 m approach in line with each head; a bridge opening + 80 m up- and downstream). `WwMesh` hands every build the
+  zones of all objects within 700 m (`keepOut`) and rebuilds built neighbours when a new object arrives.
+- **Deconfliction.** Bridge fender walls (30 m) are shortened at 2.5 m before any neighbour zone (dropped below 6 m);
+  approach piers are not placed in one. Lock guide walls (80 m flare) and waiting jetties are shortened before any
+  neighbour CHANNEL and any sister chamber's water / approach (side-by-side chambers); under a bridge deck they may run.
+- **Colliders.** Static: piers, fender walls, guide walls, jetties, the chamber walls' inner skin. Dynamic (per frame, from
+  the object's OWN state): closed gate leaves (`GATE_BLOCK_FRAC` 0.9) and closed / too-low spans (box on the deck line,
+  half width hw − 1). `sdfAt` takes the nearest over all objects, each within its own radius (`r.rad`, no fixed 200 m).
+- **Ocean cut-outs.** ocean2.js holds 4 quads (`uCutA/B[4]`): `cutouts()` returns the 4 chambers nearest the ship.
+- **Road.** Movable road spans get half barriers (slagbomen) at both ends and flashing red road lights: lights first,
+  barriers down within 8 s of the red-green warning, up 8 s after the span is locked again (`wwfmt.boomFrac / roadStop`);
+  four cars drive the deck (right-hand traffic) and queue at the stop lines while the road is closed.
+- `wwfmt.chamberPhase` maps the server's `standsopen` to `standsOpen` (both heads open, both green).
 
 ## 6. VHF simulation (lane B: `shared/vhf.js`, `shared/vhfphrases.js`, `server/vhf.js`, `public/js/vhf.js`, `public/js/vhffmt.js`, `public/js/radiosound.js`)
 

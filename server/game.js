@@ -684,6 +684,16 @@ export class Game {
       this.sendYou(p, { correction: true });
       return;
     }
+    // BRIDGES & LOCKS: a closed lock gate or a closed / too-low bridge span is a wall the client may not sail through
+    // (server authority, each object judged on its own geometry and state — never on a neighbour's).
+    let wb = null;
+    if (this.ww) { try { wb = this.ww.barrierCheck(p, lat, lon, Number(m.hdg)); } catch (e) { this.log(`[ww] barrier check failed: ${e.message}`); } }
+    if (wb) {
+      p.rejects = (p.rejects || 0) + 1; s.spd = 0; s.throttle = 0;
+      if (now - (p.lastWwWarn || 0) > 8000) { p.lastWwWarn = now; this.event(p, 'warn', `Position rejected: ${wb.msg}`); }
+      this.sendYou(p, { correction: true });
+      return;
+    }
     p.rejects = 0; p.moveBudget -= moved;
     if (m.rv !== undefined && rigOf(s.cls)) {        // sailing: the skipper's rig view for the others (§3.7), ≤ 2 Hz
       const prev = this.rigViews.get(p);

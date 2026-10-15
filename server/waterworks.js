@@ -11,7 +11,7 @@ import {
   bestSpan, passVerdict, scheduleOpen, spanTimes, bridgeStep, openFrac, spanSignal, isMovable, clrNow, objOffset, posOf,
   BUNDLE_S, MAX_HOLD, fitChamber, packChamber, queueOrder, queueFill, lockFee, lockStep, chamberLevel, lockSignals,
   ZERO_LIFT, LOCK_ENTRY_MAX, LOCK_TURNAROUND_WAIT, LOCK_TURNAROUND_FILL, GATE_TIME, levelTime, culvertMua, strikeOutcome,
-  inHours, nextService, blockAt, REQUEST_RANGE_M, PUSH_BUTTON_M, closedState,
+  inHours, nextService, blockAt, REQUEST_RANGE_M, PUSH_BUTTON_M, closedState, headOpenFrac,
 } from '../shared/waterworks.js';
 import { waterLevelAt, sideLevel } from '../shared/waterlevel.js';
 import { airDraftNow, profileOf } from '../shared/airdraft.js';
@@ -59,6 +59,38 @@ export function rectsOverlap(a, b) {
   const proj = (r, ax) => { const c = r.c[0] * ax[0] + r.c[1] * ax[1]; const e = Math.abs(r.hl * (r.ux[0] * ax[0] + r.ux[1] * ax[1])) + Math.abs(r.hw * (-r.ux[1] * ax[0] + r.ux[0] * ax[1])); return [c - e, c + e]; };
   for (const ax of axes) { const [a0, a1] = proj(a, ax), [b0, b1] = proj(b, ax); if (a1 < b0 || b1 < a0) return false; }
   return true;
+}
+
+export const BARRIER_GRACE_S = 3, GATE_CLOSED_FRAC = 0.25, MITRE_DEG = 18;
+/** Do segments p0→p1 and q0→q1 cross (touching counts)? */
+export function segCross(p0, p1, q0, q1) {
+  const o = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const d1 = o(q0, q1, p0), d2 = o(q0, q1, p1), d3 = o(p0, p1, q0), d4 = o(p0, p1, q1);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+  // touching: an end of one segment on the other (the axis of a lock runs exactly through the mitre apex)
+  return (d1 === 0 && onSeg(q0, q1, p0)) || (d2 === 0 && onSeg(q0, q1, p1)) || (d3 === 0 && onSeg(p0, p1, q0)) || (d4 === 0 && onSeg(p0, p1, q1));
+}
+const onSeg = (a, b, p) => Math.min(a[0], b[0]) - 1e-9 <= p[0] && p[0] <= Math.max(a[0], b[0]) + 1e-9 && Math.min(a[1], b[1]) - 1e-9 <= p[1] && p[1] <= Math.max(a[1], b[1]) + 1e-9;
+/** A segment as a thin rectangle for rectsOverlap (0.3 m half thickness). */
+export function segRect(a, b) { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return { c: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ux: [dx / l, dy / l], hl: l / 2, hw: 0.3 }; }
+/**
+ * A lock chamber in metres (x east, y north) about the middle of its axis — the same plan as public/js/wwgeom.js
+ * chamberFrame / gateSegments: gates[head] = the closed gate's segments (mitre / sector: two leaves hinge → apex).
+ */
+export function chamberFrameXY(ch) {
+  const ax = ch && ch.axis; if (!ax || ax.length < 2) return null;
+  const A = ax[0], B = ax[ax.length - 1], o = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2];
+  const a = toXY(A, o), b = toXY(B, o), dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  const u = [(b[0] - a[0]) / dl, (b[1] - a[1]) / dl], v = [-u[1], u[0]];
+  const len = Number.isFinite(ch.len) ? ch.len : dl, hw = (Number.isFinite(ch.wid) ? ch.wid : 12) / 2;
+  const gates = ch.gates && ch.gates.length ? ch.gates : [{ head: 0, type: 'mitre', at: 0 }, { head: 1, type: 'mitre', at: len }];
+  const P2 = (uu, vv) => [u[0] * uu + v[0] * vv, u[1] * uu + v[1] * vv];
+  const segs = [0, 1].map((h) => {
+    const g = gates.find((x) => x.head === h), type = (g && g.type) || 'mitre', ug = -len / 2 + (Number.isFinite(g?.at) ? g.at : h ? len : 0), out = h === 0 ? -1 : 1;
+    if (type === 'mitre' || type === 'sector') { const apex = P2(ug + out * hw * Math.tan(MITRE_DEG * D2R), 0); return [-1, 1].map((sd) => [P2(ug, sd * hw), apex]); }
+    return [[P2(ug, -hw), P2(ug, hw)]];
+  });
+  return { o, u, v, len, hw, gates: segs };
 }
 
 export function createWaterworks(game, fis, opts = {}) {
@@ -365,6 +397,80 @@ export function createWaterworks(game, fis, opts = {}) {
     }
     return result;
   }
+  // ---------------------------------------------------------------------------------------------- hard barriers (§4.12)
+  /**
+   * Server authority over closed gates and bridges: may a ship move from where the server has it to (lat, lon, hdg)?
+   * Each object is judged on its OWN geometry and state only (a neighbour's walls or state never enter), so a lock and a
+   * bridge at the same junction can neither cancel nor block each other. A closed lock gate (open fraction below
+   * GATE_CLOSED_FRAC at every moment of now ± BARRIER_GRACE_S) and a bridge span that is closed / too low for the ship's
+   * air draught at every moment of that window are walls: the centre path may not cross them and the hull (shrunk by a
+   * tolerance) may not newly reach across their line. Open objects are never a barrier (the grace window only ever lets
+   * more through, so client / server clock skew cannot cause a false block). → null (allowed) | { id, kind, name, why, msg }
+   */
+  function barrierCheck(p, lat, lon, hdg = null) {
+    if (!p || !p.ship || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const t = now(), from = [p.ship.lat, p.ship.lon], to = [lat, lon];
+    if (distM(from, to) < 0.01 && hdg == null) return null;
+    const prof = profileOf(p.ship.cls) || {};
+    const L = prof.length || 30, B = prof.beam || 8;
+    const hullOf = (c, h) => ({ c, ux: [Math.sin((h || 0) * D2R), Math.cos((h || 0) * D2R)], hl: Math.max(1, L / 2 - 1.5), hw: Math.max(0.5, B / 2 - 0.5) });
+    const h0 = p.ship.hdg || 0, h1 = Number.isFinite(hdg) ? hdg : h0;
+    let ad = null;
+    const adOf = () => (ad ??= airDraftNow(p.ship.cls, { cargo: p.cargo || [], fuelT: p.fuel, ballastT: p.ship.ballastT || 0, fold: p.ship.fold || {} }).ad);
+    const blockedBy = (o, segs) => {     // segs in the object's frame; f / q = ship from / to in the same frame
+      const [f, q] = segs.frame;
+      for (const s of segs.list) {
+        if (segCross(f, q, s[0], s[1])) return true;
+        const r = segRect(s[0], s[1]);
+        if (rectsOverlap(hullOf(q, h1), r) && !rectsOverlap(hullOf(f, h0), r)) return true;
+      }
+      return false;
+    };
+    const win = [t - BARRIER_GRACE_S, t, t + BARRIER_GRACE_S];
+    for (const o of near(lat, lon, 450 + L)) {
+      if (o.type === 'lock') {
+        const Ls = lstate.get(o.id); if (!Ls) continue;
+        for (const [ci, ch] of (o.chambers || []).entries()) {
+          const F = chamberFrameXY(ch); if (!F) continue;
+          const frame = [toXY(from, F.o), toXY(to, F.o)];
+          if (Math.min(Math.hypot(...frame[0]), Math.hypot(...frame[1])) > F.len / 2 + L + 60) continue;
+          const cs = Ls.chambers[ci];
+          for (const head of [0, 1]) {
+            if (win.some((tt) => headOpenFrac(cs, head, tt) >= GATE_CLOSED_FRAC)) continue;      // open (or opening) at some moment
+            if (!blockedBy(o, { frame, list: F.gates[head] })) continue;
+            const sideName = o.sides?.[head]?.name || (head ? 'inner' : 'outer');
+            const call = o.vhf ? ` or call ${o.callName || o.name} on VHF ${o.vhf}` : '';
+            return { id: o.id, kind: 'lock', chamber: ch.id, head, name: o.name, why: 'gates closed',
+              msg: `${o.name}: the ${sideName} gates of chamber ${ch.id} are closed — wait for the green light${call}.` };
+          }
+        }
+        continue;
+      }
+      if (!o.line || o.line.length < 2) continue;
+      const st = bstate.get(o.id); if (!st) continue;
+      const a = o.line[0], b = o.line[o.line.length - 1];
+      const [bx, by] = toXY(b, a), len = Math.hypot(bx, by) || 1, ux = [bx / len, by / len];
+      const frame = [toXY(from, a), toXY(to, a)];
+      let hWater = null;
+      for (const [si, span] of o.spans.entries()) {
+        const movable = isMovable(span);
+        if (!movable && o.e === 2) continue;                             // estimated fixed clearances never wall a ship off
+        if (!(span.b > span.a)) continue;
+        const seg = [[ux[0] * span.a, ux[1] * span.a], [ux[0] * span.b, ux[1] * span.b]];
+        if (!blockedBy(o, { frame, list: [seg] })) continue;
+        hWater ??= waterAt(a[0], a[1], t);
+        const shipAd = adOf();
+        const clrAt = (tt) => (st.out && st.out.until > tt ? clrNow(o, si, { h: hWater, frac: 0 }) : clrNow(o, si, { h: hWater, frac: movable ? openFrac(st.spans[si], tt) : 0 }));
+        if (win.some((tt) => !(clrAt(tt) < shipAd))) continue;               // clears it at some moment of the window
+        const c0 = clrAt(t), call = o.vhf ? ` — call ${o.callName || o.name} on VHF ${o.vhf}` : o.call === 'button' ? ' — use the push button' : '';
+        return { id: o.id, kind: 'bridge', span: si, name: o.name || 'Bridge', why: movable ? 'closed' : 'too low',
+          msg: movable
+            ? `${o.name || 'The bridge'} is closed (clearance ${c0.toFixed(1)} m, your air draught ${shipAd.toFixed(1)} m)${call}; pass on green.`
+            : `${o.name || 'The bridge'} is too low for you (clearance ${c0.toFixed(1)} m, your air draught ${shipAd.toFixed(1)} m).` };
+      }
+    }
+    return null;
+  }
   function setOut(id, until, why) {
     const st = bstate.get(id); if (!st) return;
     st.out = { until, why }; outages[id] = { until, why };
@@ -461,7 +567,7 @@ export function createWaterworks(game, fis, opts = {}) {
 
   return {
     objs, add: (list, kind) => add(list, kind), joinLines, get: (id) => objs.get(id), near, statics, state, stationsOn,
-    request, passed, registerLock, makeFast, leave, lockStay, tick, strikeCheck, setOut, verdicts,
+    request, passed, registerLock, makeFast, leave, lockStay, tick, strikeCheck, barrierCheck, setOut, verdicts,
     onEvent: (fn) => { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); }; },
     toSave: () => ({ v: 1, outages: { ...outages } }),
     load: (s) => { if (s && s.outages) for (const [id, o] of Object.entries(s.outages)) if (o.until > now()) setOut(id, o.until, o.why); },

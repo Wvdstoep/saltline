@@ -39,7 +39,7 @@ export const COL = {
   concrete: hex(0xb3aea4), concreteDk: hex(0x8f8a82), wet: hex(0x4a5249), wetTop: hex(0x5d6457), floor: hex(0x3a3d38),
   asphalt: hex(0x3b3d40), deckSide: hex(0x7f8285), under: hex(0x55575a), mark: hex(0xe8e8e0), markY: hex(0xe8c440),
   steel: hex(0x2f6f8f), steelDk: hex(0x24566e), steelRed: hex(0xa3352b), lattice: hex(0x5f7d8c), rail: hex(0x6f6a62),
-  gate: hex(0x3f4a52), gateDk: hex(0x2c343a), wood: hex(0x6a5236), pile: hex(0x4e4234), bollard: hex(0x2a2a2a), bollardY: hex(0xd8b020),
+  gate: hex(0x46594f), gateDk: hex(0x2f3c35), wood: hex(0x6a5236), pile: hex(0x4e4234), bollard: hex(0x2a2a2a), bollardY: hex(0xd8b020),
   house: hex(0xd9d4c7), roof: hex(0x8a3a2a), glass: hex(0x2b4250), housing: hex(0x161a1d), white: hex(0xf2f2f2), cable: hex(0x202326),
   water: hex(0x24485a),
 };
@@ -185,6 +185,7 @@ export function buildBridge(o, opts = {}) {
   const anchor = opts.anchor || anchorOf(o);
   const off = datumOffset(o, opts), water = num(opts.water, 0), bedY = num(opts.bed, -8), gDef = num(opts.defaultGround, 3);
   const kind = o.kind || 'road';
+  const keepOut = (opts.keepOut || []).filter((z) => z.id !== o.id);
   const line = (o.line && o.line.length >= 2 ? o.line : null);
   if (!line) return null;
   const pts = line.map(([la, lo]) => llToLocal(anchor, la, lo));
@@ -334,12 +335,13 @@ export function buildBridge(o, opts = {}) {
     else if (!isMovable(sp.mov) && o.structure === 'cable' && sp.b - sp.a > 60) cable(G, S, sp.a, sp.b, hw, sp.u + sp.th, full);
   }
   // --- piers: span edges, swing pivot, and every 40 m under the approaches while the deck is clear of the ground
-  const pierAt = (s, wide = 1, round = false) => {
+  const pierAt = (s, wide = 1, round = false, approach = false) => {
     const [x, z] = S.P(s), t = S.T(s), { land, g: gr } = groundAt(s), u = uAt(s);
     const bot = land ? gr - 0.5 : Math.min(gr, water - 4);
-    if (u - bot < 0.8) return;
+    if (u - bot < 0.8) return false;
+    if (approach && inZones(keepOut, x, z, 1.5 * wide + 2)) return false;      // never a pier in a neighbour's fairway
     if (!land) obstacles.push({ x0: x, z0: z, x1: x, z1: z, r: 1.5 * wide + 0.4, type: 'pier' });
-    if (round) { cyl(g, x, z, hw + 1, bot, u, full ? 16 : 8, COL.concrete); return; }
+    if (round) { cyl(g, x, z, hw + 1, bot, u, full ? 16 : 8, COL.concrete); return true; }
     pbox(g, x, z, t, 1.25 * wide, hw + 0.5, bot, u, COL.concrete);
     if (full && !land) for (const sd of [-1, 1]) {   // cutwaters (pointed noses up- and downstream)
       const n = nrmAt(s), e = hw + 0.5, tip = hw + 2.2;
@@ -348,6 +350,7 @@ export function buildBridge(o, opts = {}) {
       for (const [p, q] of [[A, C], [C, B]]) g.quad([p[0], bot, p[2]], [q[0], bot, q[2]], [q[0], top, q[2]], [p[0], top, p[2]], COL.concreteDk);
       g.tri([A[0], top, A[2]], [C[0], top, C[2]], [B[0], top, B[2]], COL.concrete);
     }
+    return true;
   };
   const pierS = [];
   for (const sp of spans) {
@@ -366,7 +369,7 @@ export function buildBridge(o, opts = {}) {
     for (let s = edge + dir * 40; dir < 0 ? s > sMin + 8 : s < sMax - 8; s += dir * 40) {
       if (pierS.some((q) => Math.abs(q - s) < minGap)) continue;
       const { land, g: gr } = groundAt(s); if (uAt(s) - (land ? gr : water) < 1.2) continue;
-      pierAt(s); pierS.push(s);
+      if (pierAt(s, 1, false, true)) pierS.push(s);
     }
   }
   if (!spans.length) pierAt(S.L / 2);
@@ -396,12 +399,16 @@ export function buildBridge(o, opts = {}) {
   if (full) for (const sp of spans) {
     if (!isMovable(sp.mov)) continue;
     if (!o.lockId) for (const s of [sp.a + 0.5, sp.b - 0.5]) for (const sd of [-1, 1]) {
+      // fender walls run 30 m up- and downstream along the opening — shortened (or dropped) where they would reach into a
+      // neighbour's fairway or structure (the lock round the corner of a T-junction): never a shared or crossing wall
       const top = water + 2.4, n0 = hw + 2.5;
-      for (let d = 0; d <= 30; d += 3) { const [x, , z] = X(s, sd * (n0 + d), 0); pbox(g, x, z, S.T(s), 0.28, 0.28, bedY, top, COL.pile, ['-v']); }
-      const p0 = X(s, sd * n0, 0), p1 = X(s, sd * (n0 + 30), 0);
+      const L = clipRun((d) => { const q = X(s, sd * (n0 + d), 0); return [q[0], q[2]]; }, 30, keepOut, 2.5, 1);
+      if (L < 6) continue;
+      for (let d = 0; d <= L + 1e-9; d += 3) { const [x, , z] = X(s, sd * (n0 + d), 0); pbox(g, x, z, S.T(s), 0.28, 0.28, bedY, top, COL.pile, ['-v']); }
+      const p0 = X(s, sd * n0, 0), p1 = X(s, sd * (n0 + L), 0);
       obstacles.push({ x0: p0[0], z0: p0[2], x1: p1[0], z1: p1[2], r: 0.8, type: 'remmingwerk' });
-      beam(g, X(s, sd * n0, top - 0.4), X(s, sd * (n0 + 30), top - 0.4), 0.35, 0.5, COL.wood);
-      beam(g, X(s, sd * n0, water + 0.4), X(s, sd * (n0 + 30), water + 0.4), 0.35, 0.5, COL.wood);
+      beam(g, X(s, sd * n0, top - 0.4), X(s, sd * (n0 + L), top - 0.4), 0.35, 0.5, COL.wood);
+      beam(g, X(s, sd * n0, water + 0.4), X(s, sd * (n0 + L), water + 0.4), 0.35, 0.5, COL.wood);
     }
     const hs = sp.hinge === 'b' ? sp.b + 8 : sp.a - 8, sd = 1, base = uAt(hs) + (spanAt(hs)?.th ?? thMain);
     const [x, , z] = X(hs, sd * (hw + 4.5), 0), t = S.T(hs);
@@ -460,10 +467,51 @@ export function buildBridge(o, opts = {}) {
     spans: spans.map((s) => ({ i: s.i, a: s.a, b: s.b, mov: s.mov, u: s.u, travel: s.travel, range: s.range || [s.a, s.b] })) };
   for (const st0 of query.stations) { const sp = spans.find((s) => st0.s > s.a + 1e-6 && st0.s < s.b - 1e-6); if (sp) st0.u = sp.u; }
 
+  // --- hard barriers: each opening is a box on the deck line (half width hw − 1, so a mast that hits the deck edge
+  // still registers the strike) that activeBarriers() switches on while the span is closed / too low for the ship
+  const barriers = [];
+  for (const sp of spans) {
+    if (sp.b - sp.a < 0.5) continue;
+    const m = (sp.a + sp.b) / 2, [cx, cz] = S.P(m), t = S.T(m);
+    barriers.push({ kind: 'span', span: sp.i, mov: sp.mov, est: o.e === 2, box: { cx, cz, tx: t[0], tz: t[1], hl: (sp.b - sp.a) / 2, hn: Math.max(1, hw - 1) } });
+  }
+  // --- road barriers (slagbomen) with flashing red road lights at both ends of every movable span, and the road path
+  // the traffic drives along (cars stop at the stop lines while the barriers are down)
+  const booms = [];
+  let road = null;
+  if (full && kind !== 'rail') for (const sp of spans) {
+    if (!isMovable(sp.mov)) continue;
+    const rg = sp.range || [sp.a, sp.b];
+    const lift = sp.mov === 'lift' ? 4.5 : 0;
+    const ends = [[Math.min(sp.a, rg[0]) - 5 - lift, -1], [Math.max(sp.b, rg[1]) + 5 + lift, 1]];
+    for (const [sB, side] of ends) {
+      if (sB < sMin + 1 || sB > sMax - 1) continue;
+      const th = spanAt(sB)?.th ?? thMain, top = uAt(sB) + th, t = S.T(sB);
+      for (const sd of [-1, 1]) {
+        const pv = X(sB, sd * (hw - 0.5), top + 1.0), armL = Math.max(1.2, hw - 0.9);
+        const p = { key: `boom${sp.i}:${side}:${sd}`, kind: 'boom', span: sp.i, pivot: pv, axis: [-sd * t[0], 0, -sd * t[1]], rot: Math.PI / 2, g: new Geo(pv) };
+        for (let k = 0, y = 0; y < armL - 1e-6; k++, y += 0.8) { const y1 = Math.min(armL, y + 0.8); obox(p.g, [pv[0], pv[1] + (y + y1) / 2, pv[2]], [t[0], 0, t[1]], UP, [-t[1], 0, t[0]], 0.07, (y1 - y) / 2, 0.07, k % 2 ? COL.white : COL.steelRed); }
+        booms.push(p);
+        const post = X(sB, sd * (hw - 0.5), 0);
+        pbox(g, post[0], post[2], t, 0.18, 0.18, top, top + 1.25, COL.white);
+        if (sd === side) {   // the road light faces the traffic that comes up to this barrier
+          const pos = X(sB - side * 0.0, sd * (hw + 0.4), top + 2.6);
+          signals.push({ key: `road${sp.i}:${side}`, part: -1, pos, nrm: [t[0] * side, 0, t[1] * side], kind: 'road', span: sp.i, face: side });
+          beam(g, X(sB, sd * (hw + 0.4), top), X(sB, sd * (hw + 0.4), top + 3.4), 0.14, 0.14, COL.housing);
+        }
+      }
+    }
+    if (!road && (kind === 'road' || kind === 'mixed')) {
+      road = { span: sp.i, hw, stops: [ends[0][0] - 2, ends[1][0] + 2], path: query.stations.map((q) => [q.s, q.x, q.z, q.u + (spanAt(q.s)?.th ?? thMain)]) };
+    }
+  }
+
   const moving = parts.map((p) => { const { g: G, ...rest } = p; return { ...rest, mesh: G.out() }; });
+  const boomParts = booms.map((p) => { const { g: G, ...rest } = p; return { ...rest, mesh: G.out() }; });
   const stat = g.out();
-  return { id: o.id, type: 'bridge', anchor, lod, static: stat, moving, boards, gauges, signals, query, cut: null, obstacles,
-    tris: stat.tris + moving.reduce((a, p) => a + p.mesh.tris, 0), piers: pierS.slice().sort((a, b) => a - b), spans: spans.map((s) => ({ i: s.i, a: s.a, b: s.b, mov: s.mov, u: s.u, uo: s.uo, th: s.th, travel: s.travel })), extent: [sMin, sMax] };
+  let rad = 0; for (const st0 of query.stations) rad = Math.max(rad, Math.hypot(st0.x, st0.z));
+  return { id: o.id, type: 'bridge', anchor, lod, static: stat, moving, boards, gauges, signals, query, cut: null, obstacles, barriers, booms: boomParts, road, rad: rad + 60,
+    tris: stat.tris + moving.reduce((a, p) => a + p.mesh.tris, 0) + boomParts.reduce((a, p) => a + p.mesh.tris, 0), piers: pierS.slice().sort((a, b) => a - b), spans: spans.map((s) => ({ i: s.i, a: s.a, b: s.b, mov: s.mov, u: s.u, uo: s.uo, th: s.th, travel: s.travel })), extent: [sMin, sMax] };
 }
 
 /** Deck segment between stations s0 and s1 (underside u0 → u1, thickness th). */
@@ -696,26 +744,163 @@ export function bridgesAhead(objs, lat, lon, hdg, maxM = 5000, n = 3) {
  * Gate parts: per chamber, head 0 / 1, leaf 0 / 1. Water part per chamber (chamber surface at y = 0 part-local, floating
  * bollards ride on it). cut = chamber footprints (object frame) for the ocean cut-outs.
  */
+/**
+ * Plan frame of one lock chamber in an object frame (anchor): axis unit u (head 0 → head 1), left normal v, centre C,
+ * gate stations gU[head] along u, the head length HL beyond each gate, wall thickness, gate types. Shared by the builder,
+ * the fairway zones (deconfliction) and the gate barriers, so all three agree to the centimetre.
+ */
+export function chamberFrame(ch, anchor) {
+  const ax = (ch.axis || []).map(([la, lo2]) => llToLocal(anchor, la, lo2));
+  if (ax.length < 2) return null;
+  const A = ax[0], B = ax[ax.length - 1], dl = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1;
+  const u = [(B[0] - A[0]) / dl, (B[1] - A[1]) / dl], v = [-u[1], u[0]], C = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2];
+  const len = num(ch.len, dl), wid = num(ch.wid, 12), hw = wid / 2;
+  const gates = (ch.gates && ch.gates.length ? ch.gates : [{ head: 0, type: 'mitre', at: 0 }, { head: 1, type: 'mitre', at: len }]);
+  const gU = [0, 1].map((h) => { const gg = gates.find((x) => x.head === h); return -len / 2 + num(gg?.at, h ? len : 0); });
+  const HL = clamp(wid * 0.9, 14, 30), wallT = 5;
+  const types = [0, 1].map((h) => (gates.find((x) => x.head === h)?.type) || 'mitre');
+  const P2 = (uu, vv) => [C[0] + u[0] * uu + v[0] * vv, C[1] + u[1] * uu + v[1] * vv];
+  return { A, B, u, v, C, len, wid, hw, gates, gU, HL, wallT, uMin: gU[0] - HL, uMax: gU[1] + HL, types, P2 };
+}
+export const MITRE_DEG = 18;                 // closed mitre leaves point 18° upstream of square (apex against the head)
+/**
+ * Closed gate of a head as plan segments [[x0, z0, x1, z1]…]: mitre / sector = two leaves hinge → apex, lift / rolling /
+ * drop = one straight line across the chamber. This is the hard barrier a closed gate puts in the water.
+ */
+export function gateSegments(F, h) {
+  const type = F.types[h], ug = F.gU[h], out = h === 0 ? -1 : 1;
+  if (type === 'mitre' || type === 'sector') {
+    const apex = F.P2(ug + out * F.hw * Math.tan(MITRE_DEG * D2R), 0);
+    return [-1, 1].map((sd) => { const hg = F.P2(ug, sd * F.hw); return [hg[0], hg[1], apex[0], apex[1]]; });
+  }
+  const a = F.P2(ug, -F.hw), b = F.P2(ug, F.hw);
+  return [[a[0], a[1], b[0], b[1]]];
+}
+
+// ------------------------------------------------------------------------------------------------ deconfliction (§5.6)
+/**
+ * Plan zones of an object in the frame of `anchor` (any object's): 'structure' (the solid lock walls / the bridge deck
+ * strip) and 'channel' (the navigable water a ship needs: a lock chamber plus 120 m approach in line with it; a bridge
+ * opening plus 80 m up- and downstream). A builder never puts its own fender walls, guide walls, waiting jetties or
+ * approach piers inside ANOTHER object's zones, so two objects at a junction never overlap or block each other.
+ */
+export function fairwayZones(o, anchor) {
+  const out = [];
+  if (!o) return out;
+  if (o.chambers) {
+    for (const ch of o.chambers) {
+      const F = chamberFrame(ch, anchor); if (!F) continue;
+      const rect = (u0, u1, v0, v1) => [F.P2(u0, v0), F.P2(u1, v0), F.P2(u1, v1), F.P2(u0, v1)];
+      const wo = F.hw + F.wallT + 3, chamber = ch.id;
+      out.push({ id: o.id, chamber, kind: 'structure', ring: rect(F.uMin, F.uMax, -wo, wo) });
+      out.push({ id: o.id, chamber, kind: 'channel', ring: rect(F.uMin + 0.5, F.uMax - 0.5, -F.hw + 0.3, F.hw - 0.3) });     // the chamber water
+      out.push({ id: o.id, chamber, kind: 'channel', ring: rect(F.uMin - 120, F.uMin, -F.hw, F.hw) });
+      out.push({ id: o.id, chamber, kind: 'channel', ring: rect(F.uMax, F.uMax + 120, -F.hw, F.hw) });
+    }
+    return out;
+  }
+  if (!o.line || o.line.length < 2) return out;
+  const S = polySampler(o.line.map(([la, lo]) => llToLocal(anchor, la, lo)));
+  const hw = clamp(num(o.deckW, 12), 2.5, 60) / 2;
+  const R = (s, lat) => { const p = S.P(s), t = S.T(s); return [p[0] - t[1] * lat, p[1] + t[0] * lat]; };
+  out.push({ id: o.id, kind: 'structure', ring: [R(0, -hw), R(S.L, -hw), R(S.L, hw), R(0, hw)] });
+  for (const sp of drawnSpans(o)) {
+    if (sp.b - sp.a < 3) continue;
+    const m = (sp.a + sp.b) / 2, t = S.T(m), p = S.P(m), n = [-t[1], t[0]], hl = (sp.b - sp.a) / 2, e = hw + 80;
+    const Q = (su, sn) => [p[0] + t[0] * hl * su + n[0] * e * sn, p[1] + t[1] * hl * su + n[1] * e * sn];
+    out.push({ id: o.id, kind: 'channel', span: sp.i, ring: [Q(-1, -1), Q(1, -1), Q(1, 1), Q(-1, 1)] });
+  }
+  return out;
+}
+/** Distance (m) from (x, z) to a ring's edges; ≤ 0 inside. */
+export function ringDist(r, x, z) {
+  let d = Infinity;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const [ax, az] = r[j], [bx, bz] = r[i], dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1;
+    const t = clamp(((x - ax) * dx + (z - az) * dz) / L2, 0, 1);
+    d = Math.min(d, Math.hypot(x - ax - dx * t, z - az - dz * t));
+  }
+  return inRing(r, x, z) ? -d : d;
+}
+/** Is (x, z) inside (or within buf metres of) any of the zones? */
+export function inZones(zones, x, z, buf = 0) {
+  for (const zn of zones || []) if (ringDist(zn.ring, x, z) < buf) return zn;
+  return null;
+}
+/**
+ * How far a wall that starts at station 0 and runs to `len` may go before it enters a foreign zone (with buf metres to
+ * spare): returns the clipped length (0 = the wall starts inside one and is dropped). at(d) → [x, z].
+ */
+export function clipRun(at, len, zones, buf = 2, step = 1) {
+  if (!zones || !zones.length) return len;
+  for (let d = 0; d <= len + 1e-9; d += step) { const [x, z] = at(Math.min(d, len)); if (inZones(zones, x, z, buf)) return Math.max(0, d - step); }
+  return len;
+}
+
+// ------------------------------------------------------------------------------------------------ obstacles (collision, §5.6)
+/**
+ * Signed distance from (x, z) to obstacles: capsules {x0, z0, x1, z1, r} and oriented boxes {box: {cx, cz, tx, tz, hl, hn}}.
+ * → { d, gx, gz, ob } (g = unit direction out of the nearest obstacle) | null when none is within `maxD`.
+ */
+export function obstacleSdf(obs, x, z, maxD = 4) {
+  let best = null;
+  for (const ob of obs || []) {
+    let d, gx, gz;
+    if (ob.box) {
+      const b = ob.box, nx = -b.tz, nz = b.tx, dx = x - b.cx, dz = z - b.cz;
+      const lx = dx * b.tx + dz * b.tz, ly = dx * nx + dz * nz, qx = Math.abs(lx) - b.hl, qy = Math.abs(ly) - b.hn;
+      const ox = Math.max(qx, 0), oy = Math.max(qy, 0), outside = Math.hypot(ox, oy);
+      let a, c;
+      if (outside > 0) { d = outside; a = (ox * Math.sign(lx)) / outside; c = (oy * Math.sign(ly)) / outside; }
+      else { d = Math.max(qx, qy); if (qx > qy) { a = Math.sign(lx) || 1; c = 0; } else { a = 0; c = Math.sign(ly) || 1; } }
+      gx = a * b.tx + c * nx; gz = a * b.tz + c * nz;
+    } else {
+      const dx = ob.x1 - ob.x0, dz = ob.z1 - ob.z0, L2 = dx * dx + dz * dz;
+      const t = L2 > 1e-6 ? clamp(((x - ob.x0) * dx + (z - ob.z0) * dz) / L2, 0, 1) : 0;
+      const cx = ob.x0 + t * dx, cz = ob.z0 + t * dz, dist = Math.hypot(x - cx, z - cz);
+      d = dist - ob.r;
+      if (dist > 1e-4) { gx = (x - cx) / dist; gz = (z - cz) / dist; }
+      else { const l = Math.sqrt(L2) || 1; gx = -dz / l; gz = dx / l; }
+    }
+    if (d < maxD && (!best || d < best.d)) best = { d, gx, gz, ob };
+  }
+  return best;
+}
+export const GATE_BLOCK_FRAC = 0.9;          // a gate less open than this is a wall for the hull (client)
+/**
+ * The barriers that are closed NOW, as obstacles. r = buildBridge / buildLock result; st = {
+ *   gateFrac(chamber, head) → 0…1 open, spanBlocks(spanIndex) → true when the span over the ship is closed / too low }.
+ * Each object's barriers are its own: they are evaluated from its own state only and never merged with a neighbour's.
+ */
+export function activeBarriers(r, st = {}) {
+  const out = [];
+  for (const b of r?.barriers || []) {
+    if (b.kind === 'gate') { const f = st.gateFrac ? st.gateFrac(b.chamber, b.head) : 0; if (f < GATE_BLOCK_FRAC) for (const s of b.segs) out.push({ x0: s[0], z0: s[1], x1: s[2], z1: s[3], r: b.r, type: 'gate', chamber: b.chamber, head: b.head }); }
+    else if (b.kind === 'span') { if (st.spanBlocks && st.spanBlocks(b.span)) out.push({ box: b.box, type: 'span', span: b.span }); }
+  }
+  return out;
+}
+
 export function buildLock(o, opts = {}) {
   const lod = opts.lod ?? LOD3D.FULL, full = lod >= LOD3D.FULL;
   const anchor = opts.anchor || anchorOf(o);
   const hi = num(opts.hi, 2.5), lo = num(opts.lo, -1.5), cop = hi + 1.5;
-  const g = new Geo(), parts = [], signals = [], cut = [], boards = [];
+  // guide walls and jetties keep out of every neighbour's navigable water (a pile row under a bridge deck is normal, one
+  // across its fairway is not) and out of the lock's OTHER chambers' water / approaches (side-by-side chambers)
+  const foreign = (opts.keepOut || []).filter((z) => z.id !== o.id && z.kind === 'channel');
+  const own = fairwayZones(o, anchor).filter((z) => z.kind === 'channel');
+  const g = new Geo(), parts = [], signals = [], cut = [], boards = [], obstacles = [], barriers = [];
+  let rad = 50;
   for (const [ci, ch] of (o.chambers || []).entries()) {
-    const ax = (ch.axis || []).map(([la, lo2]) => llToLocal(anchor, la, lo2));
-    if (ax.length < 2) continue;
-    const A = ax[0], B = ax[ax.length - 1], dl = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1;
-    const u = [(B[0] - A[0]) / dl, (B[1] - A[1]) / dl], v = [-u[1], u[0]], C = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2];
-    const len = num(ch.len, dl), wid = num(ch.wid, 12), hw = wid / 2;
+    const F = chamberFrame(ch, anchor);
+    if (!F) continue;
+    const { u, v, C, len, wid, hw, gU, HL, wallT, uMin, uMax, types } = F;
+    const keepOut = foreign.concat(own.filter((z) => String(z.chamber) !== String(ch.id)));
     const sill = Math.max(num(ch.sillUp, 3), num(ch.sillDn, 3)), floor = lo - sill;
     const P = (uu, vv, y) => [C[0] + u[0] * uu + v[0] * vv, y, C[1] + u[1] * uu + v[1] * vv];
-    const gates = (ch.gates && ch.gates.length ? ch.gates : [{ head: 0, type: 'mitre', at: 0 }, { head: 1, type: 'mitre', at: len }]);
-    const gU = [0, 1].map((h) => { const gg = gates.find((x) => x.head === h); return -len / 2 + num(gg?.at, h ? len : 0); });
-    const HL = clamp(wid * 0.9, 14, 30), wallT = 5;
-    const uMin = gU[0] - HL, uMax = gU[1] + HL;
+    rad = Math.max(rad, Math.hypot(C[0], C[1]) + Math.max(-uMin, uMax) + 90);
     // walls: inner faces with gate recesses on the outward side of each gate (mitre leaves open into them)
-    const types = [0, 1].map((h) => (gates.find((x) => x.head === h)?.type) || 'mitre');
-    const leafL = (t) => (t === 'mitre' ? hw / Math.cos(18 * D2R) : t === 'sector' ? hw * 1.05 : 0);
+    const leafL = (t) => (t === 'mitre' ? hw / Math.cos(MITRE_DEG * D2R) : t === 'sector' ? hw * 1.05 : 0);
     const rec = [0, 1].map((h) => { const L = leafL(types[h]) + 1; return h === 0 ? [gU[0] - L, gU[0]] : [gU[1], gU[1] + L]; });
     for (const sd of [-1, 1]) {
       const segs = [[uMin, rec[0][0], 0], [rec[0][0], rec[0][1], 1.6], [rec[0][1], rec[1][0], 0], [rec[1][0], rec[1][1], 1.6], [rec[1][1], uMax, 0]];
@@ -751,14 +936,44 @@ export function buildLock(o, opts = {}) {
           for (let y = floor + 1.3; y < cop; y += 0.6) g.quad(P(ul - 0.25, sd * (hw - 0.14), y), P(ul + 0.25, sd * (hw - 0.14), y), P(ul + 0.25, sd * (hw - 0.14), y + 0.05), P(ul - 0.25, sd * (hw - 0.14), y + 0.05), COL.steelDk);
         }
       }
-      // guide walls (remmingwerk) flaring out of both heads
-      for (const [h, dir] of [[0, -1], [1, 1]]) {
-        const u0 = h ? uMax : uMin;
-        for (let d = 0; d <= 80; d += 4) { const p = P(u0 + dir * d, sd * (hw + 1 + d * 0.12), 0); pbox(g, p[0], p[2], u, 0.3, 0.3, floor, hi + 0.8, COL.pile, ['-v']); }
-        beam(g, P(u0, sd * (hw + 1), hi + 0.4), P(u0 + dir * 80, sd * (hw + 1 + 80 * 0.12), hi + 0.4), 0.4, 0.6, COL.wood);
-        beam(g, P(u0, sd * (hw + 1), lo + 0.6), P(u0 + dir * 80, sd * (hw + 1 + 80 * 0.12), lo + 0.6), 0.4, 0.6, COL.wood);
+    }
+    // guide walls (remmingwerk) flaring out of both heads — clipped where they would enter a neighbour's fairway or
+    // structure (a bridge just round the corner of a T-junction), then the waiting jetty (wachtsteiger) beyond them
+    for (const sd of [-1, 1]) for (const [h, dir] of [[0, -1], [1, 1]]) {
+      const u0 = h ? uMax : uMin;
+      const gw = (d) => { const p = P(u0 + dir * d, sd * (hw + 1 + d * 0.12), 0); return [p[0], p[2]]; };
+      const L = clipRun(gw, 80, keepOut, 2.5, 2);
+      if (L < 8) continue;
+      const a = gw(0), b = gw(L);
+      obstacles.push({ x0: a[0], z0: a[1], x1: b[0], z1: b[1], r: 0.6, type: 'guide' });
+      if (full) {
+        for (let d = 0; d <= L + 1e-9; d += 4) { const p = P(u0 + dir * d, sd * (hw + 1 + d * 0.12), 0); pbox(g, p[0], p[2], u, 0.3, 0.3, floor, hi + 0.8, COL.pile, ['-v']); }
+        beam(g, P(u0, sd * (hw + 1), hi + 0.4), P(u0 + dir * L, sd * (hw + 1 + L * 0.12), hi + 0.4), 0.4, 0.6, COL.wood);
+        beam(g, P(u0, sd * (hw + 1), lo + 0.6), P(u0 + dir * L, sd * (hw + 1 + L * 0.12), lo + 0.6), 0.4, 0.6, COL.wood);
+      }
+      // waiting jetty on the starboard-hand (+v for head 0 inbound … keep both sides simple: −v side only) beyond the guide wall
+      if (sd === -1 && full) {
+        const j0 = L + 6, jl = Math.min(60, Math.max(20, len * 0.35)), vJ = -(hw + 1 + L * 0.12 + 1.5);
+        const jt = (d) => { const p = P(u0 + dir * (j0 + d), vJ, 0); return [p[0], p[2]]; };
+        const JL = clipRun(jt, jl, keepOut, 3, 2);
+        if (JL >= 12) {
+          for (let d = 0; d <= JL + 1e-9; d += 6) { const p = P(u0 + dir * (j0 + d), vJ - 0.6, 0); cyl(g, p[0], p[2], 0.25, floor, hi + 1.6, 6, COL.pile); }
+          const s0 = P(u0 + dir * j0, vJ - 1.2, 0), s1 = P(u0 + dir * (j0 + JL), vJ - 1.2, 0);
+          pbox(g, (s0[0] + s1[0]) / 2, (s0[2] + s1[2]) / 2, u, JL / 2, 1.0, hi + 0.5, hi + 0.8, COL.wood);
+          for (let d = 3; d < JL; d += 10) { const p = P(u0 + dir * (j0 + d), vJ - 0.45, 0); cyl(g, p[0], p[2], 0.15, hi + 0.8, hi + 1.25, 6, COL.bollardY); }
+          obstacles.push({ x0: s0[0], z0: s0[2], x1: s1[0], z1: s1[2], r: 1.1, type: 'jetty' });
+        }
       }
     }
+    // the chamber walls are solid for the hull (inner face at ±hw, also across the gate recesses)
+    // (a 1.2 m thick skin on the inner face; dropped where bad data would put it in a sister chamber's water)
+    for (const sd of [-1, 1]) {
+      const a = P(uMin, sd * (hw + 0.6), 0), b = P(uMax, sd * (hw + 0.6), 0);
+      if (clipRun((d) => [a[0] + (b[0] - a[0]) * d / 10, a[2] + (b[2] - a[2]) * d / 10], 10, keepOut, 0.6, 1) < 10) continue;
+      obstacles.push({ x0: a[0], z0: a[2], x1: b[0], z1: b[2], r: 0.6, type: 'lockwall' });
+    }
+    // closed gates are hard barriers (activeBarriers decides per frame from the chamber state)
+    for (const h of [0, 1]) barriers.push({ kind: 'gate', chamber: ch.id ?? ci, head: h, type: types[h], segs: gateSegments(F, h), r: 0.7 });
     if (full && ci === 0) {   // lock-keeper's house on head 0 (+v side)
       const p = P(gU[0] + HL * 1.6, hw + wallT + 16, 0);
       pbox(g, p[0], p[2], u, 5, 4, cop, cop + 4.5, COL.house);
@@ -788,6 +1003,11 @@ export function buildLock(o, opts = {}) {
           if (type === 'mitre') {
             const end = add(hinge, closedDir, Lf);
             obox(p.g, [(hinge[0] + end[0]) / 2, floor + gh / 2, (hinge[2] + end[2]) / 2], closedDir, UP, norm(cross(closedDir, UP)), Lf / 2, gh / 2 - 0.05, 0.55, COL.gate);
+            if (full) {   // horizontal girders (riveted ribs) on the downstream face, and a rust-dark band at the waterline
+              const perp = norm(cross(closedDir, UP)), sgn = out, mid = [(hinge[0] + end[0]) / 2, 0, (hinge[2] + end[2]) / 2];
+              for (let y = floor + 1.2; y < cop - 0.4; y += 1.6) obox(p.g, [mid[0] + perp[0] * 0.62 * sgn, y, mid[2] + perp[2] * 0.62 * sgn], closedDir, UP, perp, Lf / 2 - 0.2, 0.12, 0.1, COL.gateDk);
+              obox(p.g, [mid[0] - perp[0] * 0.56 * sgn, lo + 0.2, mid[2] - perp[2] * 0.56 * sgn], closedDir, UP, perp, Lf / 2 - 0.1, 0.45, 0.02, shade(COL.wood, 0.7));
+            }
             if (full) { const top = [(hinge[0] + end[0]) / 2, cop + 0.55, (hinge[2] + end[2]) / 2]; obox(p.g, top, closedDir, UP, norm(cross(closedDir, UP)), Lf / 2, 0.05, 0.6, COL.wood); beam(p.g, add(hinge, [0, cop - floor + 0.6, 0]), add(add(hinge, closedDir, Lf), [0, cop - floor + 0.6, 0]), 0.06, 1.0, COL.white); }
           } else {     // sector: a curved skin with two arms
             const R = Lf, n = full ? 6 : 3, perp = norm(cross(closedDir, UP));
@@ -829,7 +1049,7 @@ export function buildLock(o, opts = {}) {
   }
   const moving = parts.map((p) => { const { g: G, ...rest } = p; return { ...rest, mesh: G.out() }; });
   const stat = g.out();
-  return { id: o.id, type: 'lock', anchor, lod, static: stat, moving, boards, gauges: [], signals, query: null, cut,
+  return { id: o.id, type: 'lock', anchor, lod, static: stat, moving, boards, gauges: [], signals, query: null, cut, obstacles, barriers, rad,
     tris: stat.tris + moving.reduce((a, p) => a + p.mesh.tris, 0), hi, lo, cop };
 }
 /** Signed yaw (rad, three.js rotation about +y) that turns direction c into o (x/z only). */

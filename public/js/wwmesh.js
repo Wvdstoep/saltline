@@ -9,8 +9,11 @@
 //   ww.setStatics(objects); ww.applyDelta(delta); ww.setWater(h); ww.setOrigin(origin);
 //   ww.update(dt, { lat, lon }) each frame;  ww.setShip({ lat, lon, hdg, need, beam, show }) for the overlay.
 import * as THREE from 'three';
-import { buildBridge, buildLock, partPose, anchorOf, llToLocal, localToLl, undersideAt, overlayStrip, bridgesAhead, inRing, planLod, BUDGET3D, LOD3D, datumOffset } from './wwgeom.js';
-import { spanFrac, bridgeLights, lampsFor, gateFrac, chamberLevel, chamberFlow, lockHeadLights, gaugeReading, f1, clrNowLocal, verdictLocal, chamberPhase } from './wwfmt.js';
+import { buildBridge, buildLock, partPose, anchorOf, llToLocal, localToLl, undersideAt, overlayStrip, bridgesAhead, inRing, planLod, BUDGET3D, LOD3D, datumOffset, fairwayZones, obstacleSdf, activeBarriers, polySampler } from './wwgeom.js';
+import { spanFrac, bridgeLights, lampsFor, gateFrac, chamberLevel, chamberFlow, lockHeadLights, gaugeReading, f1, clrNowLocal, verdictLocal, chamberPhase, boomFrac, roadStop } from './wwfmt.js';
+
+const NEIGHBOUR_M = 700;          // objects whose anchors are this close deconflict their fender / guide walls
+export const OCEAN_CUTS = 4;      // ocean2.js has uCutA[4] / uCutB[4]: the nearest 4 chambers get a cut-out
 
 const LAMP_COL = { r: 0xff2a1a, g: 0x22ff6a, y: 0xffc21a };
 const SLOT = { L: [-0.32, 0.28], R: [0.32, 0.28], B: [-0.32, -0.38], Y0: [0, 0.95], Y1: [-0.32, 0.95], Y2: [0.32, 0.95] };
@@ -134,7 +137,28 @@ export class WwMesh {
       if (cur && cur.rev === rev && !cur.o.fromTile) continue;
       if (cur?.built) this.unbuild(cur);
       this.objs.set(o.id, { o, rev, state: cur?.state || null, built: null, dist: Infinity, want: 0, type: o.chambers ? 'lock' : 'bridge' });
+      this.markNeighbours(o);
     }
+  }
+  /** A new / changed object: built neighbours rebuild so their walls are clipped against it (deconfliction). */
+  markNeighbours(o) {
+    const a = anchorOf(o);
+    for (const e of this.objs.values()) {
+      if (!e.built || e.o === o) continue;
+      const [x, z] = llToLocal(a, e.anchor.lat, e.anchor.lon);
+      if (Math.hypot(x, z) <= NEIGHBOUR_M) { e.stale = true; if (!this.queue.includes(e)) this.queue.push(e); }
+    }
+  }
+  /** Fairway / structure zones of every other object near e, in e's frame (buildBridge / buildLock keepOut). */
+  keepOutFor(e) {
+    const out = [], a = e.anchor || (e.anchor = anchorOf(e.o));
+    for (const f of this.objs.values()) {
+      if (f === e) continue;
+      const b = f.anchor || (f.anchor = anchorOf(f.o)), [x, z] = llToLocal(a, b.lat, b.lon);
+      if (Math.hypot(x, z) > NEIGHBOUR_M) continue;
+      try { out.push(...fairwayZones(f.o, a)); } catch { /* a malformed neighbour never breaks this build */ }
+    }
+    return out;
   }
   /** Tile-vector fallbacks (wwgeom.bridgeFromVector) for objects the registry has not sent: never replace registry objects. */
   setFallbacks(objects = []) {
@@ -169,8 +193,8 @@ export class WwMesh {
     // builds: at most buildsPerFrame and buildMs of main-thread time per frame (always at least one)
     const t0 = performance.now(); let n = 0;
     while (this.queue.length && n < this.B.buildsPerFrame && (n === 0 || performance.now() - t0 < this.B.buildMs)) {
-      const e = this.queue.shift(); if (!e || e.want === (e.built?.lod ?? 0)) continue;
-      this.build(e, e.want); n++;
+      const e = this.queue.shift(); if (!e || (e.want === (e.built?.lod ?? 0) && !(e.stale && e.built))) continue;
+      this.build(e, e.want || e.built?.lod || 0); n++;
     }
     if (n) this.stats.buildMs = performance.now() - t0;
     this.animate(this.now());
@@ -189,14 +213,16 @@ export class WwMesh {
     this.stats.objects = this.objs.size;
   }
   /** Build everything in range now (harness, tests, warp arrival). */
-  flush(focus) { if (focus) this.focus = focus; this.plan(); while (this.queue.length) { const e = this.queue.shift(); if (e.want !== (e.built?.lod ?? 0)) this.build(e, e.want); } this.animate(this.now()); }
+  flush(focus) { if (focus) this.focus = focus; this.plan(); while (this.queue.length) { const e = this.queue.shift(); if (e.want !== (e.built?.lod ?? 0) || (e.stale && e.built)) this.build(e, e.want || e.built?.lod || 0); } this.animate(this.now()); }
   heightFn(anchor) {
     const h = this.opts.heightAt; if (!h) return null;
     return (x, z) => { const ll = localToLl(anchor, x, z); const v = h(ll.lat, ll.lon); return Number.isFinite(v) ? v : null; };
   }
   build(e, lod) {
     const anchor = e.anchor || (e.anchor = anchorOf(e.o));
-    const opts = { lod, anchor, heightAt: this.heightFn(anchor), water: this.opts.meanWater ?? 0, datumOffset: this.opts.datumOffset, hi: this.opts.lockHi?.(e.o), lo: this.opts.lockLo?.(e.o) };
+    if (!lod) { if (e.built) this.unbuild(e); e.stale = false; return; }
+    const opts = { lod, anchor, heightAt: this.heightFn(anchor), water: this.opts.meanWater ?? 0, datumOffset: this.opts.datumOffset, hi: this.opts.lockHi?.(e.o), lo: this.opts.lockLo?.(e.o), keepOut: this.keepOutFor(e) };
+    e.stale = false;
     let r = null;
     try { r = e.type === 'lock' ? buildLock(e.o, opts) : buildBridge(e.o, opts); } catch (err) { console.warn('[ww] build failed', e.o.id, err); }
     if (e.built) this.unbuild(e);
@@ -210,6 +236,11 @@ export class WwMesh {
       if (p.kind === 'water') m.renderOrder = 1;
       node.add(m); root.add(node); return node;
     });
+    const booms = (r.booms || []).map((p) => {
+      const node = new THREE.Group(); node.position.set(...p.pivot); node.userData.part = p;
+      const m = new THREE.Mesh(toGeometry(p.mesh), this.mat.stat); m.userData.wwId = e.o.id; node.add(m); root.add(node); return node;
+    });
+    const cars = r.road ? this.makeCars(r.road, root, e.o.id) : null;
     const texKeys = [];
     const attach = (part, obj) => (part >= 0 ? nodes[part] : root).add(obj);
     for (const b of r.boards) {
@@ -233,6 +264,7 @@ export class WwMesh {
       const hg = new THREE.Group(); hg.position.set(...s.pos); hg.rotation.y = yawOf(s.nrm); attach(s.part, hg);
       const lamps = {};
       for (const [slot, [x, y]] of Object.entries(SLOT)) {
+        if (s.kind === 'road' && slot !== 'L' && slot !== 'R') continue;
         if (s.kind === 'span' && s.fixed && !slot.startsWith('Y')) continue;
         if (!(s.kind === 'span' && s.fixed) && slot.startsWith('Y')) continue;
         const m = new THREE.Mesh(this.lampGeo, this.mat.lampOff); m.position.set(x, y, 0.02); hg.add(m);
@@ -245,7 +277,7 @@ export class WwMesh {
     if (e.type === 'lock') {
       foam = r.cut.map((c) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(c.wid * 0.9, Math.min(40, c.len * 0.3)), this.mat.foam.clone()); m.visible = false; root.add(m); return { c, m }; });
     }
-    e.built = { lod, root, nodes, r, texKeys, gauges, signals, foam, tris: r.tris };
+    e.built = { lod, root, nodes, booms, cars, r, texKeys, gauges, signals, foam, tris: r.tris };
     this.place(e);
     this.group.add(root);
     e.sigKey = null;
@@ -255,7 +287,7 @@ export class WwMesh {
   unbuild(e) {
     const b = e.built; if (!b) return;
     this.group.remove(b.root);
-    b.root.traverse((o) => { if (o.isMesh && o.geometry !== this.lampGeo) o.geometry.dispose(); if ((o.isMesh || o.isSprite) && o.material && !Object.values(this.mat).includes(o.material) && !Object.values(this.mat.lamp).includes(o.material) && !Object.values(this.glowMat).includes(o.material)) o.material.dispose(); });
+    b.root.traverse((o) => { if (o.isMesh && o.geometry !== this.lampGeo && o.geometry !== this.carGeo) o.geometry.dispose(); if ((o.isMesh || o.isSprite) && o.material && !(this.carMats || []).includes(o.material) && !Object.values(this.mat).includes(o.material) && !Object.values(this.mat.lamp).includes(o.material) && !Object.values(this.glowMat).includes(o.material)) o.material.dispose(); });
     for (const k of b.texKeys) this.tex.release(k);
     for (const gg of b.gauges) if (gg.text) this.tex.release(gg.text);
     e.built = null; this.recount();
@@ -287,6 +319,12 @@ export class WwMesh {
         if (pose.angle) node.quaternion.setFromAxisAngle(new THREE.Vector3(...pose.axis), pose.angle); else node.quaternion.identity();
         node.scale.y = pose.sy;
       }
+      for (const node of b.booms || []) {
+        const p = node.userData.part, f = boomFrac((e.state?.spans || []).find((s) => s.i === p.span), now);
+        const pose = partPose(p, f);
+        if (pose.angle) node.quaternion.setFromAxisAngle(new THREE.Vector3(...pose.axis), pose.angle); else node.quaternion.identity();
+      }
+      if (b.cars) this.animateCars(e, b.cars, now);
       this.animateSignals(e, now);
       if (b.foam) for (const fm of b.foam) {
         const cs = this.chamberStateOf(e, fm.c.chamber), fl = cs ? chamberFlow(cs, now) : 0;
@@ -312,10 +350,63 @@ export class WwMesh {
       }
     }
   }
+  // ------------------------------------------------------------------------------------------ road traffic
+  /** A few cars on the bridge road (both directions, right-hand traffic) that stop at the barriers. */
+  makeCars(road, root, id) {
+    if (!this.carGeo) {
+      this.carGeo = new THREE.BoxGeometry(4.3, 1.45, 1.8);
+      this.carMats = [0x9a1f1a, 0x1f3f7a, 0xd8d8d2, 0x2a2c2e, 0x6d6f73].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.5 }));
+    }
+    const path = road.path, s0 = path[0][0], s1 = path[path.length - 1][0], L = s1 - s0;
+    if (!(L > 30)) return null;
+    let seed = 0; for (const ch of String(id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+    const cars = [];
+    for (let k = 0; k < 4; k++) {
+      const dir = k % 2 ? -1 : 1, m = new THREE.Mesh(this.carGeo, this.carMats[(seed + k) % this.carMats.length]);
+      m.userData.wwId = id; root.add(m);
+      cars.push({ m, dir, s: s0 + ((seed % 97) / 97 + k * 0.27) % 1 * L, v: 8 + ((seed >> (k + 2)) % 5) });
+    }
+    return { road, cars, s0, s1, last: null };
+  }
+  animateCars(e, C, now) {
+    const dt = C.last == null ? 0 : Math.min(0.25, Math.max(0, (now - C.last) / 1000)); C.last = now;
+    const { road, s0, s1 } = C, P = road.path;
+    const stop = roadStop((e.state?.spans || []).find((x) => x.i === road.span), now);
+    const at = (s) => {
+      let i = 1; while (i < P.length - 1 && P[i][0] < s) i++;
+      const A = P[i - 1], B = P[i], f = B[0] - A[0] > 1e-6 ? Math.max(0, Math.min(1, (s - A[0]) / (B[0] - A[0]))) : 0;
+      return [A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f, A[3] + (B[3] - A[3]) * f, B[1] - A[1], B[2] - A[2]];
+    };
+    for (const dir of [1, -1]) {
+      const lane = C.cars.filter((c) => c.dir === dir).sort((a, b) => dir * (b.s - a.s));     // leader first
+      let limit = Infinity;                                                                     // furthest the next car may go (in dir·s)
+      for (const c of lane) {
+        const line = dir > 0 ? road.stops[0] : road.stops[1], other = dir > 0 ? road.stops[1] : road.stops[0];
+        const ssp = (e.state?.spans || []).find((x) => x.i === road.span);
+        if (ssp && (ssp.st === 'opening' || ssp.st === 'open') && dir * c.s > dir * line && dir * c.s < dir * other) c.s = line - dir * 3;   // never a car on a raised span
+        let want = dir * c.s + c.v * dt;
+        if (stop && dir * c.s <= dir * line - 2.4) want = Math.min(want, dir * line - 2.4);   // wait at the stop line
+        want = Math.min(want, limit);
+        c.s = dir * Math.max(dir * c.s, want);
+        limit = dir * c.s - 7.5;
+        if (dir > 0 && c.s > s1) c.s = s0 + (c.s - s1) % 20; else if (dir < 0 && c.s < s0) c.s = s1 - (s0 - c.s) % 20;
+        const [x, z, y, tx, tz] = at(c.s), l = Math.hypot(tx, tz) || 1, nx = -tz / l, nz = tx / l, off = dir * road.hw * 0.33;
+        c.m.position.set(x + nx * off, y + 0.8, z + nz * off);
+        c.m.rotation.set(0, Math.atan2(-dir * tz, dir * tx), 0);
+      }
+    }
+  }
   animateSignals(e, now) {
     const b = e.built, st = e.state || {};
     for (const sg of b.signals) {
       const s = sg.s; let tokens;
+      if (s.kind === 'road') {          // AKI-style road lights: two reds flashing alternately while traffic must stop
+        const on = roadStop((st.spans || []).find((x) => x.i === s.span), now), ph = Math.floor(now / 600) % 2;
+        const key = on ? `road${ph}` : 'off';
+        if (key === sg.key) continue; sg.key = key;
+        for (const [slot, l] of Object.entries(sg.lamps)) { const lit = on && ((slot === 'L') === (ph === 0)); l.m.material = lit ? this.mat.lamp.r : this.mat.lampOff; l.sp.visible = lit; if (lit) { l.sp.material = this.glowMat.r; const k = this.night > 0.5 ? 3.5 : 1.6; l.sp.scale.set(k, k, 1); } }
+        continue;
+      }
       if (s.kind === 'head') tokens = lockHeadLights(this.chamberStateOf(e, s.chamber), s.head, s.face, !!st.out);
       else {
         const ss = (st.spans || []).find((x) => x.i === s.span);
@@ -357,13 +448,20 @@ export class WwMesh {
     return null;
   }
   /** Lock chamber footprints for the ocean cut-outs: [{id, chamber, ring: [[lat, lon]…], level}]. */
-  cutouts() {
+  cutouts(max = OCEAN_CUTS, focus = this.focus) {
     const out = [];
     for (const e of this.objs.values()) {
       if (e.type !== 'lock' || !e.built) continue;
-      for (const c of e.built.r.cut) { const cs = this.chamberStateOf(e, c.chamber); out.push({ id: e.o.id, chamber: c.chamber, ring: c.ring.map(([x, z]) => { const p = localToLl(e.anchor, x, z); return [p.lat, p.lon]; }), level: cs ? chamberLevel(cs, this.now(), { A: c.area }) : null }); }
+      for (const c of e.built.r.cut) {
+        const cs = this.chamberStateOf(e, c.chamber), ring = c.ring.map(([x, z]) => { const p = localToLl(e.anchor, x, z); return [p.lat, p.lon]; });
+        const cl = localToLl(e.anchor, c.C[0], c.C[1]), dist = focus ? Math.hypot(...llToLocal(focus, cl.lat, cl.lon)) : 0;
+        out.push({ id: e.o.id, chamber: c.chamber, ring, dist, level: cs ? chamberLevel(cs, this.now(), { A: c.area }) : null });
+      }
     }
-    return out;
+    out.sort((a, b) => a.dist - b.dist);                       // the ocean shader takes 4: the chambers nearest the ship
+    this.cutDropped = Math.max(0, out.length - max);
+    if (this.cutDropped && !this.cutWarned) { this.cutWarned = true; console.info(`[ww] ${out.length} lock chambers built, ocean cut-outs for the nearest ${max} only`); }
+    return out.slice(0, max);
   }
   /** True when (lat, lon) lies within m metres of a registry bridge line (harbor.js skipNear). */
   lineNear(lat, lon, m = 20) {
@@ -391,10 +489,12 @@ export class WwMesh {
     });
   }
   /** clrNow of span i (lane A's clrNow when wired; frac from the live state). */
-  clrNow(id, i, h) {
+  clrNow(id, i, h, opts = {}) {
     const e = this.objs.get(id); if (!e) return null;
     if (!Number.isFinite(h)) h = this.waterOf(e);
-    const frac = this.spanFracOf(e, i), off = this.off(e.o);
+    const frac = this.spanFracOf(e, i, opts.now), off = this.off(e.o);
+    const sp = e.o.spans?.[i];
+    if (sp && sp.clrO != null && Number(sp.clrO) <= 0) return clrNowLocal(e.o, i, { h, frac, off });   // wire −1 = opens clear of any air draught
     try { if (this.rules?.clrNow) { const v = this.rules.clrNow(e.o, i, { h, frac }); if (Number.isFinite(v) || v === Infinity) return v; } } catch { /* fallback */ }
     return clrNowLocal(e.o, i, { h, frac, off });
   }
@@ -403,31 +503,39 @@ export class WwMesh {
     for (const e of this.objs.values()) {
       const a = e.anchor; if (!a) continue;
       const [ox, oz] = llToLocal(a, lat, lon);
-      if (Math.hypot(ox, oz) <= m + 150) return true;
+      if (Math.hypot(ox, oz) <= m + Math.max(150, e.built?.r?.rad || 0)) return true;
     }
     return false;
   }
+  /** Ship air draught for the bridge barriers (wwhud setShip): ad (m above the water) or need − margin. */
+  shipAd() { const s = this.ship; if (!s) return null; if (Number.isFinite(s.ad)) return s.ad; return Number.isFinite(s.need) ? s.need - 0.3 : null; }
+  /** Barrier state of one built object now: its own gates / spans only (never a neighbour's). */
+  barrierState(e, now = this.now()) {
+    const ad = this.shipAd(), wl = this.waterOf(e);
+    return {
+      gateFrac: (chamber, head) => gateFrac(this.chamberStateOf(e, chamber), head, now),
+      spanBlocks: (i) => {
+        const b = e.built.r.barriers.find((x) => x.kind === 'span' && x.span === i); if (!b) return false;
+        const movable = b.mov && b.mov !== 'fixed';
+        if (!movable && b.est) return false;                       // an estimated fixed clearance never walls a ship off
+        if (ad == null) return movable && this.spanFracOf(e, i, now) < 0.999;
+        const c = this.clrNow(e.o.id, i, wl, { now });
+        return c != null && c !== Infinity && c < ad;
+      },
+    };
+  }
+  /** Collision SDF (collision.js setWaterworks): static walls / piers / fenders plus the barriers that are closed now. */
   sdfAt(lat, lon) {
-    let best = null;
+    let best = null; const now = this.now();
     for (const e of this.objs.values()) {
-      const obs = e.built?.r?.obstacles;
-      if (!obs || !obs.length) continue;
+      const r = e.built?.r; if (!r) continue;
       const a = e.anchor; if (!a) continue;
       const [ox, oz] = llToLocal(a, lat, lon);
-      if (Math.hypot(ox, oz) > 200) continue;
-      for (const ob of obs) {
-        const dx = ob.x1 - ob.x0, dz = ob.z1 - ob.z0;
-        const L2 = dx * dx + dz * dz;
-        let t = L2 > 1e-6 ? ((ox - ob.x0) * dx + (oz - ob.z0) * dz) / L2 : 0;
-        t = Math.max(0, Math.min(1, t));
-        const cx = ob.x0 + t * dx, cz = ob.z0 + t * dz;
-        const d = Math.hypot(ox - cx, oz - cz) - ob.r;
-        if (d < 4.0 && (!best || d < best.d)) {
-          const dist = Math.max(1e-4, Math.hypot(ox - cx, oz - cz));
-          const gx = (ox - cx) / dist, gz = (oz - cz) / dist;
-          best = { d, gx, gz, mask: 2 };
-        }
-      }
+      if (Math.hypot(ox, oz) > (r.rad || 200)) continue;
+      // a tile-vector fallback has no server state: its piers / fenders collide, its span is never a wall the server would not know
+      if (!e.bar || e.bar.t !== now) e.bar = { t: now, obs: e.o.fromTile ? [] : activeBarriers(r, this.barrierState(e, now)) };
+      const hit = obstacleSdf(r.obstacles, ox, oz, 4.0), hb = obstacleSdf(e.bar.obs, ox, oz, 4.0);
+      for (const h of [hit, hb]) if (h && (!best || h.d < best.d)) best = { d: h.d, gx: h.gx, gz: h.gz, mask: 2, ww: e.o.id, type: h.ob.type };
     }
     return best;
   }
@@ -460,6 +568,7 @@ export class WwMesh {
     this.objs.clear(); this.tex.dispose(); this.glowTex.dispose(); this.lampGeo.dispose();
     for (const m of [this.mat.stat, this.mat.water, this.mat.lampOff, this.mat.overlay, this.mat.foam, ...Object.values(this.mat.lamp), ...Object.values(this.glowMat)]) m.dispose?.();
     if (this.overlay) { this.overlay.geometry.dispose(); this.group.remove(this.overlay); }
+    this.carGeo?.dispose(); for (const m of this.carMats || []) m.dispose();
     this.group.parent?.remove(this.group);
   }
 }

@@ -58,7 +58,7 @@ export class WwHud {
     const html = strip.map((c) => `<span class="ww-chip ${c.cls}" data-ww="${esc(c.id)}" title="${esc(c.title)}"><i></i><b>${esc(c.name)}</b><em>${esc(c.text)}</em><small>${esc(c.sub)}</small></span>`).join('');
     if (sh.dataset.k !== html) { sh.innerHTML = html; sh.dataset.k = html; }
     this.air.classList.toggle('alarm', strip.some((c) => c.cls === 'red') && this.ahead[0]?.dist < 1500);
-    if (this.ww) this.ww.setShip(air && ctx ? { lat: ctx.lat, lon: ctx.lon, hdg: ctx.hdg, need: air.need ?? air.ad + 0.3, beam: ctx.beam || 8, show: this.overlayWanted() } : null);
+    if (this.ww) this.ww.setShip(air && ctx ? { lat: ctx.lat, lon: ctx.lon, hdg: ctx.hdg, need: air.need ?? air.ad + 0.3, ad: Number.isFinite(air.ad) ? air.ad : undefined, beam: ctx.beam || 8, show: this.overlayWanted() } : null);
     if (this.isOpen) this.render();
   }
 
