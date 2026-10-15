@@ -17,7 +17,7 @@ import { autoTrimView } from './sailshared.js';
 import { buildFromGA } from './shipgen.js';                                      // SHIPYARD H9 (docs/SHIPS-LANEB-PHASE2.md)
 import { exteriorGA } from './gaext.js';                                          // Lane C's shared/ships/ga.js in shipgen's shape
 import { gaReady, baseOf, defaultLivery } from '/shared/ships/index.js';
-import { makeSkinMaterial, skinUniforms, acquireLettering, releaseLettering, glyphTexture, guardSkin } from './shipskin.js';
+import { makeSkinMaterial, skinUniforms, acquireLettering, releaseLettering, glyphTexture, guardSkin, enableSkinTextures } from './shipskin.js';
 import { plateGrid, weathering, nameLayout, draftStations, walkwayFor, deckLanes, texSizes, markColorFor, hullModeOf, deckModeOf, trafficLivery } from './shipskinfmt.js';
 
 // ----------------------------------------------------------------------------------------------- skin (wear) materials
@@ -114,7 +114,7 @@ function genBuilder(ctx, cls, opts = {}) {
     if (m.userData.uniforms) skinned.push(m);
     return m;
   };
-  const r = buildFromGA(ga, { seed: ctx.seed ?? 1, phone: IS_PHONE, stage: opts.stage ?? 1, makeMat, decals: 'mark' });
+  const r = buildFromGA(ga, { seed: ctx.seed ?? 1, phone: IS_PHONE, stage: opts.stage ?? 1, makeMat, decals: 'mark', hd: !!opts.own });   // HD plan phase 1: own ship gets the dense loft, bevelled tiers, lathe funnel
   r.group.userData.shipgen = true;                 // interior.js keeps its hull plating visible while you walk the deck plan
   ctx.g.add(r.group);
   Object.assign(ctx, { deckY: ga.deckY, freeboard: ga.deckY, bowFrac: ga.hull.bowFrac, lights: r.info.lights, windowMat: r.mats.glass, shipgen: r });
@@ -1049,11 +1049,14 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
   const wake = key === 'helicopter' ? null : makeWake(L, B);
   // Bake each wear-shaded part's vertex positions in the ship frame (full local matrix chain; g itself is untransformed
   // at build time) for the `shipPos` attribute the wear shader samples.
-  bakeShipPos(g);
+  bakeShipPos(g, !!opts.own);
   ctx.hullName = opts.hullName; ctx.hullPort = opts.port;
   try { applySkin(ctx, { hullName: opts.hullName, port: opts.port, own: !!opts.own, ageYears: opts.ageYears }); } catch (e) { console.warn('[ship] skin setup failed', cls, e); }
   const mats = ctx.mats, windowMat = ctx.windowMat, navMats = ctx.navMats;
   guardSkin(g, mats);
+  // HD plan phase 1: the own ship's skin switches to the photo textures (texlib.js) once they have loaded
+  if (opts.own && (opts.stage ?? 1) >= 0.9) { try { ctx.skinTex = enableSkinTextures(g, mats, ctx.skinU, { deckMode: ctx.skinDeckMode }); } catch (e) { console.warn('[ship] skin textures unavailable', e); } }
+  g.userData.skinTex = ctx.skinTex || null;           // { enabled, ready, sets } for diagnostics
   let sailsUp = true, sailAngle = 0;
   Object.assign(g.userData, {
     cls, length: L, beam: B, draft, freeboard, mats, wake: bow, wakeGroup: wake ? wake.group : null, hover: ctx.hover || 0, isSail: SAIL_CLASSES.has(cls),
@@ -1115,7 +1118,7 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
     aimSearchlightAt(worldPos) { if (!work?.search || !worldPos) return; const l = g.worldToLocal(_aim.copy(worldPos)).sub(work.search.yaw.position); g.userData.aimSearchlight(Math.atan2(l.x, -l.z), Math.atan2(l.y, Math.hypot(l.x, l.z))); },
     /** helicopter rotor spin (t = seconds) */
     setRotor(t) { if (ctx.rotor) { ctx.rotor.main.rotation.y = t * 28; ctx.rotor.tail.rotation.x = t * 50; } },
-    dispose() { wake?.dispose(); disposeGroup(g); if (ctx.letterKey) { releaseLettering(ctx.letterKey); ctx.letterKey = null; } },
+    dispose() { wake?.dispose(); disposeGroup(g); if (ctx.letterKey) { releaseLettering(ctx.letterKey); ctx.letterKey = null; } ctx.skinTex?.release(); ctx.skinTex = null; },
   });
   if (ctx.yacht) {                                   // sailing yachts: the RigView API (§4.1); setSails kept for ais.js / thumbs.js
     const y = ctx.yacht;
@@ -1271,19 +1274,26 @@ function navLight(g, kind, x, y, z, state) {
 
 function isIdentity(m) { const e = m.elements; for (let i = 0; i < 16; i++) if (Math.abs(e[i] - (i % 5 === 0 ? 1 : 0)) > 1e-6) return false; return true; }
 /** Bake `shipPos` (vertex position in the group frame) into every geometry rendered with a wear material. */
-function bakeShipPos(g) {
+function bakeShipPos(g, withNormals = false) {   // withNormals (own ship, textured skin): also shipNrm, the normal in the ship frame
   g.updateMatrixWorld(true);
-  const inv = new THREE.Matrix4().copy(g.matrixWorld).invert(), m = new THREE.Matrix4(), sp = new THREE.Vector3();
+  const inv = new THREE.Matrix4().copy(g.matrixWorld).invert(), m = new THREE.Matrix4(), sp = new THREE.Vector3(), nm = new THREE.Matrix3();
   g.traverse((o) => {
     if (!o.isMesh || !o.geometry) return;
     const ms = Array.isArray(o.material) ? o.material : [o.material];
     if (!ms.some((x) => x && x.userData.uniforms)) return;
     m.multiplyMatrices(inv, o.matrixWorld);
     const p = o.geometry.attributes.position;
-    if (isIdentity(m)) { o.geometry.setAttribute('shipPos', p); return; }   // shipgen parts are built in the ship frame: share the buffer
+    const nrm = withNormals ? o.geometry.attributes.normal : null;
+    if (isIdentity(m)) { o.geometry.setAttribute('shipPos', p); if (nrm) o.geometry.setAttribute('shipNrm', nrm); return; }   // shipgen parts are built in the ship frame: share the buffer
     const a = new Float32Array(p.count * 3);
     for (let i = 0; i < p.count; i++) sp.fromBufferAttribute(p, i).applyMatrix4(m).toArray(a, i * 3);
     o.geometry.setAttribute('shipPos', new THREE.BufferAttribute(a, 3));
+    if (nrm) {
+      nm.getNormalMatrix(m);
+      const b = new Float32Array(nrm.count * 3);
+      for (let i = 0; i < nrm.count; i++) sp.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize().toArray(b, i * 3);
+      o.geometry.setAttribute('shipNrm', new THREE.BufferAttribute(b, 3));
+    }
   });
 }
 

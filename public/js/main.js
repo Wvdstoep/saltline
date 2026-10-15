@@ -18,6 +18,7 @@ import { JobLayer, jobTargets } from './jobs.js';
 import { AisLayer } from './ais.js';
 import { Terrain, VSCALE } from './terrain.js';
 import * as ShipMod from './ship.js';
+import { initTexlib } from './texlib.js';   // HD: shared KTX2 texture library (docs/HD-ASSET-PLAN.md)
 import * as HarborMod from './harbor.js';
 import { Hud } from './hud.js';
 import { HarborGeomSet } from './harborgeom.js';
@@ -85,6 +86,7 @@ class App {
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.0;
+    try { initTexlib(this.renderer); } catch (e) { console.warn('[texlib] init failed, plain colours', e); }   // HD: KTX2 transcoder + device tier; window.saltlineTex()
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.Fog(0xbfd9ee, 3000, 15000);
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.5, 40000);

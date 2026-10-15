@@ -4,7 +4,10 @@
 //   buildFromGA(ga, opts) → { group, lods, info }
 //     ga    the general arrangement (Lane C's shared/ships/ga.js, or the local stand-in public/js/gastub.js)
 //     opts  { phone, lod: 'all'|0|1|2, cargo (draw cargo: containers, trailers), seed, name, decals, stage,
-//             makeMat(kind, color, params) (ship.js passes its wear materials), rails }
+//             makeMat(kind, color, params) (ship.js passes its wear materials), rails, hd }
+//     hd    (the player's own ship, docs/HD-ASSET-PLAN.md phase 1) LOD0 only: dense loft (90 stations, 13 + 10 rows;
+//           45 stations on phones), superstructure tiers with a 0.1 m bevel, lathe-turned funnel with a lip and a
+//           hollow top. Same material keys, so the draw calls do not change.
 //
 // Frame as ship.js: forward = −z, starboard = +x, y = 0 at the design waterline. Static parts are merged per material
 // (one mesh per material, vertex colours for the painted bits), so a ship is 8–14 draw calls at LOD0 whatever its size.
@@ -14,7 +17,7 @@
 // preview, userData.clipY), < 0.9 everything in primer, ≥ 0.9 full livery.
 import * as THREE from 'three';
 import { MODELS } from '../../shared/ships/index.js';
-import { loftHull, hullForm, bayStacks, lodDistances } from './shipgeom.js';
+import { loftHull, hullForm, bayStacks, lodDistances, HD_STATIONS } from './shipgeom.js';
 import { hashStr, rng } from './models.js';
 import { cruiseProfile } from '../../shared/ships/cruiseprofile.js';
 import { PRESETS, hullModeOf, deckModeOf } from './shipskinfmt.js';
@@ -327,7 +330,7 @@ export function buildFromGA(ga, opts = {}) {
   for (const lod of want) {
     const g = new THREE.Group(); g.name = `ship-lod${lod}`;
     const P = new Parts(phone ? (lod === 0 ? 8 : 6) : lod === 0 ? 14 : lod === 1 ? 8 : 6);
-    const ctx = { ga, m, hf, P, lod, phone, rnd: rng(seed), L: ga.L, B: ga.B, T: ga.T, deckY: ga.deckY, lv: ga.livery, info, stage, opts,
+    const ctx = { ga, m, hf, P, lod, phone, rnd: rng(seed), L: ga.L, B: ga.B, T: ga.T, deckY: ga.deckY, lv: ga.livery, info, stage, opts, hd: !!opts.hd && lod === 0,
       rails: lod === 0 && !phone && opts.rails !== false, cargo: opts.cargo !== false && stage >= 1, primer };
     let hullMesh = null;
     if (stage < 0.25) buildBlocks(ctx);
@@ -391,7 +394,8 @@ function buildHull(ctx, mats) {
   const { ga, lod, P, hf, phone } = ctx;
   const lv = ga.livery;
   const bandY = lv.band != null && !ctx.primer ? [ga.deckY * 0.78, ga.deckY * 0.9] : null;
-  const loft = loftHull(ga, { lod, stations: phone && lod === 0 ? 30 : undefined, band: bandY });
+  const stations = ctx.hd ? (phone ? HD_STATIONS.phone : HD_STATIONS.desktop) : phone && lod === 0 ? 30 : undefined;
+  const loft = loftHull(ga, { lod, stations, band: bandY, hd: ctx.hd });
   ctx.loft = loft;
   // side + transom in one indexed geometry with material groups (smooth side normals, sharp transom)
   const sp = loft.side.pos, tp = loft.transom.pos;
@@ -716,8 +720,12 @@ function tierSolid(ctx, z0, z1, w, y, h, band, endBand, nose = 0, key = 'house',
   for (let i = 1; i < use.length; i++) shape.lineTo(use[i][0], -use[i][1]);
   for (let i = use.length - 1; i >= 0; i--) shape.lineTo(-use[i][0], -use[i][1]);
   shape.closePath();
-  const g = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false, curveSegments: 1 });
-  g.rotateX(-Math.PI / 2); g.translate(0, y, 0);
+  // HD (own ship): a 0.1 m bevel on the house tiers so the edges catch the light; the outline stays where it was
+  // (bevelOffset −bev) and the height too (depth h − 2 bev, lifted by bev)
+  const bev = ctx.hd && key === 'house' && h > 0.8 ? Math.min(0.1, h * 0.04) : 0;
+  const g = new THREE.ExtrudeGeometry(shape, bev ? { depth: h - 2 * bev, bevelEnabled: true, bevelThickness: bev, bevelSize: bev, bevelOffset: -bev, bevelSegments: 2, curveSegments: 1 }
+    : { depth: h, bevelEnabled: false, curveSegments: 1 });
+  g.rotateX(-Math.PI / 2); g.translate(0, y + bev, 0);
   const p = g.attributes.position, uv = g.attributes.uv, nn = g.attributes.normal;
   for (let i = 0; i < p.count; i++) {
     const nx = nn.getX(i), ny = nn.getY(i), nz = nn.getZ(i);
@@ -725,7 +733,7 @@ function tierSolid(ctx, z0, z1, w, y, h, band, endBand, nose = 0, key = 'house',
     if (Math.abs(ny) > 0.5) { b = 3; u = p.getX(i) / BAND_TILE[3]; }
     else if (Math.abs(nx) >= Math.abs(nz)) { b = band; u = p.getZ(i) / BAND_TILE[b]; }
     else { b = endBand; u = p.getX(i) / BAND_TILE[b]; }
-    const vy = Math.abs(ny) > 0.5 ? 0.5 : (p.getY(i) - y) / h;
+    const vy = Math.abs(ny) > 0.5 ? 0.5 : clamp(0, 1, (p.getY(i) - y) / h);
     uv.setXY(i, u, (b + 0.03 + 0.94 * vy) / 4);
   }
   P.put(key, g, color);
@@ -818,6 +826,7 @@ function buildFunnel(ctx) {
   const r = f.kind === 'twin' && xs.length === 2 ? f.r * 0.85 : f.r;
   for (const x of xs) {
     if (lod === 2) { P.box('funnel', r * 2, top - base, r * 3, x, (top + base) / 2, f.z); continue; }
+    if (ctx.hd) { latheFunnel(ctx, x, base, top, r); continue; }
     const shape = new THREE.Shape(), a = r, b = r * (ga.gen === 'cruise' ? 1.9 : 1.45), rc = r * 0.6;
     shape.moveTo(-a + rc, -b); shape.lineTo(a - rc, -b); shape.quadraticCurveTo(a, -b, a, -b + rc); shape.lineTo(a, b - rc); shape.quadraticCurveTo(a, b, a - rc, b); shape.lineTo(-a + rc, b); shape.quadraticCurveTo(-a, b, -a, b - rc); shape.lineTo(-a, -b + rc); shape.quadraticCurveTo(-a, -b, -a + rc, -b);
     const hh = top - base;
@@ -842,6 +851,48 @@ function buildFunnel(ctx) {
     }
   }
   if (ga.gen === 'lng' || ga.gen === 'special') { /* twin uptakes inside one wide casing */ }
+}
+
+/**
+ * HD funnel (own ship, LOD0): lathe-turned casing in a rounded-rectangle section (superellipse, exponent 4, half-width
+ * r, half-length r · 1.45 / 1.9 cruise), raked and tapered like the extruded one, with a black top that flares into a
+ * lip, an inner wall and a floor (the top reads hollow from the bridge wings), the company band as a proud ring.
+ * Every piece is its own 2-point lathe so the corners stay sharp; same material keys as the plain funnel.
+ */
+function latheFunnel(ctx, x, base, top, r) {
+  const { ga, P, phone } = ctx, f = ga.funnel;
+  const a = r, b = r * (ga.gen === 'cruise' ? 1.9 : 1.45), hh = top - base;
+  const rake = hh > 20 ? 0.04 : 0.12, seg = phone ? 20 : 32;
+  const tb = Math.min(1.6, hh * 0.1), lipOut = Math.min(0.06, 0.25 / Math.max(a, 0.5)), lipH = Math.min(0.35, tb * 0.3);
+  const ring = (key, r0, y0, r1, y1, color) => {
+    const g = new THREE.LatheGeometry([new THREE.Vector2(r0, y0), new THREE.Vector2(r1, y1)], seg);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const px = p.getX(i), py = p.getY(i), pz = p.getZ(i), rr = Math.hypot(px, pz);
+      // superellipse section: |x/a|^4 + |z/b|^4 = 1 along each ray (rounded rectangle, flat sides for the mark)
+      let sx = 0, sz = 0;
+      if (rr > 1e-6) { const c = px / rr, s = pz / rr, k = Math.pow(Math.pow(Math.abs(c), 4) + Math.pow(Math.abs(s), 4), -0.25); sx = c * k * rr * a; sz = s * k * rr * b; }
+      const t = py / hh;
+      p.setXYZ(i, x + sx * (1 - 0.08 * t), base + py, f.z + sz * (1 - 0.05 * t) + py * rake);
+    }
+    g.computeVertexNormals();
+    P.put(key, g, color);
+  };
+  const dark = COL.dark;
+  ring('funnel', 1, 0, 1, hh - tb);                                    // casing
+  ring('paint', 1, hh - tb, 1, hh - lipH, dark);                       // black top
+  ring('paint', 1, hh - lipH, 1 + lipOut, hh - lipH * 0.4, dark);      // the lip flares out
+  ring('paint', 1 + lipOut, hh - lipH * 0.4, 1 + lipOut, hh, dark);
+  ring('paint', 1 + lipOut, hh, 0.9, hh, dark);                        // rim
+  ring('paint', 0.9, hh, 0.9, hh - tb * 0.8, dark);                    // inner wall (faces the axis)
+  ring('paint', 0.9, hh - tb * 0.8, 0, hh - tb * 0.8, dark);           // floor of the casing top
+  for (const dx of [-a * 0.35, a * 0.35]) P.cyl('metal', a * 0.18, 1.6 + tb * 0.8, x + dx, top - tb * 0.4 + 0.8, f.z + hh * 0.12, COL.steel, a * 0.18, phone ? 8 : 12);
+  const fb = ga.livery.funnelBand ?? ga.livery.band;
+  if (fb != null && !ctx.primer) {
+    const my = f.y + f.h * 0.62, bh = ga.livery.mark ? Math.max(hh * 0.12, clamp(0.8, 9, f.r * 1.6) * 1.12) : hh * 0.12, by = ga.livery.mark ? my : base + hh * 0.66;
+    const y0 = clamp(0, hh - tb - 0.05, by - base - bh / 2), y1 = clamp(0, hh - tb, by - base + bh / 2), out = 1 + Math.min(0.012, 0.04 / Math.max(a, 0.5));
+    if (y1 - y0 > 0.05) { ring('paint', 1, y0, out, y0, fb); ring('paint', out, y0, out, y1, fb); ring('paint', out, y1, 1, y1, fb); }
+  }
 }
 
 // ------------------------------------------------------------------------------------------------ cargo spaces
