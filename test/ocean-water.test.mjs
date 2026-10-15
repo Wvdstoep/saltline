@@ -41,6 +41,28 @@ test('every sea shader rung fits a 256-vector phone GPU with 32 vectors to spare
   }
 });
 
+// The Adreno 660 (ANGLE, Chrome/Android) refused to LINK, with an empty log, every program that read a uniform array
+// with a runtime index inside a loop or used inout helpers; the one build with constant indices and no inout linked.
+test('no sea shader reads a uniform array with a runtime index, uses inout, or loops; phone builds never discard', () => {
+  const check = (name, src, phone) => {
+    const code = src.replace(/\/\/[^\n]*/g, '');
+    const hit = code.match(/u\w+\[\s*[a-z][^\]]*\]/);
+    assert.ok(!hit, `${name}: uniform array read with a runtime index: ${hit && hit[0]}`);
+    assert.ok(!/\binout\b/.test(code), `${name}: inout parameter`);
+    assert.ok(!/\bfor\s*\(/.test(code), `${name}: a loop`);
+    if (phone) assert.ok(!/\bdiscard\b/.test(code), `${name}: discard in a phone build`);
+  };
+  for (let lvl = 0; lvl < 3; lvl++) for (const r of SEA_RUNGS[lvl]) for (const phone of [true, false]) {
+    const s = seaShader(lvl, r, { phone });
+    for (const [stage, src] of Object.entries(s)) check(`${r.name}.${stage}${phone ? ' (phone)' : ''}`, src, phone);
+  }
+  for (const k of ['foam', 'spray']) for (const [stage, src] of Object.entries(OCEAN_SHADERS[k])) check(`${k}.${stage}`, src, true);
+  // the phone build of a rung with cut-outs writes alpha 0 instead; the desktop build discards as before
+  assert.match(seaShader(2, SEA_RUNGS[2][1], { phone: true }).frag, /gl_FragColor = vec4\(col, cutA\)/);
+  assert.match(seaShader(2, SEA_RUNGS[2][0]).frag, /if \(inCut\(vWorld\.xz\)\) discard;/);
+  assert.match(seaShader(1, SEA_RUNGS[1][0], { phone: true }).frag, /gl_FragColor = vec4\(col, cutA\)/);
+});
+
 test('sea shader rungs: a uniform declared in both stages is declared identically (else the program does not link)', () => {
   const decls = (src) => {
     const out = new Map();
@@ -66,8 +88,14 @@ test('GPU limits pick the rung: desktop keeps the full look, a 256-vector phone 
   const d = pick(DESKTOP);
   assert.equal(d.matLevel, 2); assert.equal(SEA_RUNGS[2][d.rung[2]].name, 'full');
   assert.match(d.diag().budget.full, /^full V\d+\/F\d+ vec4/);
+  assert.equal(d.mesh.material.transparent, false); assert.equal(d.mesh.renderOrder, 1); assert.equal(d.far.renderOrder, 0);
+  assert.match(d.mesh.material.fragmentShader, /discard/);
   const p = pick(PHONE);
   assert.equal(p.matLevel, 2); assert.equal(SEA_RUNGS[2][p.rung[2]].name, 'full-lean');
+  assert.equal(p.mesh.material.transparent, true, 'phone build: cut-outs by alpha 0 on a transparent material');
+  assert.equal(p.mesh.renderOrder, -30); assert.equal(p.far.renderOrder, -31);
+  assert.ok(!/discard/.test(p.mesh.material.fragmentShader));
+  assert.match(p.diag().rungs, /phone build/);
   assert.equal(p.matOk[0], true, 'the basic tier is self-tested too (never "untested")');
   assert.ok(p.tierLog.some((l) => /full: skipped/.test(l)));
   const m = pick({ ...PHONE, isWebGL2: false, precision: 'mediump', maxFragmentUniforms: 224 });

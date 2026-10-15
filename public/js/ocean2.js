@@ -35,7 +35,9 @@
 // skips every rung whose estimated uniform / varying / sampler budget (glslbudget.js) does not fit the GPU's limits with
 // 32 vectors to spare (phones with < 512 vectors start full at 'full-lean'), then self-tests rungs offscreen: the first
 // that links AND draws a non-black sea is used, a failing rung steps to the next rung, then the next tier; basic is
-// always tested too. The diagnostics panel (?diag=1) shows the rung per tier and its budget. Phones start at quality 0.6 (full shader, fewer ripples, no wake sim); the
+// always tested too. The diagnostics panel (?diag=1) shows the rung per tier and its budget. No sea shader loops over a
+// uniform array or uses inout (an Adreno driver refused to link any that did, with an empty log): the generator emits
+// one call per constant index; phone builds replace the cut-out discard with alpha 0 on a transparent material. Phones start at quality 0.6 (full shader, fewer ripples, no wake sim); the
 // frame-rate governor's lowest step is the lite shader. Cost per pixel (full): 20 spectral + 12 ripple sin/cos, ≤ 4
 // Kelvin wakes (only inside their wedge), 5 wake texture fetches (inside the sim domain) and the foam textures.
 // Foam: whitecaps where the Gerstner Jacobian folds below a wind-dependent threshold (Monahan coverage, Beaufort 4+),
@@ -165,7 +167,15 @@ function defaultQuality() {
 //            BOTH stages, a uniform must be declared identically in both or the program does not link)
 //   ndet   — capillary ripple waves per pixel (full)        kel / trk — analytic Kelvin wakes / the own ship's curved track
 //   cut    — lock-chamber cut-outs                          spots / env / moon — searchlight pools, IBL sky, moon glitter
-//   pix    — lite: the 8 steepest-band waves per pixel (needs highp fragments)   unroll — lite: constant-index waves only
+//   pix    — lite: the 8 steepest-band waves per pixel (needs highp fragments)
+// PHONE RULE (measured on an Adreno 660 through ANGLE, Chrome/Android): every program that read a uniform array with a
+// runtime index inside a loop, or passed `inout` accumulators to helpers, failed to LINK with an empty info log, while
+// a build with constant indices and no `inout` linked at once (the uniform budget was never the problem, 23–158 of 256
+// vectors). So NO shader here loops over a uniform array: each per-wave / per-ripple / per-wake / per-cut-out body is
+// a function taking the array elements as plain arguments and adding into file-scope globals, and the generator calls
+// it once per CONSTANT index (the maths is the former loop body unchanged, so desktop output is the same). `discard`
+// (lock-chamber cut-outs) is kept on desktop; phone builds write alpha 0 on a transparent material instead.
+const rep = (n, f) => Array.from({ length: n }, (_, i) => f(i)).join('\n');
 const GLSL_COMMON = /* glsl */`
 #define NL 10
 #define NLM 16
@@ -185,44 +195,56 @@ const GLSL_NOISE = /* glsl */`
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
 `;
+// fragment accumulators shared by the wave sums and the wakes (file scope: no inout)
+const GLSL_ACC = /* glsl */`
+vec4 gS; vec3 gSig; float gJxz; float gH; vec2 gSl; float gKf;
+`;
 const NTRK = 16;                     // own-ship track polyline points on the GPU (x, z rel. uC, metres along, age s)
 
 // Analytic Kelvin wakes (stationary phase) + turbulent wash trail, shared by the full and the lite sea shaders. With
 // `trk`, Kelvin slot 0 (the own ship, KC.w = 1) is evaluated in TRACK coordinates: distance along the recorded track
 // and signed distance from it, so a turning ship leaves a curved wake and a circle leaves a ring of foam.
+// Adds into gSl (slope), gH (height), gSig (unresolved slope covariance), gKf (wash foam).
 function kelvinGLSL(trk) {
+  // one of the two wave systems reaching a point inside the wedge: r = 0 transverse, r = 1 divergent
+  const system = (r) => /* glsl */`
+          { float t = ${r === 0 ? '2.0 * tt / (1.0 + sq)' : 'min((1.0 + sq) / (4.0 * max(tt, 1e-3)), 6.0)'};
+            float sec = sqrt(1.0 + t * t);
+            float k = KB.x * sec * sec;
+            float phs = KB.x * sec * (xb + ay * t);
+            float wl = smoothstep(2.0 * fp, 5.0 * fp, 6.2832 / k);
+            float A = KB.y * wgt * cusp * edge * ${r === 0 ? '0.55' : '1.0'} / (sec * sec);   // cos²ψ: equal steepness k·A for both systems
+            vec2 kv = (bw + lat * t) / sec;
+            gSl -= kv * (k * A * wl * sin(phs));
+            gH += A * wl * cos(phs);
+            gSig += 0.25 * (k * A) * (k * A) * (1.0 - wl * wl) * vec3(1.0, 1.0, 0.0); }`;
   return /* glsl */`
 uniform vec4 uKelA[MAXKEL]; uniform vec4 uKelB[MAXKEL]; uniform vec4 uKelC[MAXKEL]; uniform float uKelN;
 ${trk ? `#define NTRK ${NTRK}
 uniform vec4 uTrk[NTRK]; uniform float uTrkN;
-// nearest point of the track polyline (newest first): x = metres along the track behind the ship, y = signed lateral
-// distance, z = age (s) of the water there; fwd = the ship's heading when it passed there
-vec3 trackCoord(vec2 p, out vec2 fwd) {
-  float best = 1e12; vec3 res = vec3(-1e6, 0.0, 0.0); fwd = vec2(0.0, 1.0);
-  for (int j = 0; j < NTRK - 1; j++) {
-    if (float(j) < uTrkN - 1.0) {
-      vec4 P0 = uTrk[j]; vec4 P1 = uTrk[j + 1];
-      vec2 sg = P1.xy - P0.xy; float L = max(length(sg), 0.001); vec2 dir = sg / L;
-      float t = dot(p - P0.xy, dir);
-      t = clamp(t, j == 0 ? -1e6 : 0.0, float(j) < uTrkN - 2.0 ? L : 1e6);
-      vec2 d = p - (P0.xy + dir * t);
-      float dd = dot(d, d);
-      if (dd < best) { best = dd; fwd = -dir; res = vec3(P0.z + t, dir.y * d.x - dir.x * d.y, mix(P0.w, P1.w, clamp(t / L, 0.0, 4.0))); }
-    }
-  }
-  return res;
+float gTBest; vec3 gTRes; vec2 gTFwd;
+// one segment of the track polyline (newest first): keeps the nearest point as x = metres along the track behind the
+// ship, y = signed lateral distance, z = age (s) of the water there; gTFwd = the ship's heading when it passed there
+void trkSeg(vec4 P0, vec4 P1, vec2 p, float tMin, float capEnd) {
+  vec2 sg = P1.xy - P0.xy; float L = max(length(sg), 0.001); vec2 dir = sg / L;
+  float t = dot(p - P0.xy, dir);
+  t = clamp(t, tMin, capEnd > 0.5 ? L : 1e6);
+  vec2 d = p - (P0.xy + dir * t);
+  float dd = dot(d, d);
+  if (dd < gTBest) { gTBest = dd; gTFwd = -dir; gTRes = vec3(P0.z + t, dir.y * d.x - dir.x * d.y, mix(P0.w, P1.w, clamp(t / L, 0.0, 4.0))); }
+}
+void trackCoord(vec2 p) {
+  gTBest = 1e12; gTRes = vec3(-1e6, 0.0, 0.0); gTFwd = vec2(0.0, 1.0);
+${rep(NTRK - 1, (j) => `  if (${j}.0 < uTrkN - 1.0) trkSeg(uTrk[${j}], uTrk[${j + 1}], p, ${j === 0 ? '-1e6' : '0.0'}, ${j}.0 < uTrkN - 2.0 ? 1.0 : 0.0);`)}
 }
 ` : ''}
 // A: ship x, z (rel. uC), forward dir   B: k0 = g/U², amplitude, length, reach   C: beam, wash foam, sim-covered, on track
-void kelvinWakes(vec2 rel, float fp, float simIn, inout vec2 sl, inout float h, inout vec3 sig, inout float kf) {
-  for (int i = 0; i < MAXKEL; i++) {
-    if (float(i) < uKelN) {
-      vec4 KA = uKelA[i]; vec4 KB = uKelB[i]; vec4 KC = uKelC[i];
+void kelOne(vec4 KA, vec4 KB, vec4 KC, vec2 rel, float fp, float simIn, float slot0) {
       vec2 d = rel - KA.xy;
       float xb = KB.z * 0.5 - dot(d, KA.zw);                      // metres behind the bow
       float yl = KA.z * d.y - KA.w * d.x;                          // lateral (signed)
       vec2 fw = KA.zw; float age = -1.0;
-${trk ? `      if (i == 0 && KC.w > 0.5) { vec2 f2; vec3 tc = trackCoord(rel, f2); xb = KB.z * 0.5 + tc.x; yl = tc.y; fw = f2; age = tc.z; }` : ''}
+${trk ? `      if (slot0 > 0.5 && KC.w > 0.5) { trackCoord(rel); xb = KB.z * 0.5 + gTRes.x; yl = gTRes.y; fw = gTFwd; age = gTRes.z; }` : ''}
       float ay = abs(yl);
       if (xb > 0.5 && xb < KB.w && ay < 0.4 * xb + KC.x) {
         float cover = KC.z > 0.5 ? simIn : 0.0;                    // the simulation already draws this ship's near wake
@@ -237,19 +259,7 @@ ${trk ? `      if (i == 0 && KC.w > 0.5) { vec2 f2; vec3 tc = trackCoord(rel, f2
           float edge = smoothstep(0.0, 0.04, disc);
           float sgn = yl < 0.0 ? -1.0 : 1.0;
           vec2 bw = -fw;
-          vec2 lat = vec2(-fw.y, fw.x) * sgn;
-          for (int r = 0; r < 2; r++) {
-            float t = r == 0 ? 2.0 * tt / (1.0 + sq) : min((1.0 + sq) / (4.0 * max(tt, 1e-3)), 6.0);
-            float sec = sqrt(1.0 + t * t);
-            float k = KB.x * sec * sec;
-            float phs = KB.x * sec * (xb + ay * t);
-            float wl = smoothstep(2.0 * fp, 5.0 * fp, 6.2832 / k);
-            float A = KB.y * wgt * cusp * edge * (r == 0 ? 0.55 : 1.0) / (sec * sec);   // cos²ψ: equal steepness k·A for both systems
-            vec2 kv = (bw + lat * t) / sec;
-            sl -= kv * (k * A * wl * sin(phs));
-            h += A * wl * cos(phs);
-            sig += 0.25 * (k * A) * (k * A) * (1.0 - wl * wl) * vec3(1.0, 1.0, 0.0);
-          }
+          vec2 lat = vec2(-fw.y, fw.x) * sgn;${system(0)}${system(1)}
         }
         // turbulent wash: a widening white trail behind the stern; straight wakes fade over a few ship lengths, the
         // own ship's track wash fades with the age of the water (a full circle leaves a ring of foam)
@@ -257,29 +267,34 @@ ${trk ? `      if (i == 0 && KC.w > 0.5) { vec2 f2; vec3 tc = trackCoord(rel, f2
         if (xs > 0.0 && KC.y > 0.0) {
           float w = KC.x * 0.55 + (age >= 0.0 ? min(xs, 300.0) * 0.04 : xs * 0.05);
           float fade = age >= 0.0 ? exp(-age / 45.0) : exp(-xs / (KB.z * 3.0 + 80.0));
-          kf = max(kf, (1.0 - cover) * KC.y * (1.0 - smoothstep(0.45 * w, w, ay)) * fade * smoothstep(0.0, 6.0, xs));
+          gKf = max(gKf, (1.0 - cover) * KC.y * (1.0 - smoothstep(0.45 * w, w, ay)) * fade * smoothstep(0.0, 6.0, xs));
         }
       }
-    }
-  }
+}
+void kelvinWakes(vec2 rel, float fp, float simIn) {
+${rep(4, (i) => `  if (${i}.0 < uKelN) kelOne(uKelA[${i}], uKelB[${i}], uKelC[${i}], rel, fp, simIn, ${i === 0 ? '1.0' : '0.0'});`)}
 }
 `;
 }
 const CUT_GLSL = /* glsl */`uniform float uCutN; uniform vec4 uCutA[8]; uniform vec4 uCutB[8];
 float cutSide(vec2 a, vec2 b, vec2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
+bool cutQuad(vec4 A, vec4 B, vec2 p) {
+  vec2 a = A.xy, b = A.zw, c = B.xy, d = B.zw;
+  float s0 = cutSide(a, b, p), s1 = cutSide(b, c, p), s2 = cutSide(c, d, p), s3 = cutSide(d, a, p);
+  return (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0);
+}
 bool inCut(vec2 p) {
   bool hit = false;
-  for (int i = 0; i < 8; i++) {
-    if (float(i) < uCutN) {
-      vec2 a = uCutA[i].xy, b = uCutA[i].zw, c = uCutB[i].xy, d = uCutB[i].zw;
-      float s0 = cutSide(a, b, p), s1 = cutSide(b, c, p), s2 = cutSide(c, d, p), s3 = cutSide(d, a, p);
-      if ((s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)) hit = true;
-    }
-  }
+${rep(8, (i) => `  if (${i}.0 < uCutN && cutQuad(uCutA[${i}], uCutB[${i}], p)) hit = true;`)}
   return hit;
 }
 `;
-const withCut = (frag, on) => (on ? frag.replace('void main() {', CUT_GLSL + 'void main() {\n  if (inCut(vWorld.xz)) discard;') : frag);
+/** Lock-chamber cut-outs: mode 'discard' (desktop, opaque material) or 'alpha' (phones: alpha 0 on a transparent material). */
+function withCut(frag, mode) {
+  if (!mode) return frag;
+  if (mode === 'alpha') return frag.replace('void main() {', CUT_GLSL + 'void main() {\n  float cutA = inCut(vWorld.xz) ? 0.0 : 1.0;').replace('gl_FragColor = vec4(col, 1.0);', 'gl_FragColor = vec4(col, cutA);');
+  return frag.replace('void main() {', CUT_GLSL + 'void main() {\n  if (inCut(vWorld.xz)) discard;');
+}
 
 // isotropic Beckmann glint of one light (lite tier); sig = slope variance (xx, zz)
 const LITE_GLINT = /* glsl */`
@@ -302,33 +317,30 @@ float liteGlint(vec3 L, vec3 N, vec3 V, float a2, float ndv) {
 // the long and short waves — no interpolated-normal stripes. Without `pix` (mediump) all normals come from the vertices.
 const PP0 = NL, PP1 = NLM + 2;       // per-pixel lite waves: [PP0, PP1)
 function liteVert(v) {
-  const body = (I) => `
-    { vec4 a = uWaveA[${I}]; vec4 b = uWaveB[${I}];
-      float A = a.z * rim;
-      if (A > 1e-5) {
-        float g = smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-        float nf = smoothstep(3.5 * ceff, 6.0 * ceff, b.z) * smoothstep(2.0 * fp, 5.0 * fp, b.z);
-        float th = a.w * dot(a.xy, rel) + b.x;
-        float s = sin(th), c = cos(th);
-        float QA = b.y * A * g;
-        disp += vec3(a.x * QA * c, A * g * s, a.y * QA * c);
-        float vn = ${v.pix ? `(${I} >= ${PP0} && ${I} < ${PP1}) ? 0.0 : 1.0` : '1.0'};
-        float kA = a.w * A * nf * vn, qs = b.y * kA * s;
-        S += vec4(a.x * kA * c, a.y * kA * c, a.x * a.x * qs, a.y * a.y * qs);
-        jxz += a.x * a.y * qs;
-        float kF = a.w * A * vn;
-        vr += 0.5 * kF * kF * (1.0 - nf * nf);
-      }
-    }`;
-  const loop = v.unroll ? Array.from({ length: v.nw }, (_, i) => body(String(i))).join('') : `
-  for (int i = 0; i < NW; i++) {${body('i')}
-  }`;
   return /* glsl */`
 #define NW ${v.nw}
 uniform vec4 uWaveA[NW]; uniform vec4 uWaveB[NW];
 uniform vec2 uC; uniform vec2 uVrel; uniform float uS0; uniform float uR0; uniform float uSnap; uniform float uRmax; uniform float uLevel; uniform float uPixAng;
 varying vec3 vWorld; varying vec4 vS; varying vec2 vRel; varying vec3 vMisc;
 #include <fog_pars_vertex>
+vec3 gDisp; vec4 gS; float gJxz; float gVr; float gRim; float gCeff; float gFp; vec2 gRel;
+// one component: displacement always; slope / Jacobian / unresolved variance only when vn = 1 (the per-pixel band is 0)
+void lw(vec4 a, vec4 b, float vn) {
+  float A = a.z * gRim;
+  if (A > 1e-5) {
+    float g = smoothstep(1.7 * gCeff, 2.5 * gCeff, b.z);
+    float nf = smoothstep(3.5 * gCeff, 6.0 * gCeff, b.z) * smoothstep(2.0 * gFp, 5.0 * gFp, b.z);
+    float th = a.w * dot(a.xy, gRel) + b.x;
+    float s = sin(th), c = cos(th);
+    float QA = b.y * A * g;
+    gDisp += vec3(a.x * QA * c, A * g * s, a.y * QA * c);
+    float kA = a.w * A * nf * vn, qs = b.y * kA * s;
+    gS += vec4(a.x * kA * c, a.y * kA * c, a.x * a.x * qs, a.y * a.y * qs);
+    gJxz += a.x * a.y * qs;
+    float kF = a.w * A * vn;
+    gVr += 0.5 * kF * kF * (1.0 - nf * nf);
+  }
+}
 void main() {
   vec2 rel = position.xz;
   float cheb = max(abs(rel.x), abs(rel.y));
@@ -338,16 +350,17 @@ void main() {
   float dist = length(cameraPosition - w0);
   float cv = max(abs(cameraPosition.y - uLevel) / max(dist, 1.0), 0.03);
   float fp = dist * uPixAng / cv;
-  vec3 disp = vec3(0.0); vec4 S = vec4(0.0); float jxz = 0.0; float vr = 0.0;${loop}
-  vS = S; vRel = rel; vMisc = vec3(disp.y, jxz, vr);
-  vec3 pos = vec3(uC.x + rel.x + disp.x, uLevel + disp.y, uC.y + rel.y + disp.z);
+  gDisp = vec3(0.0); gS = vec4(0.0); gJxz = 0.0; gVr = 0.0; gRim = rim; gCeff = ceff; gFp = fp; gRel = rel;
+${rep(v.nw, (i) => `  lw(uWaveA[${i}], uWaveB[${i}], ${v.pix && i >= PP0 && i < PP1 ? '0.0' : '1.0'});`)}
+  vS = gS; vRel = rel; vMisc = vec3(gDisp.y, gJxz, gVr);
+  vec3 pos = vec3(uC.x + rel.x + gDisp.x, uLevel + gDisp.y, uC.y + rel.y + gDisp.z);
   vWorld = pos;
   vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 }
-function liteFrag(v) {
+function liteFrag(v, cutMode) {
   const frag = /* glsl */`
 #define MAXKEL 4
 ${v.pix ? `#define NW ${v.nw}
@@ -358,38 +371,41 @@ uniform sampler2D uDepth; uniform vec2 uDepthOrigin; uniform float uDepthSize; u
 uniform float uNight; uniform float uStorm; uniform float uLevel; uniform float uHs; uniform vec3 uSig0; uniform float uFoamK; uniform float uLiteThr; uniform float uLiteSoft;
 varying vec3 vWorld; varying vec4 vS; varying vec2 vRel; varying vec3 vMisc;
 #include <fog_pars_fragment>
+${GLSL_ACC}
 ${v.kel ? kelvinGLSL(v.trk) : ''}
 float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float vnoise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x), mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y); }
 ${LITE_GLINT}
+${v.pix ? `float gFpL;
+// the steepest band per pixel: exact normals near the camera, roughness where a pixel cannot resolve the wave
+void lp(vec4 a, vec4 b) {
+    if (a.z > 1e-5) {
+      float wl = smoothstep(2.0 * gFpL, 5.0 * gFpL, b.z);
+      float kA = a.w * a.z;
+      gSig += 0.5 * kA * kA * (1.0 - wl * wl) * vec3(a.x * a.x, a.y * a.y, 0.0);
+      if (wl > 0.002) {
+        float th = a.w * dot(a.xy, vRel) + b.x;
+        float s = sin(th), c = cos(th);
+        float k2 = kA * wl, qs = b.y * k2 * s;
+        gS += vec4(a.x * k2 * c, a.y * k2 * c, a.x * a.x * qs, a.y * a.y * qs);
+        gJxz += a.x * a.y * qs;
+      }
+    }
+}` : ''}
 void main() {
   vec3 toCam = cameraPosition - vWorld;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 0.001);
   float cv = max(abs(V.y), 0.03);
   float fp = dist * uPixAng / sqrt(cv);
-  vec3 sig = uSig0 + vec3(0.5 * vMisc.z + 0.0005, 0.5 * vMisc.z + 0.0005, 0.0);
-  vec4 S = vS; float jxz = vMisc.y; float h = vMisc.x;
-${v.pix ? `  // the steepest band per pixel: exact normals near the camera, roughness where a pixel cannot resolve the wave
-  float fpL = dist * uPixAng / cv;
-  for (int i = ${PP0}; i < ${PP1}; i++) {
-    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    if (a.z > 1e-5) {
-      float wl = smoothstep(2.0 * fpL, 5.0 * fpL, b.z);
-      float kA = a.w * a.z;
-      sig += 0.5 * kA * kA * (1.0 - wl * wl) * vec3(a.x * a.x, a.y * a.y, 0.0);
-      if (wl > 0.002) {
-        float th = a.w * dot(a.xy, vRel) + b.x;
-        float s = sin(th), c = cos(th);
-        float k2 = kA * wl, qs = b.y * k2 * s;
-        S += vec4(a.x * k2 * c, a.y * k2 * c, a.x * a.x * qs, a.y * a.y * qs);
-        jxz += a.x * a.y * qs;
-      }
-    }
-  }` : ''}
-  vec2 sl = vec2(0.0); float kf = 0.0;
-${v.kel ? '  kelvinWakes(vRel, fp, 0.0, sl, h, sig, kf);' : ''}
+  gSig = uSig0 + vec3(0.5 * vMisc.z + 0.0005, 0.5 * vMisc.z + 0.0005, 0.0);
+  gS = vS; gJxz = vMisc.y; gH = vMisc.x;
+${v.pix ? `  gFpL = dist * uPixAng / cv;
+${rep(PP1 - PP0, (j) => `  lp(uWaveA[${PP0 + j}], uWaveB[${PP0 + j}]);`)}` : ''}
+  gSl = vec2(0.0); gKf = 0.0;
+${v.kel ? '  kelvinWakes(vRel, fp, 0.0);' : ''}
+  vec4 S = gS; float jxz = gJxz; float h = gH; vec3 sig = gSig; vec2 sl = gSl; float kf = gKf;
   float jxx = S.z, jzz = S.w;
   vec3 N = vec3(S.y * (-jxz) - (1.0 - jzz) * S.x, (1.0 - jzz) * (1.0 - jxx) - jxz * jxz, -jxz * S.x - S.y * (1.0 - jxx));
   float J = N.y;
@@ -445,7 +461,7 @@ ${v.moon ? '  col += uMoonCol * min(liteGlint(uMoonDir, N, V, a2, ndv), 8.0) * c
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
-  return withCut(frag, v.cut);
+  return withCut(frag, v.cut ? cutMode : 0);
 }
 // Last resort: no uniform arrays, no loops, no textures, nothing that depends on precision (the varyings are small
 // numbers; the sines fade out beyond 2 km). Three gentle waves, fresnel between the sea colour and the sky colour.
@@ -497,34 +513,32 @@ uniform vec2 uC; uniform vec2 uVrel; uniform float uS0; uniform float uR0; unifo
 uniform sampler2D uWakeTex; uniform vec4 uWakeRect;
 varying vec3 vWorld; varying vec2 vRel; varying float vCeff;
 #include <fog_pars_vertex>
-void gerst(vec4 a, vec4 b, float A, vec2 p, inout vec3 disp) {
-  float th = a.w * dot(a.xy, p) + b.x;
-  float QA = b.y * A;
-  float s = sin(th), c = cos(th);
-  // storm crests lean forward (rolling over): the top of a steep crest is pushed ahead along the wave's travel
-  float s2 = max(s, 0.0); s2 *= s2; s2 *= s2;
-  disp += vec3(a.x * (QA * c + uLean * A * s2 * s2), A * s, a.y * (QA * c + uLean * A * s2 * s2));
+vec3 gDisp; float gRim; float gCeff; vec2 gRel;
+// one Gerstner component, faded out where the local cell is too coarse for it
+void gv(vec4 a, vec4 b) {
+  float A = a.z * gRim * smoothstep(1.7 * gCeff, 2.5 * gCeff, b.z);
+  if (A >= 1e-4) {
+    float th = a.w * dot(a.xy, gRel) + b.x;
+    float QA = b.y * A;
+    float s = sin(th), c = cos(th);
+    // storm crests lean forward (rolling over): the top of a steep crest is pushed ahead along the wave's travel
+    float s2 = max(s, 0.0); s2 *= s2; s2 *= s2;
+    gDisp += vec3(a.x * (QA * c + uLean * A * s2 * s2), A * s, a.y * (QA * c + uLean * A * s2 * s2));
+  }
 }
 void main() {
   vec2 rel = position.xz;                                   // metres from the snapped grid origin uC
   float cheb = max(abs(rel.x), abs(rel.y));
   float rim = 1.0 - smoothstep(uRmax * 0.55, uRmax * 0.985, cheb);
   float ceff = uS0 * max(1.0, 2.0 * (length(rel - uVrel) + 0.5 * uSnap) / uR0);
-  vec3 disp = vec3(0.0);
+  gDisp = vec3(0.0); gRim = rim; gCeff = ceff; gRel = rel;
   if (rim > 0.0) {
-    for (int i = 0; i < NLM; i++) {
-      vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-      float A = a.z * rim * smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-      if (A >= 1e-4) gerst(a, b, A, rel, disp);
-    }
+${rep(NLM, (i) => `    gv(uWaveA[${i}], uWaveB[${i}]);`)}
 ${v.nw > NLM ? `    if (uVertShort > 0.5 && ceff < 6.0) {
-      for (int i = NLM; i < NW; i++) {
-        vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-        float A = a.z * rim * smoothstep(1.7 * ceff, 2.5 * ceff, b.z);
-        if (A >= 1e-4) gerst(a, b, A, rel, disp);
-      }
+${rep(v.nw - NLM, (j) => `      gv(uWaveA[${NLM + j}], uWaveB[${NLM + j}]);`)}
     }` : ''}
   }
+  vec3 disp = gDisp;
   // ship wake simulation (dynamic height h + P), where the grid is fine enough to carry it
   if (uWakeRect.w > 0.5 && ceff < 8.0) {
     vec2 wuv = (rel - uWakeRect.xy) / uWakeRect.z;
@@ -541,7 +555,7 @@ ${v.nw > NLM ? `    if (uVertShort > 0.5 && ceff < 6.0) {
 }`;
 }
 
-function fullFrag(v) {
+function fullFrag(v, cutMode) {
   const frag = /* glsl */`
 #define NL 10
 #define NLM 16
@@ -566,6 +580,8 @@ uniform sampler2D envMap; uniform float uEnvK;
 #endif` : ''}
 varying vec3 vWorld; varying vec2 vRel; varying float vCeff;
 #include <fog_pars_fragment>
+${GLSL_ACC}
+float gVarJ; float gBrk; vec2 gVh; float gFpL; float gPa; vec2 gRel; vec3 gM;
 ${GLSL_NOISE}
 ${GLSL_VNOISE}
 ${v.kel ? kelvinGLSL(v.trk) : ''}
@@ -611,13 +627,15 @@ float foamStreaks(vec2 p, float fp) {
   float broken = smoothstep(0.4, 0.85, vnoise(vec2(q.x * 0.05, q.y * 0.45) + 5.0));
   return mix(line * broken, 0.02, smoothstep(1.5, 6.0, fp));
 }
-float shoreFoam(sampler2D tex, vec4 rect, vec2 p, float n, float t, out float inside) {
-  inside = 0.0;
+// shoreline foam field (returns the foam; gInside = how far inside the field's footprint the pixel is)
+float gInside;
+float shoreFoam(sampler2D tex, vec4 rect, vec2 p, float n, float t) {
+  gInside = 0.0;
   if (rect.w < 0.5) return 0.0;
   vec2 uv = (p - rect.xy) / rect.z;
   if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return 0.0;
   vec2 e = min(uv, 1.0 - uv);
-  inside = smoothstep(0.0, 0.012, min(e.x, e.y));
+  gInside = smoothstep(0.0, 0.012, min(e.x, e.y));
   vec4 s = texture2D(tex, uv);
   float dAny = s.r * 63.75 - 8.0, dNat = s.g * 63.75 - 8.0, expo = s.b;
   float wash = (1.0 - smoothstep(0.0, 3.2, dAny)) * smoothstep(-1.5, 0.0, dAny) * (0.5 + 0.45 * n);
@@ -625,15 +643,46 @@ float shoreFoam(sampler2D tex, vec4 rect, vec2 p, float n, float t, out float in
   float zone = (1.0 - smoothstep(0.0, width, dNat)) * smoothstep(-1.0, 0.5, dNat);
   float rows = 0.5 + 0.5 * sin(dNat * (0.9 - 0.4 * expo) + t * 1.4 + n * 5.0);
   float surf = zone * smoothstep(0.42, 0.9, rows * 0.75 + n * 0.45) * (0.2 + 0.8 * expo) * clamp(0.25 + uHs * 0.6, 0.0, 1.0);
-  return clamp(max(wash, surf), 0.0, 1.0) * inside;
+  return clamp(max(wash, surf), 0.0, 1.0) * gInside;
 }
-void fgerst(vec4 a, vec4 b, float A, vec2 p, inout vec4 S, inout float jxz, inout float h) {
-  float th = a.w * dot(a.xy, p) + b.x;
-  float s = sin(th), c = cos(th);
-  float kA = a.w * A, qs = b.y * kA * s;
-  h += A * s;
-  S += vec4(a.x * kA * c, a.y * kA * c, a.x * a.x * qs, a.y * a.y * qs);
-  jxz += a.x * a.y * qs;
+// one spectral component at the rest point: exact slope / Jacobian / height where the pixel resolves it (wl), the rest
+// into the slope covariance; mc = shelter damping of its cascade, on = short-cascade component budget, shortB = 1 for
+// the short cascade (its Jacobian variance feeds the whitecap threshold; the longer ones can break visibly)
+void wave(vec4 a, vec4 b, float mc, float on, float shortB) {
+    float A0 = a.z * mc;
+    if (A0 > 1e-5) {
+      float fd = length(vec2(dot(a.xy, gVh) * gFpL, (a.x * gVh.y - a.y * gVh.x) * gPa));
+      float wl = smoothstep(2.0 * fd, 5.0 * fd, b.z) * on;
+      float kA = a.w * A0;
+      gSig += 0.5 * kA * kA * (1.0 - wl * wl) * vec3(a.x * a.x, a.y * a.y, a.x * a.y);
+      if (shortB > 0.5) { float qj = b.y * kA * wl; gVarJ += 0.5 * qj * qj; }
+      if (wl > 0.002) {
+        float A = A0 * wl;
+        float th = a.w * dot(a.xy, gRel) + b.x;
+        float s = sin(th), c = cos(th);
+        float kA2 = a.w * A, qs = b.y * kA2 * s;
+        gH += A * s;
+        gS += vec4(a.x * kA2 * c, a.y * kA2 * c, a.x * a.x * qs, a.y * a.y * qs);
+        gJxz += a.x * a.y * qs;
+      }
+      // a steep crest breaks: white water born at the crest and spread down the FRONT face, travelling with the wave
+      // (phase past the crest psi: 0 at the crest, growing down the face ahead of it)
+      float stp = b.y * kA;
+      if (shortB < 0.5 && uBrk.x > 0.0 && stp > 0.6 * uBrk.y) {
+        float psi = mod(a.w * dot(a.xy, gRel) + b.x - 1.5708, 6.2832);
+        gBrk = max(gBrk, smoothstep(0.6 * uBrk.y, uBrk.y, stp) * smoothstep(0.0, 0.12, psi) * exp(-psi * 1.1));
+      }
+    }
+}
+// one capillary / short-gravity ripple wave: d = k*dir (rad/m), phase, slope amplitude; onD = within the ripple budget
+void ripple(vec4 d, float onD, float pawK) {
+    float kk = max(length(d.xy), 1e-4);
+    vec2 dir = d.xy / kk;
+    float fd = length(vec2(dot(dir, gVh) * gFpL, (dir.x * gVh.y - dir.y * gVh.x) * gPa));
+    float wl = smoothstep(2.0 * fd, 5.0 * fd, 6.2832 / kk) * onD;
+    float ka = d.w * pawK;
+    gSig += 0.5 * ka * ka * (1.0 - wl * wl) * vec3(dir.x * dir.x, dir.y * dir.y, dir.x * dir.y);
+    if (wl > 0.002) gS.xy += dir * (ka * wl * cos(dot(d.xy, gRel) + d.z));
 }
 // anisotropic Beckmann glint of a directional light L in slope space, Smith masking; sig = (xx, zz, xz) slope covariance
 float glint(vec3 L, vec3 N, vec3 V, vec3 sig, vec2 vh, float ndv) {
@@ -659,6 +708,18 @@ float glint(vec3 L, vec3 N, vec3 V, vec3 sig, vec2 vh, float ndv) {
   float ndl = max(dot(N, L), 0.0);
   return Dm * Fh * Gs * smoothstep(0.0, 0.08, ndl) / (4.0 * max(ndv, 0.1));
 }
+${v.spots ? `// one searchlight / deck flood: a lit pool on the water (diffuse on the water body and foam + a tight glint)
+vec3 spot(vec4 P, vec4 D, vec4 C, vec3 N, vec3 V, float foam) {
+      vec3 Lw = vWorld - P.xyz; float dl = max(length(Lw), 0.01); vec3 l = Lw / dl;
+      float cone = smoothstep(D.w, D.w + (1.0 - D.w) * 0.35, dot(l, D.xyz));
+      float att = cone * (1.0 - smoothstep(0.6 * P.w, P.w, dl)) / (1.0 + dl * dl * 0.0015);
+      if (att > 0.0) {
+        vec3 toL = -l; float nl = max(dot(N, toL), 0.0);
+        vec3 Hs = normalize(toL + V); float g = max(dot(N, Hs), 0.0); g *= g; g *= g; g *= g; g *= g; g *= g;   // ^32
+        return C.rgb * att * (nl * mix(0.05, 0.75, foam) + g * 0.6);
+      }
+      return vec3(0.0);
+}` : ''}
 void main() {
   vec3 toCam = cameraPosition - vWorld;
   float dist = length(toCam);
@@ -678,32 +739,11 @@ void main() {
   vec2 vh = V.xz; float vl = length(vh); vh = vl > 1e-4 ? vh / vl : vec2(0.0, 1.0);
   float fpL = pa / cv;
   float fp = pa / sqrt(cv);                                  // isotropic footprint for textures (foam, patterns)
-  vec4 S = vec4(0.0); float jxz = 0.0; float h = 0.0;
-  vec3 sig = vec3(0.0);                                      // unresolved slope covariance (xx, zz, xz)
-  float varJ = 0.0;
-  float brk = 0.0;                                           // breaking front faces (0..1)
+  gS = vec4(0.0); gJxz = 0.0; gH = 0.0; gSig = vec3(0.0); gVarJ = 0.0; gBrk = 0.0;
+  gVh = vh; gFpL = fpL; gPa = pa; gRel = rel; gM = m;
   // --- spectral components, all evaluated per pixel at the rest point (exact normals; the vertices carry only the
   //     displacement, so the grid's sampling never shows in the shading)
-  for (int i = 0; i < NW; i++) {
-    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    float A0 = a.z * (i < NL ? m.x : (i < NLM ? m.y : m.z));
-    if (A0 > 1e-5) {
-      float on = (i < NLM || float(i - NLM) < uNShortFrag) ? 1.0 : 0.0;
-      float fd = length(vec2(dot(a.xy, vh) * fpL, (a.x * vh.y - a.y * vh.x) * pa));
-      float wl = smoothstep(2.0 * fd, 5.0 * fd, b.z) * on;
-      float kA = a.w * A0;
-      sig += 0.5 * kA * kA * (1.0 - wl * wl) * vec3(a.x * a.x, a.y * a.y, a.x * a.y);
-      if (i >= NLM) { float qj = b.y * kA * wl; varJ += 0.5 * qj * qj; }
-      if (wl > 0.002) fgerst(a, b, A0 * wl, rel, S, jxz, h);
-      // a steep crest breaks: white water born at the crest and spread down the FRONT face, travelling with the wave
-      // (phase past the crest psi: 0 at the crest, growing down the face ahead of it)
-      float stp = b.y * kA;
-      if (i < NLM && uBrk.x > 0.0 && stp > 0.6 * uBrk.y) {
-        float psi = mod(a.w * dot(a.xy, rel) + b.x - 1.5708, 6.2832);
-        brk = max(brk, smoothstep(0.6 * uBrk.y, uBrk.y, stp) * smoothstep(0.0, 0.12, psi) * exp(-psi * 1.1));
-      }
-    }
-  }
+${rep(v.nw, (i) => `  wave(uWaveA[${i}], uWaveB[${i}], ${i < NL ? 'gM.x' : i < NLM ? 'gM.y' : 'gM.z'}, ${i < NLM ? '1.0' : `(${i - NLM}.0 < uNShortFrag ? 1.0 : 0.0)`}, ${i < NLM ? '0.0' : '1.0'});`)}
   vec2 pp = rel + uPatOff;                 // pattern coordinates (stable world frame, metres)
   // --- cat's-paws: wind touches the water in patches; between them the surface stays glassy (strong in light air,
   //     uniform once the sea is wind-driven). The mean of pawK^2 is ~1, so the average roughness is unchanged.
@@ -711,16 +751,8 @@ void main() {
   float pawK = mix(1.0, 0.18 + 1.64 * smoothstep(0.22, 0.78, pawN), uPawC) * m.z;
   // --- capillary / short-gravity ripples (0.3-6 m): analytic slope waves around the wind, energy from Cox-Munk minus
   //     what the spectrum resolves; filtered per direction like the spectrum, the rest goes to the roughness
-  for (int i = 0; i < NDET; i++) {
-    vec4 d = uDet[i];                                         // k*dir (rad/m), phase, slope amplitude
-    float kk = max(length(d.xy), 1e-4);
-    vec2 dir = d.xy / kk;
-    float fd = length(vec2(dot(dir, vh) * fpL, (dir.x * vh.y - dir.y * vh.x) * pa));
-    float wl = smoothstep(2.0 * fd, 5.0 * fd, 6.2832 / kk) * (float(i) < uNDet ? 1.0 : 0.0);
-    float ka = d.w * pawK;
-    sig += 0.5 * ka * ka * (1.0 - wl * wl) * vec3(dir.x * dir.x, dir.y * dir.y, dir.x * dir.y);
-    if (wl > 0.002) S.xy += dir * (ka * wl * cos(dot(d.xy, rel) + d.z));
-  }
+${rep(v.ndet, (i) => `  ripple(uDet[${i}], (${i}.0 < uNDet ? 1.0 : 0.0), pawK);`)}
+  vec4 S = gS; float jxz = gJxz; float h = gH; vec3 sig = gSig; float varJ = gVarJ; float brk = gBrk;
   sig += uSig0 * (pawK * pawK) + vec3(0.0004, 0.0004, 0.0);   // sub-ripple residual (never a perfect mirror)
   if (uRain > 0.0) { // expanding rain rings on a jittered grid
     vec2 rp = pp * 0.8; vec2 ci = floor(rp); vec2 cf = fract(rp) - 0.5;
@@ -753,9 +785,9 @@ void main() {
       wFoam = c0.a * simIn;
     }
   }
-  float kFoam = 0.0;
-  vec2 kSl = vec2(0.0);
-${v.kel ? '  kelvinWakes(rel, fp, simIn, kSl, h, sig, kFoam);' : ''}
+  gSl = vec2(0.0); gKf = 0.0; gH = h; gSig = sig;
+${v.kel ? '  kelvinWakes(rel, fp, simIn);' : ''}
+  vec2 kSl = gSl; float kFoam = gKf; h = gH; sig = gSig;
   S.xy += kSl;
   wFoam = max(wFoam, kFoam);
   if (wFoam > 0.02) {                                          // aerated, turbulent water roughens the surface
@@ -846,9 +878,8 @@ ${v.env ? `#ifdef ENVMAP_TYPE_CUBE_UV
   float n = vnoise(pp * 0.12 + uTime * 0.05) * 0.6 + vnoise(pp * 0.5 - uTime * 0.1) * 0.4;
   float surf = n + 0.12 * sin(uTime * 0.9 + depth * 1.6);
   float shore = (1.0 - smoothstep(0.3, 5.5, depth)) * smoothstep(0.38, 0.72, surf);
-  float inA, inB;
-  float fA = shoreFoam(uShoreA, uShoreRectA, dp, n, uTime, inA);
-  float fB = shoreFoam(uShoreB, uShoreRectB, dp, n, uTime, inB);
+  float fA = shoreFoam(uShoreA, uShoreRectA, dp, n, uTime); float inA = gInside;
+  float fB = shoreFoam(uShoreB, uShoreRectB, dp, n, uTime); float inB = gInside;
   shore = mix(shore, max(fA, fB), max(inA, inB));
   // --- whitecaps: Jacobian folding (instantaneous) + steep breaking front faces + accumulated persistent foam (render
   //     target). A fresh whitecap is dense, bubbly and ragged-edged; as it decays it crumbles into blobs, then marbled
@@ -898,20 +929,9 @@ ${v.env ? `#ifdef ENVMAP_TYPE_CUBE_UV
   vec3 foamCol = vec3(0.9, 0.94, 0.96) * (0.28 + 0.62 * sunUp * (0.55 + 0.45 * ndl) + 0.1 * (1.0 - uStorm)) * (1.0 - 0.7 * uNight) * foamLit;
   foamCol = mix(foamCol, foamCol * vec3(0.8, 0.92, 0.95), (1.0 - foam) * 0.5);
   col = mix(col, foamCol, foam * 0.94);
-${v.spots ? `  // --- searchlights / deck floods: lit pools on the water (diffuse on the water body and foam + a tight glint)
-  for (int i = 0; i < 2; i++) {
-    if (float(i) < uSpotN) {
-      vec4 P = uSpot[i * 3]; vec4 D = uSpot[i * 3 + 1]; vec4 C = uSpot[i * 3 + 2];
-      vec3 Lw = vWorld - P.xyz; float dl = max(length(Lw), 0.01); vec3 l = Lw / dl;
-      float cone = smoothstep(D.w, D.w + (1.0 - D.w) * 0.35, dot(l, D.xyz));
-      float att = cone * (1.0 - smoothstep(0.6 * P.w, P.w, dl)) / (1.0 + dl * dl * 0.0015);
-      if (att > 0.0) {
-        vec3 toL = -l; float nl = max(dot(N, toL), 0.0);
-        vec3 Hs = normalize(toL + V); float g = max(dot(N, Hs), 0.0); g *= g; g *= g; g *= g; g *= g; g *= g;   // ^32
-        col += C.rgb * att * (nl * mix(0.05, 0.75, foam) + g * 0.6);
-      }
-    }
-  }` : ''}
+${v.spots ? `  // --- searchlights / deck floods: lit pools on the water
+  if (0.0 < uSpotN) col += spot(uSpot[0], uSpot[1], uSpot[2], N, V, foam);
+  if (1.0 < uSpotN) col += spot(uSpot[3], uSpot[4], uSpot[5], N, V, foam);` : ''}
   col *= 1.0 - 0.2 * uNight;
   gl_FragColor = vec4(col, 1.0);
   // same tail as three's built-in materials: tone-map, encode linear -> output colour space, then fog (fogColor is
@@ -920,7 +940,7 @@ ${v.spots ? `  // --- searchlights / deck floods: lit pools on the water (diffus
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
-  return withCut(frag, v.cut);
+  return withCut(frag, v.cut ? cutMode : 0);
 }
 
 // Shader rungs per tier, tried in order (init / failTier). The first full rung is the desktop look; GPUs with fewer
@@ -932,7 +952,7 @@ export const SEA_RUNGS = [
     { name: 'lite', nw: NW, pix: 1, kel: 1, cut: 1, trk: 1, moon: 1, highp: 1 },
     { name: 'lite-lean', nw: NW, pix: 1, kel: 0, cut: 0, trk: 0, moon: 1, highp: 1 },
     { name: 'lite-vertex', nw: NW, pix: 0, kel: 1, cut: 1, trk: 0, moon: 0 },
-    { name: 'lite-min', nw: NL, pix: 0, kel: 0, cut: 0, trk: 0, moon: 0, unroll: 1 },
+    { name: 'lite-min', nw: NL, pix: 0, kel: 0, cut: 0, trk: 0, moon: 0 },
   ],
   [
     { name: 'full', nw: NW, ndet: NDET, kel: 1, cut: 1, trk: 1, spots: 1, env: 1 },
@@ -940,22 +960,21 @@ export const SEA_RUNGS = [
     { name: 'full-min', nw: NLM, ndet: 8, kel: 0, cut: 0, trk: 0, spots: 0, env: 0, lowLimit: 1 },
   ],
 ];
-/** GLSL of one rung of tier lvl (0 basic, 1 lite, 2 full). */
-export function seaShader(lvl, rung) {
+/**
+ * GLSL of one rung of tier lvl (0 basic, 1 lite, 2 full). opts.phone: the build for a GPU with < 512 uniform vectors
+ * (lock-chamber cut-outs by alpha 0 on a transparent material instead of discard; everything else is the same code).
+ */
+export function seaShader(lvl, rung, opts = {}) {
+  const cutMode = opts.phone ? 'alpha' : 'discard';
   if (lvl === 0) return { vert: BASIC_VERT, frag: BASIC_FRAG };
-  if (lvl === 1) return { vert: liteVert(rung), frag: liteFrag(rung) };
-  return { vert: fullVert(rung), frag: fullFrag(rung) };
+  if (lvl === 1) return { vert: liteVert(rung), frag: liteFrag(rung, cutMode) };
+  return { vert: fullVert(rung), frag: fullFrag(rung, cutMode) };
 }
 /** Estimated GPU resources of one rung (three.js prefix + fog + tone mapping included; env counted as on). */
-export function seaBudget(lvl, rung) {
-  const s = seaShader(lvl, rung);
+export function seaBudget(lvl, rung, opts = {}) {
+  const s = seaShader(lvl, rung, opts);
   return glslBudget(s.vert, s.frag, { defines: rung.env ? { ENVMAP_TYPE_CUBE_UV: 1 } : {} });
 }
-/** The sea's shader sources per tier, first rung (read by the tests: uniform budgets, loop / smoothstep hygiene). */
-export const OCEAN_SHADERS = {
-  full: seaShader(2, SEA_RUNGS[2][0]), lite: seaShader(1, SEA_RUNGS[1][0]), basic: seaShader(0, SEA_RUNGS[0][0]),
-};
-
 
 // foam accumulation pass (full-screen triangle into a world-anchored toroidal render target)
 const FOAM_VERT = /* glsl */`varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
@@ -970,6 +989,15 @@ uniform sampler2D uShelterTex; uniform vec4 uShelterRect;
 varying vec2 vUv;
 ${GLSL_NOISE}
 ${GLSL_VNOISE}
+// Jacobian terms (jxx, jzz, jxz) of one component, weighted toward the spectral peak (bw) and damped in shelter (mc)
+vec3 fj(vec4 a, vec4 b, float bw, float mc, vec2 rel) {
+    float A = a.z * mc * bw;
+    if (A >= 1e-4) {
+      float qs = b.y * a.w * A * sin(a.w * dot(a.xy, rel) + b.x);
+      return vec3(a.x * a.x * qs, a.y * a.y * qs, a.x * a.y * qs);
+    }
+    return vec3(0.0);
+}
 void main() {
   vec2 rel = uW * (fract(vUv - uCfF + 0.5) - 0.5);                          // this texel's water, rel. the foam centre
   vec2 relPrev = uW * (fract(vUv - uCfFPrev + 0.5) - 0.5) + uPrevShift;     // the water it held at the last update
@@ -983,20 +1011,13 @@ void main() {
   }
   float mL = 1.0 - sh, mM = 1.0 - 0.9 * sh;
   // Jacobian of the dominant waves (components weighted toward the spectral peak): whitecaps form on the big crests
-  float jxx = 0.0, jzz = 0.0, jxz = 0.0;
-  for (int i = 0; i < NLM; i++) {
-    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
-    float A = a.z * (i < NL ? mL : mM) * uBw[i];
-    if (A >= 1e-4) {
-      float qs = b.y * a.w * A * sin(a.w * dot(a.xy, rel) + b.x);
-      jxx += a.x * a.x * qs; jzz += a.y * a.y * qs; jxz += a.x * a.y * qs;
-    }
-  }
-  float J = (1.0 - jxx) * (1.0 - jzz) - jxz * jxz;
+  vec3 J3 = vec3(0.0);
+${rep(NLM, (i) => `  J3 += fj(uWaveA[${i}], uWaveB[${i}], uBw[${i}], ${i < NL ? 'mL' : 'mM'}, rel);`)}
+  float J = (1.0 - J3.x) * (1.0 - J3.y) - J3.z * J3.z;
   // wave groups / short crests: a slowly drifting field (at the group velocity) decides where along a crest it breaks
   float grp = groupField(rel + uGrpOff, 42.0);
   float thr = uThr + (grp - 0.5) * uGrpK;
-  float brk = smoothstep(thr + 0.3 * uSoft, thr - 0.7 * uSoft, J) * uK;
+  float brk = (1.0 - smoothstep(thr - 0.7 * uSoft, thr + 0.3 * uSoft, J)) * uK;   // edges in order (reversed edges are undefined)
   // 8-bit storage: dither the decay so small values still fade at the right average rate
   float dth = (fract(sin(dot(vUv * 1371.0 + uSeed, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
   float act = max(prev.x * uDecMul - uDecSub + dth, brk);                    // active whitecap foam (seconds)
@@ -1013,27 +1034,29 @@ attribute vec4 aSeed;
 varying float vA;
 #include <fog_pars_vertex>
 ${GLSL_NOISE}
-float jacAt(vec2 p, float age) {
-  float jxx = 0.0, jzz = 0.0, jxz = 0.0;
-  for (int i = 0; i < NLM; i++) {
-    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
+vec3 jw(vec4 a, vec4 b, vec2 p, float age) {
     if (a.z >= 1e-3) {
       float qs = b.y * a.w * a.z * sin(a.w * dot(a.xy, p) + b.x + b.w * age);
-      jxx += a.x * a.x * qs; jzz += a.y * a.y * qs; jxz += a.x * a.y * qs;
+      return vec3(a.x * a.x * qs, a.y * a.y * qs, a.x * a.y * qs);
     }
-  }
-  return (1.0 - jxx) * (1.0 - jzz) - jxz * jxz;
+    return vec3(0.0);
 }
-vec3 dispAt(vec2 p, float age) {
-  vec3 d = vec3(0.0);
-  for (int i = 0; i < NLM; i++) {
-    vec4 a = uWaveA[i]; vec4 b = uWaveB[i];
+float jacAt(vec2 p, float age) {
+  vec3 J3 = vec3(0.0);
+${rep(NLM, (i) => `  J3 += jw(uWaveA[${i}], uWaveB[${i}], p, age);`)}
+  return (1.0 - J3.x) * (1.0 - J3.y) - J3.z * J3.z;
+}
+vec3 dw(vec4 a, vec4 b, vec2 p, float age) {
     if (a.z >= 1e-3) {
       float th = a.w * dot(a.xy, p) + b.x + b.w * age;
       float c = cos(th);
-      d += vec3(a.x * b.y * a.z * c, a.z * sin(th), a.y * b.y * a.z * c);
+      return vec3(a.x * b.y * a.z * c, a.z * sin(th), a.y * b.y * a.z * c);
     }
-  }
+    return vec3(0.0);
+}
+vec3 dispAt(vec2 p, float age) {
+  vec3 d = vec3(0.0);
+${rep(NLM, (i) => `  d += dw(uWaveA[${i}], uWaveB[${i}], p, age);`)}
   return d;
 }
 void main() {
@@ -1045,11 +1068,7 @@ void main() {
   vec2 d = mod(hs * 2.0 * uR - uCamInv + uR, 2.0 * uR) - uR;   // rel. camera, wrapped into the box (world-fixed)
   float J = 9.0; vec2 sp = uCamRel + d;
   if (aSeed.w < uFrac) {
-    for (int c = 0; c < 4; c++) {
-      vec2 p = uCamRel + d + (hash22(hs * 31.7 + float(c) * 4.1) - 0.5) * 22.0;
-      float j = jacAt(p, age);
-      if (j < J) { J = j; sp = p; }
-    }
+${rep(4, (c) => `    { vec2 p = uCamRel + d + (hash22(hs * 31.7 + ${c}.0 * 4.1) - 0.5) * 22.0; float j = jacAt(p, age); if (j < J) { J = j; sp = p; } }`)}
   }
   if (J > uThr) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
   vec3 dsp = dispAt(sp, age);
@@ -1070,13 +1089,17 @@ uniform vec3 uCol; varying float vA;
 #include <fog_pars_fragment>
 void main() {
   float r = length(gl_PointCoord - 0.5);
-  float sR = smoothstep(0.5, 0.0, r); float a = sR * sqrt(max(0.0, sR)) * vA;   // soft spray puffs (a hard disc reads as snow)
-  if (a < 0.01) discard;
-  gl_FragColor = vec4(uCol, a * 0.55);
+  float sR = 1.0 - smoothstep(0.0, 0.5, r); float a = sR * sqrt(max(0.0, sR)) * vA;   // soft spray puffs (a hard disc reads as snow)
+  gl_FragColor = vec4(uCol, a < 0.01 ? 0.0 : a * 0.55);                          // alpha 0 instead of discard (blended points)
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
+/** The sea's shader sources per tier, first rung, desktop build (read by the tests: budgets, loop / smoothstep hygiene). */
+export const OCEAN_SHADERS = {
+  full: seaShader(2, SEA_RUNGS[2][0]), lite: seaShader(1, SEA_RUNGS[1][0]), basic: seaShader(0, SEA_RUNGS[0][0]),
+  foam: { vert: FOAM_VERT, frag: FOAM_FRAG }, spray: { vert: SPRAY_VERT, frag: SPRAY_FRAG },
+};
 
 // ------------------------------------------------------------------------------------------------ geometry
 /** Clipmap near grid: L0 = n×n cells of s0 metres, each further ring doubles the cell and the extent; ring cells on
@@ -1764,20 +1787,25 @@ export class Ocean {
   }
   /** A ShaderMaterial for rung i of tier lvl (all tiers share this.uniforms). */
   makeMat(lvl, i) {
-    const r = SEA_RUNGS[lvl][i], s = seaShader(lvl, r);
-    const m = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: s.vert, fragmentShader: s.frag, fog: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
-    m.name = `ocean-${r.name}`; m.userData.rung = r; m.userData.envH = 0;
+    const r = SEA_RUNGS[lvl][i], phone = !!this.lowLimits, s = seaShader(lvl, r, { phone });
+    // phone builds with cut-outs write alpha 0 there (no discard): a transparent material, drawn first among the
+    // transparent objects (renderOrder below the sky dome's -10), i.e. right after the opaques as the opaque sea was
+    const m = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: s.vert, fragmentShader: s.frag, fog: true, transparent: phone && !!r.cut, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+    m.name = `ocean-${r.name}`; m.userData.rung = r; m.userData.envH = 0; m.userData.phone = phone;
     return m;
+  }
+  /** Draw both sea meshes with material m (the render order follows: a transparent build goes first in its pass). */
+  bindMaterial(m) {
+    this.material = m; this.mesh.material = m; this.far.material = m;
+    this.mesh.renderOrder = m.transparent ? -30 : 1; this.far.renderOrder = m.transparent ? -31 : 0;
+    this.matWatch = 0; this.matSince = nowMs(); this.matChecks = 0;
   }
   /** Switch tier lvl to rung i (rebuilds its material; the meshes follow when that tier is the one drawn). */
   setRung(lvl, i) {
-    if (this.rung[lvl] === i && this.mats[lvl]) return;
+    if (this.rung[lvl] === i && this.mats[lvl] && this.mats[lvl].userData.phone === !!this.lowLimits) return;
     const old = this.mats[lvl];
     this.mats[lvl] = this.makeMat(lvl, i); this.rung[lvl] = i;
-    if (this.matLevel === lvl) {
-      this.material = this.mats[lvl]; this.mesh.material = this.material; this.far.material = this.material;
-      this.matWatch = 0; this.matSince = nowMs(); this.matChecks = 0;
-    }
+    if (this.matLevel === lvl) this.bindMaterial(this.mats[lvl]);
     if (old && old !== this.mats[lvl]) old.dispose();
   }
   /** Estimated budget of a rung as a short string (diagnostics panel). */
@@ -1792,7 +1820,7 @@ export class Ocean {
   pickRung(lvl, from) {
     const rungs = SEA_RUNGS[lvl], g = this.gpu || {}, tier = ['basic', 'lite', 'full'][lvl];
     for (let i = from; i < rungs.length; i++) {
-      const r = rungs[i], b = seaBudget(lvl, r);
+      const r = rungs[i], b = seaBudget(lvl, r, { phone: !!this.lowLimits });
       if (r.highp && g.precision && g.precision !== 'highp') { this.tierLog.push(`${r.name}: skipped (needs highp)`); continue; }
       if (lvl === 2 && this.lowLimits && !r.lowLimit) { this.tierLog.push(`${r.name}: skipped (GPU has < 512 uniform vectors)`); continue; }
       if (g.maxFragmentUniforms && !budgetFits(b, g, 32)) { this.tierLog.push(`${r.name}: skipped (budget ${this.budgetText(lvl, r, b)} > limits − 32)`); continue; }
@@ -1815,7 +1843,7 @@ export class Ocean {
       safeStart: this.safeStart, quality: this.quality, grid: this.gridN, ripples: this.uniforms.uNDet.value, foamRT: !!this.foamRT, wakeSim: this.wake ? (this.wake.ok ? 'on' : 'broken') : (this.wakeOk === false ? 'unsupported' : 'off'),
       ships: this.ships.size, kelvin: this.kel.length, track: this.trackPts.length, spots: this.uniforms.uSpotN.value, env: this.uniforms.uEnvK.value > 0, frames: this.matChecks, upSec: Math.round((nowMs() - this.bornAt) / 1000),
       governor: { fps: Math.round(1 / Math.max(1e-3, this.gov.ema)), lastDrop: this.gov.lastDrop ? Math.round((nowMs() - this.gov.lastDrop) / 1000) + 's ago' : 'never', lastChange: this.gov.lastChange ? Math.round((nowMs() - this.gov.lastChange) / 1000) + 's ago' : 'never' },
-      rungs: this.rung.map((i, l) => SEA_RUNGS[l][i].name).join(' '),
+      rungs: this.rung.map((i, l) => SEA_RUNGS[l][i].name).join(' ') + (this.lowLimits ? ' (phone build: constant-index, no inout, alpha cut-outs)' : ' (desktop build)'),
       budget: { ...this.budget, limit: this.gpu ? `V${this.gpu.maxVertexUniforms}/F${this.gpu.maxFragmentUniforms} vec4, ${this.gpu.maxVaryings} varyings (rungs must fit with 32 to spare)` : 'no renderer yet' },
       gpu: this.gpu || null, tierLog: this.tierLog.slice(-16),
       sea: { wind: this.wind, hs: +this.hs.toFixed(2), level: this.level, storm: this.storm },
@@ -1861,9 +1889,7 @@ export class Ocean {
     let lvl = Math.min(this.matCap, tier === 0 ? 1 : 2);
     if (this.safeStart && this.matOk[2] !== true) lvl = Math.min(lvl, 1);
     if (lvl === this.matLevel && this.material === this.mats[lvl]) return;
-    this.matLevel = lvl; this.material = this.mats[lvl];
-    this.mesh.material = this.material; this.far.material = this.material;
-    this.matWatch = 0; this.matSince = nowMs(); this.matChecks = 0;
+    this.matLevel = lvl; this.bindMaterial(this.mats[lvl]);
     this.tierLog.push(`shader → ${['basic', 'lite', 'full'][lvl]}`);
     if (lvl < 2) { this.uniforms.uFoamOn.value = 0; this.foamPrev = null; }
   }
