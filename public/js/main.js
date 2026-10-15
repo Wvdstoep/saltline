@@ -23,7 +23,7 @@ import { HarborGeomSet } from './harborgeom.js';
 import { resolveShip, setWaterworks } from './collision.js';
 import { Interior } from './interior.js';
 import { WeatherFX } from './weather.js';
-import { CelestialSphere } from './celestial.js';
+import { SkySystem } from './sky.js';   // sky, Sun/Moon/stars, clouds, sky light, fog (sky.js, celestial.js, clouds.js)
 import { solarPosition } from '/shared/astro.js';
 import { seaForBeaufort, douglas } from '/shared/seastate.js';   // debug sea-state forcing (?bft=0..12)
 import { TouchHelm, isTouch } from './touch.js';
@@ -89,12 +89,13 @@ class App {
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.5, 40000);
     this.sun = new THREE.DirectionalLight(0xfff2d0, 2.2); this.scene.add(this.sun); this.scene.add(this.sun.target);
     this.hemi = new THREE.HemisphereLight(0x9fc4e8, 0x3a4a3a, 0.9); this.scene.add(this.hemi);
-    this.sky = this.makeSky();
     this.ocean = new Ocean(this.scene);
     this.terrain = new Terrain(this.scene);
     this.geoms = new HarborGeomSet(); this.geomState = new Map(); // harbour id -> { state: 'loading'|'loaded'|'failed', t }
     this.weatherFx = new WeatherFX(this.scene, this.camera);
-    this.celestial = new CelestialSphere(this.scene, this.camera);
+    this.skySys = new SkySystem({ scene: this.scene, camera: this.camera, renderer: this.renderer, sun: this.sun, hemi: this.hemi, phone: isTouch(), weatherFx: this.weatherFx });
+    this.sky = this.skySys.dome; this.celestial = this.skySys.celestial;
+    window.saltlineSky = (x) => this.skySys.setOverride(x);   // debug / screenshots: 'clear'|'fair'|'overcast'|'rain'|'storm'|'fog'|'snow'|{...}|null; also ?wx=storm
     this.weatherFx.onThunder = (k, delayS) => setTimeout(() => this.sound?.event('thunder', k), delayS * 1000);   // light first, then the sound
     // Debug / screenshots: ?bft=0..12 (or window.saltlineSea(n), null = real weather) forces this client's sea state,
     // visuals and HUD only (the server's SALTLINE_DEBUG=1 action 'debug_sea' {bft} does the same server-side).
@@ -102,6 +103,7 @@ class App {
     try { const q = new URLSearchParams(location.search).get('bft') ?? new URLSearchParams(location.search).get('sea'); if (q !== null && q !== '' && Number.isFinite(+q)) this.forceBft = Math.max(0, Math.min(12, Math.round(+q))); } catch { /* no URL API */ }
     this.iv2 = true; try { if (new URLSearchParams(location.search).get('iv2') === '0') { globalThis.__iv2 = false; this.iv2 = false; } } catch { /* no URL API */ }   // IV2 HV9: ?iv2=0 → v1 interiors
     this.forcedTime = null;
+    try { const t = new URLSearchParams(location.search).get('skytime'); if (t) this.forcedTime = Number.isFinite(+t) ? +t : Date.parse(t) / 1000 || null; } catch { /* no URL API */ }   // ?skytime=2026-10-15T21:00Z
     window.saltlineTime = (t) => {
       if (t === null || t === undefined || t === '') this.forcedTime = null;
       else if (typeof t === 'string') this.forcedTime = Date.parse(t) / 1000;
@@ -118,7 +120,9 @@ class App {
         moon: this.celestial?.lastMoon || null,
         starsVisible: (this.celestial?.lastStarOpacity || 0) > 0.05,
         starOpacity: this.celestial?.lastStarOpacity || 0,
-        cloud: this.wx?.cloud ?? 0,
+        cloud: this.skySys?.state?.cover ?? this.wx?.cloud ?? 0,
+        twilight: solarPosition(lat, lon, nowS).twilight,
+        sky: { tier: this.skySys?.tier, cloudMode: this.skySys?.state?.cloudMode, exposure: this.skySys?.K, limitMag: this.skySys?.state?.limit, sunVisible: this.skySys?.sunVis, params: this.skySys?.params },
       };
     };
     window.saltlineSea = (n) => { this.forceBft = n === null || n === undefined || !Number.isFinite(+n) ? null : Math.max(0, Math.min(12, Math.round(+n))); if (this.you?.weather) { const w = this.forceBft != null ? this.forcedWeather(this.you.weather) : this.you.weather; this.applyWeather(w); this.ocean.snapSea?.(); } return this.forceBft; };
@@ -206,78 +210,6 @@ class App {
     requestAnimationFrame(() => this.loop());
   }
   resize() { const w = innerWidth, h = innerHeight; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
-  makeSky() {
-    const geo = new THREE.SphereGeometry(30000, 32, 16);
-    const mat = new THREE.ShaderMaterial({
-      side: THREE.BackSide, depthWrite: false, fog: false,
-      uniforms: {
-        top: { value: new THREE.Color(0x3f7fc9) },
-        horizon: { value: new THREE.Color(0xbfd9ee) },
-        sunDir: { value: new THREE.Vector3(0, 1, 0) },
-        sunCol: { value: new THREE.Color(0xfff0c0) },
-        cloudOffset: { value: new THREE.Vector2(0, 0) },
-        cloudCover: { value: 0.5 },
-        storm: { value: 0 },
-      },
-      vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 sunDir; uniform vec3 sunCol;
-        uniform vec2 cloudOffset; uniform float cloudCover; uniform float storm;
-        varying vec3 vDir;
-        float hash12(vec2 p) {
-          vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-          p3 += dot(p3, p3.yzx + 33.33);
-          return fract((p3.x + p3.y) * p3.z);
-        }
-        float cloudNoise(vec2 p) {
-          vec2 i = floor(p); vec2 f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
-          float a = hash12(i);
-          float b = hash12(i + vec2(1.0, 0.0));
-          float c = hash12(i + vec2(0.0, 1.0));
-          float d = hash12(i + vec2(1.0, 1.0));
-          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-        }
-        float cloudFbm(vec2 p) {
-          float f = 0.5000 * cloudNoise(p);
-          f += 0.2500 * cloudNoise(p * 2.03 + vec2(1.7, 4.3));
-          f += 0.1250 * cloudNoise(p * 4.07 + vec2(8.1, 2.9));
-          f += 0.0625 * cloudNoise(p * 8.15 + vec2(3.5, 7.2));
-          return f / 0.9375;
-        }
-        void main(){
-          float t = clamp(vDir.y, -0.1, 1.0);
-          vec3 c = mix(horizon, top, pow(max(0.0, t), 0.55));
-          float s = max(0.0, dot(normalize(vDir), sunDir));
-          c += sunCol * (pow(s, 600.0) * 1.5 + pow(s, 8.0) * 0.18);
-
-          // 3D Procedural Volumetric Clouds with continuous seamless flow
-          if (vDir.y > 0.02) {
-            vec2 cUv = (vDir.xz / max(vDir.y, 0.055)) * 0.32 + cloudOffset;
-            vec2 warp = vec2(cloudFbm(cUv * 0.5), cloudFbm(cUv * 0.5 + 4.2)) * 0.35;
-            float n = cloudFbm(cUv + warp);
-            float cov = clamp(0.32 + cloudCover * 0.42 + storm * 0.28, 0.2, 0.95);
-            float density = smoothstep(1.0 - cov, 1.25 - cov * 0.5, n);
-            float horFade = smoothstep(0.02, 0.16, vDir.y);
-            density *= horFade;
-
-            if (density > 0.005) {
-              float sunFacing = max(0.0, dot(sunDir, normalize(vec3(vDir.x, 0.35, vDir.z))));
-              float rim = pow(max(0.0, s), 4.0) * (1.0 - density * 0.65);
-              vec3 cloudLit = mix(vec3(0.95, 0.96, 0.98), sunCol, 0.35 * sunFacing) + sunCol * rim * 1.6;
-              vec3 cloudDark = mix(vec3(0.42, 0.46, 0.54), vec3(0.10, 0.12, 0.16), storm * 0.85);
-              vec3 cloudColor = mix(cloudDark, cloudLit, smoothstep(0.1, 0.85, n) * (1.0 - storm * 0.45));
-              c = mix(c, cloudColor, density * 0.92);
-            }
-          }
-
-          if (vDir.y < 0.0) c = mix(c, horizon * 0.55, min(1.0, -vDir.y * 8.0));
-          gl_FragColor = vec4(c, 1.0);
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
-        }`,
-    });
-    const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = -10; this.scene.add(m); return m;
-  }
   // The single waypoint API of v0.2 maps onto the head of the route (chart, radar and old callers keep working).
   get waypoint() { return this.route[0] || null; }
   set waypoint(v) { this.route = v ? [{ lat: v.lat, lon: v.lon }] : []; }
@@ -438,7 +370,8 @@ class App {
     this.ocean.setRain?.(w.rain || 0);
     const vis = Number.isFinite(w.visibility) ? w.visibility : (w.storm || 0) > 0.5 ? 4000 : 20000;
     this.fogFar = THREE.MathUtils.clamp(vis, 500, 24000);
-    this.weatherFx.set?.({ rain: w.rain || 0, storm: w.storm || 0, cloud: w.cloud ?? Math.min(1, 0.3 + (w.storm || 0)), visibility: vis, windSpd: spd, windDir: dir, night: this.night });
+    const fw = this.skySys ? this.skySys.effective(w) : w;   // sky.js also feeds WeatherFX every frame (smoothed, debug override applied)
+    this.weatherFx.set?.({ rain: fw.rain || 0, storm: fw.storm || 0, cloud: fw.cloud ?? Math.min(1, 0.3 + (fw.storm || 0)), visibility: Number.isFinite(fw.visibility) ? fw.visibility : vis, windSpd: spd, windDir: dir, night: this.night, temp: fw.temp });
   }
   onSnap(m) {
     const now = performance.now();
@@ -634,7 +567,7 @@ class App {
     const snd = this.sound; if (!snd || !this.ship || !this.you) return;
     if (!this.shelterSet && this.geoms?.entries?.size) { this.shelterSet = true; this.refreshShelter(); }
     this.ensureMuteButton();
-    const s = this.ship, you = this.you, st = this.soundState, w = this.wx || {};
+    const s = this.ship, you = this.you, st = this.soundState, w = this.skySys ? this.skySys.effective(this.wx || {}) : (this.wx || {});
     let view = 'deck', room = null; st.crowd = null;
     if (ashore) view = 'ashore';
     else if (this.interior.active) {
@@ -1425,56 +1358,13 @@ class App {
     const lat = this.ship?.lat ?? (this.origin?.lat || 51.92);
     const lon = this.ship?.lon ?? (this.origin?.lon || 4.25);
     const nowS = this.forcedTime || ((this.simTime && this.simTime > 1000000000) ? this.simTime : (Date.now() / 1000));
-    const astro = solarPosition(lat, lon, nowS);
-    const elev = astro.elev;
-    const az = astro.az;
-    const cosE = Math.cos(Math.asin(THREE.MathUtils.clamp(elev, -1, 1)));
-    const dir = new THREE.Vector3(Math.sin(az) * cosE, Math.max(-0.2, elev), -Math.cos(az) * cosE).normalize();
-    const day = astro.day;
-    const dusk = astro.dusk;
-    const storm = this.wx?.storm || 0, cloud = this.wx?.cloud ?? 0;
-    const rainW = Number(this.wx?.rain) || 0, gale = THREE.MathUtils.smoothstep(Number(this.wx?.windSpd) || 0, 10, 26);
-    // overcast and storm darkening: a gale sky is low and grey, a storm at noon is dusk-dark
-    const gloom = THREE.MathUtils.clamp(0.5 * storm + 0.35 * gale + 0.25 * cloud + 0.15 * rainW, 0, 0.88);
+    // sky.js: real Sun/Moon/stars for (lat, lon, time), clouds/rain/fog from the weather, and the light they cast
+    const anchor = this.ship ? toLocal(this.ship.lat, this.ship.lon, this.origin) : { x: 0, z: 0 };
+    const sk = this.skySys.update({ dt, lat, lon, unix: nowS, wx: this.wx, anchor, indoors: !!this.interior?.active });
+    const day = sk.day, gloom = sk.gloom;
     this.dayK = day; this.gloomK = gloom;   // IV2 HV8: daylight through the interior windows
-    const grey = new THREE.Color(0x5d6670).lerp(new THREE.Color(0x2c3438), THREE.MathUtils.clamp(Math.max(storm, gale) * 1.2 - 0.2, 0, 1)); // storm: slate, nearly black under the scud
-    const top = new THREE.Color(0x101e33).lerp(new THREE.Color(0x3f7fc9), day).lerp(new THREE.Color(0x8c5a6a), dusk * 0.35).lerp(grey, gloom * day);
-    const hor = new THREE.Color(0x24364d).lerp(new THREE.Color(0xbfd9ee), day).lerp(new THREE.Color(0xf2a860), dusk * 0.7).lerp(grey.clone().multiplyScalar(1.3 - 0.45 * Math.max(storm, gale)), gloom * day);
-    const sunCol = new THREE.Color(0xfff2d0).lerp(new THREE.Color(0xff9a4a), dusk);
-    // lightning: a short sky + ambient pulse (WeatherFX adds its own light flash)
-    if (storm > 0.6 && Math.random() < dt / 11) { this.lightning = 0.14; this.weatherFx.flash?.(); }
-    const bolt = this.lightning > 0 ? Math.min(1, this.lightning / 0.14) : 0;
-    this.lightning = Math.max(0, this.lightning - dt);
-    this.sun.position.copy(dir).multiplyScalar(3000).add(this.camera.position); this.sun.target.position.copy(this.camera.position);
-    this.sun.intensity = (0.35 + 2.0 * day) * (1 - gloom); this.sun.color.copy(sunCol);
-    this.hemi.intensity = (0.45 + 0.6 * day) * (1 - 0.6 * gloom) + bolt * 2.5;
-    if (bolt > 0) { top.lerp(new THREE.Color(0xe8f0ff), bolt * 0.7); hor.lerp(new THREE.Color(0xf4f8ff), bolt * 0.7); }
-    this.sky.material.uniforms.top.value.copy(top); this.sky.material.uniforms.horizon.value.copy(hor); this.sky.material.uniforms.sunDir.value.copy(dir); this.sky.material.uniforms.sunCol.value.copy(sunCol).multiplyScalar(day * (1 - gloom));
-    if (this.sky?.material?.uniforms?.cloudOffset) {
-      const wspd = this.localWind?.spd ?? this.wind?.spd ?? 5;
-      const wdir = this.localWind?.dir ?? this.wind?.dir ?? 240;
-      const wRad = (wdir + 180) * Math.PI / 180;
-      const rate = 0.006 + wspd * 0.0012;
-      this.cloudOffset.x += Math.sin(wRad) * rate * dt;
-      this.cloudOffset.y += Math.cos(wRad) * rate * dt;
-      this.sky.material.uniforms.cloudOffset.value.copy(this.cloudOffset);
-      this.sky.material.uniforms.cloudCover.value = this.wx?.cloud ?? 0.5;
-      this.sky.material.uniforms.storm.value = this.storm || 0;
-    }
-    this.scene.fog.color.copy(hor);
-    const far = this.fogFar, near = far * 0.22;
-    const kf = Math.min(1, dt * 0.5);
-    this.scene.fog.far += (far - this.scene.fog.far) * kf; this.scene.fog.near += (near - this.scene.fog.near) * kf;
-
-    const cel = this.celestial?.update(lat, lon, nowS, this.wx, day, gloom);
-    if (day < 0.25 && cel?.moon?.elev > 0) {
-      const moonCol = new THREE.Color(0x9cc2eb).multiplyScalar(Math.max(0.15, cel.moon.illumination));
-      const mDir = new THREE.Vector3(...cel.moon.dir);
-      this.ocean.setSun(mDir, moonCol, 1 - day, top, hor);
-    } else {
-      this.ocean.setSun(dir, sunCol, 1 - day, top, hor);
-    }
-
+    this.ocean.setSun(sk.oceanDir, sk.oceanCol, sk.night, sk.top, sk.hor);
+    if (this.skySys.override) this.ocean.setRain?.(sk.weather.rain || 0);
     const night = 1 - day; this.night = night;
     if (this.weatherFx?.state) this.weatherFx.state.night = night;
     this.wwMesh?.setNight(night);                                                            // signal glow size
@@ -1486,7 +1376,6 @@ class App {
       for (const o of [...this.others.values(), ...this.cutters.values(), ...this.ai.values(), ...this.fleetShips.values()]) o.mesh.userData.setLights?.(lightsOn);
       this.myMesh?.userData.setLights?.(lightsOn);
     }
-    this.sky.position.copy(this.camera.position);
   }
 
   // ------------------------------------------------------------------ loop

@@ -541,6 +541,7 @@ export class Game {
       waveH: round2(w.waves.height), waveDir: Math.round(w.waves.dir), wavePeriod: round1(w.waves.period),
       swellH: round2(w.swell.height), swellDir: Math.round(w.swell.dir), swellPeriod: round1(w.swell.period),
       visibility: Math.round(w.visibility), pressure: round1(w.pressure), temp: round1(w.temp), cloud: round2(w.cloud), source: w.source,
+      cloudLow: Number.isFinite(w.cloudLow) ? round2(Math.max(w.cloudLow, (w.storm || 0) > 0.3 ? w.cloud : 0)) : null, cloudHigh: Number.isFinite(w.cloudHigh) ? round2(w.cloudHigh) : null,   // sky.js cloud types
       sst: Number.isFinite(w.sst) ? round1(w.sst) : null, curSpd: w.current ? round2(w.current.speed) : null, curDir: w.current ? Math.round(w.current.dir) : null,
       bft: beaufort(w.wind.spd), seaState: douglas(w.waves.height).code, seaWord: douglas(w.waves.height).word,   // WMO/Douglas sea state by Hs
       stormName: w.stormName || null, stormKind: w.stormKind || null,
@@ -2491,6 +2492,7 @@ export class Game {
       visibility: clamp(num(s.visibility, 20000), 50, 100000), pressure: num(s.pressure, 1013), temp: num(s.temp, 12), cloud: clamp(num(s.cloud, 0.5), 0, 1),
       source: s.source || 'open-meteo', fetchedAt: s.fetchedAt,
       windWaves: s.windWaves || null, current: s.current || null, sst: Number.isFinite(s.sst) ? s.sst : null,
+      cloudLow: Number.isFinite(s.cloudLow) ? clamp(s.cloudLow, 0, 1) : null, cloudHigh: Number.isFinite(s.cloudHigh) ? clamp(s.cloudHigh, 0, 1) : null,
     };
   }
   // At most one request per 0.5° cell per 30 s from the hot path (the service dedups too; this keeps the Map small).

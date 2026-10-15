@@ -1078,7 +1078,7 @@ export class SoundEngine {
   _auto(dt, s, env, ci, h) {
     const P = (rate) => rate > 0 && Math.random() < rate * dt;
     const ek = env.key, he = h * env.harbor;
-    if (s.storm > 0.3 && P(Math.pow(s.storm, 1.5) / 22)) this._thunder(rand(0.15, 1));
+    if (s.storm > 0.3 && P(Math.pow(s.storm, 1.5) / 30)) this._thunder(rand(0.08, 0.3));   // distant rumble only: near thunder follows a visible flash (weather.js onThunder)
     if (this.v.gulls && P(he * 0.22 * (1 - 0.8 * s.night) * (1 - s.storm))) this._gullCall();
     if (he > 0.05 && P(he * 0.07)) this._clank(he, env);
     if (he > 0.1 && P(he * 0.015)) this._beeps(he, env);
