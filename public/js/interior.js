@@ -19,6 +19,8 @@ import { baseOf } from '/shared/ships/index.js';
 import { buildInteriorV2 } from './iv2draw.js';   // IV2 HV2 (docs/INTERIORS-V2-CONTRACT.md §9.5)
 import { iv2Interact, iv2Frame } from './iv2interact.js';   // IV2 HV3b, HV4
 import { CruiseCrowd, wantsCrowd } from './iv2crowd.js';
+import { prepareCasino, releaseCasino } from './iv2pbr.js';   // the cruise casino: prefetched from the Go-to list, released on leaving
+import { bindTex, loadGroup, releaseGroup } from './casinotex.js';
 import { buildRealisticBridgeCockpit, updateBridgeCockpit, disposeBridgeCockpit } from './bridgeCockpit.js';   // cruise ships: living guests and crew (docs/CRUISE-CONTRACT.md §6)
 
 const EYE = 1.65;
@@ -217,6 +219,7 @@ export class Interior {
     this.unlock();
     this.prompt.style.display = 'none'; this.prevLabel = '';
     this.light.intensity = 0;
+    releaseCasino();   // out of the ship: give the casino's GPU memory back
     if (this.avatar) this.avatar.visible = false;
     this.restoreExterior();
     this.setOcean(true);
@@ -263,7 +266,12 @@ export class Interior {
     return `Engine: ${rpm} rpm${thr < -0.005 ? ' astern' : ''} · ${orderLabel(thr)} (${Math.round(thr * 100)} %) · fuel ${(you.fuel || 0).toFixed(1)} / ${C.fuelCap} t · hull ${Math.round(you.cond)} % · ${you.flooding > 0.01 ? `flooding ${Math.round(you.flooding * 100)} % — pumps running` : 'bilges dry'}${you.fuelEmpty ? ' · NO FUEL' : ''}`;
   }
   /** G / Go-to button: the quick-travel list of this ship (L > 60 m). False when the ship has none. */
-  openGoto() { if (!this._active || this.atHelm || !this.plan?.goto?.length) return false; return openGotoMenu(this); }
+  openGoto() {
+    if (!this._active || this.atHelm || !this.plan?.goto?.length) return false;
+    // a casino on the list: start its textures and environment now, in the background, so the jump does not wait for them
+    if (this.plan.goto.some((g) => /casino/i.test(`${g.id} ${g.label}`))) prepareCasino({ renderer: this.app.renderer, phone: this.isTouch || window.innerWidth < 900 });
+    return openGotoMenu(this);
+  }
   interact() {
     if (this.atHelm) { this.leaveHelm(); return; }
     const h = this.nearHotspot; if (!h) return;
@@ -408,6 +416,7 @@ export class Interior {
     this.textures = [];
     if (this.mats) for (const m of Object.values(this.mats)) m.dispose?.();
     this.mats = null;
+    releaseGroup('interior');
     this.avatar = null; this.plan = null; this.map = null;
     this.rooms = []; this.hotspots = []; this.gauge = null; this.radarTex = null; this.wheel = null; this.lever = null;
     disposeBridgeCockpit();
@@ -440,6 +449,7 @@ export class Interior {
       this.pb.build(g);
       this.pb = null;
     }
+    if (plan.v !== 2) loadGroup('interior');   // the legacy plans draw the textured floors (v2 plans use the atlas)
     if (wantsCrowd(plan) && !/[?&]crowd=0\b/.test(location.search)) { try { this.crowd = new CruiseCrowd(this, plan, g, { phone: this.isTouch || window.innerWidth < 900 }); } catch (e) { console.warn('[interior] crowd failed', e); this.crowd = null; } }
     mesh.add(g);
     this.group = g; this.builtFor = mesh; this.builtCls = cls;
@@ -447,49 +457,19 @@ export class Interior {
   makeMaterials(style) {
     const yacht = style === 'yacht';
     const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.05, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.12, ...extra });
-    const TL = new THREE.TextureLoader();
-    const loadTex = (url, rep = [2, 2]) => {
-      try {
-        const t = TL.load(url);
-        t.wrapS = t.wrapT = THREE.RepeatWrapping;
-        t.repeat.set(rep[0], rep[1]);
-        return t;
-      } catch { return null; }
-    };
-
+    // the few textured materials share size-capped textures decoded in the background (casinotex.js); v2 plans draw from
+    // the atlas and never load them (build() starts the load for other plans only)
+    const size = this.isTouch || (typeof window !== 'undefined' && window.innerWidth < 900) ? 512 : 1024, CT = '/assets/casino/textures/';
+    const textured = (mat, maps, rep) => { for (const [slot, file, kind] of maps) bindTex('interior', mat, slot, CT + file, { size, kind, repeat: rep, aniso: 4 }); return mat; };
     return {
       wall: std(yacht ? 0xeae0cf : 0xdfe3e0), wallDark: std(0x8f969b, { roughness: 0.7, metalness: 0.2 }), wallWood: std(0x9b7650, { roughness: 0.6 }), wallSteel: std(0xb9bec2, { roughness: 0.6, metalness: 0.3 }),
       ceil: std(0xf1f1ec), lino: std(0x5a6772, { roughness: 0.55 }), woodFloor: std(0x8a6a44, { roughness: 0.5 }),
-      carpet: (() => {
-        try {
-          const col = loadTex('/assets/casino/textures/CG_Carpet012/Carpet012_2K-JPG_Color.jpg', [6, 6]);
-          const nrm = loadTex('/assets/casino/textures/CG_Carpet012/Carpet012_2K-JPG_NormalGL.jpg', [6, 6]);
-          return new THREE.MeshStandardMaterial({ map: col, normalMap: nrm, roughness: 0.92, color: new THREE.Color(0x9a222e), emissive: new THREE.Color(0x180406), emissiveIntensity: 0.15 });
-        } catch { return std(0x7a2a32, { roughness: 0.95 }); }
-      })(),
-      marble: (() => {
-        try {
-          const col = loadTex('/assets/casino/textures/CG_Marble014/Marble014_2K-JPG_Color.jpg', [2, 4]);
-          const nrm = loadTex('/assets/casino/textures/CG_Marble014/Marble014_2K-JPG_NormalGL.jpg', [2, 4]);
-          return new THREE.MeshStandardMaterial({ map: col, normalMap: nrm, roughness: 0.32, metalness: 0.05 });
-        } catch { return std(0xd8d4cb, { roughness: 0.4 }); }
-      })(),
+      carpet: textured(new THREE.MeshStandardMaterial({ roughness: 0.92, color: new THREE.Color(0x9a222e), emissive: new THREE.Color(0x180406), emissiveIntensity: 0.15 }), [['map', 'CG_Carpet012/Carpet012_2K-JPG_Color.jpg', 'color'], ['normalMap', 'CG_Carpet012/Carpet012_2K-JPG_NormalGL.jpg', 'normal']], [6, 6]),
+      marble: textured(new THREE.MeshStandardMaterial({ roughness: 0.32, metalness: 0.05 }), [['map', 'CG_Marble014/Marble014_2K-JPG_Color.jpg', 'color']], [2, 4]),   // its normal map is flat: not loaded
       grating: std(0x4b5154, { metalness: 0.45, roughness: 0.45 }), steelFloor: std(0x6d7377, { metalness: 0.3, roughness: 0.6 }),
       deck: std(yacht ? 0xb48a5a : 0x5f6d63, { roughness: 0.8 }),
-      teak: (() => {
-        try {
-          const tColor = loadTex('/assets/casino/textures/CG_Wood051/Wood051_2K-JPG_Color.jpg', [2, 6]);
-          const tNorm = loadTex('/assets/casino/textures/CG_Wood051/Wood051_2K-JPG_NormalGL.jpg', [2, 6]);
-          return new THREE.MeshStandardMaterial({ map: tColor, normalMap: tNorm, roughness: 0.45, metalness: 0.05, color: new THREE.Color(0xa87c4f) });
-        } catch { return std(0xb48a5a, { roughness: 0.7 }); }
-      })(),
-      brass: (() => {
-        try {
-          const col = loadTex('/assets/casino/textures/CG_Metal048A/Metal048A_2K-JPG_Color.jpg', [2, 2]);
-          const nrm = loadTex('/assets/casino/textures/CG_Metal048A/Metal048A_2K-JPG_NormalGL.jpg', [2, 2]);
-          return new THREE.MeshStandardMaterial({ map: col, normalMap: nrm, metalness: 0.95, roughness: 0.25, color: new THREE.Color(0xf5d76e) });
-        } catch { return std(0xd4af37, { metalness: 0.9, roughness: 0.3 }); }
-      })(),
+      teak: textured(new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.05, color: new THREE.Color(0xa87c4f) }), [['map', 'CG_Wood051/Wood051_2K-JPG_Color.jpg', 'color'], ['normalMap', 'CG_Wood051/Wood051_2K-JPG_NormalGL.jpg', 'normal']], [2, 6]),
+      brass: new THREE.MeshStandardMaterial({ metalness: 0.95, roughness: 0.25, color: new THREE.Color(0xf0cf78) }),   // Metal048A is a flat gold: its maps added nothing
       steel: std(0x6b7378, { metalness: 0.6, roughness: 0.4 }), dark: std(0x23272b, { metalness: 0.3, roughness: 0.5 }), console: std(0x2c3238, { metalness: 0.2, roughness: 0.5 }),
       wood: std(0x7d5a36, { roughness: 0.5 }), fabric: std(0x2f4a7a), fabric2: std(0x7a3a3a), blanket: std(0x3a5a8a), pillow: std(0xf0f0ea), engine: std(0x2e7d4f, { metalness: 0.5, roughness: 0.45 }),
       yellow: std(0xe3b018), red: std(0xc0392b), white: std(0xf4f4f0), rail: std(0xbfc4c8, { metalness: 0.7, roughness: 0.3 }), hatch: std(0x3c5a3c, { metalness: 0.3 }),
