@@ -3,7 +3,8 @@
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
 const MARINE = 'https://marine-api.open-meteo.com/v1/marine';
 import { readFileSync } from 'node:fs';
-const FORECAST_VARS = 'wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,temperature_2m,precipitation,visibility,cloud_cover';
+// 10 variables = 1 quota unit (the low/high cloud layers drive the client's cloud types: stratus vs cumulus vs cirrus)
+const FORECAST_VARS = 'wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,temperature_2m,precipitation,visibility,cloud_cover,cloud_cover_low,cloud_cover_high';
 const MARINE_VARS = 'wave_height,wave_direction,wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,ocean_current_velocity,ocean_current_direction,sea_surface_temperature';
 const nv = (s) => s.split(',').length;
 /** Quota units of one ship cell (forecast + marine for one location). */
@@ -201,6 +202,7 @@ export class WeatherService {
       sst: has(mc.sea_surface_temperature) ? +mc.sea_surface_temperature : null,
       pressure: num(c.pressure_msl, 1013), temp: num(c.temperature_2m, 12), precip: num(c.precipitation, 0),
       visibility: num(c.visibility, 20000), cloud: num(c.cloud_cover, 40) / 100,
+      cloudLow: has(c.cloud_cover_low) ? +c.cloud_cover_low / 100 : null, cloudHigh: has(c.cloud_cover_high) ? +c.cloud_cover_high / 100 : null,
     };
   }
   stats() { this.rollDay(); return { cells: this.cells.size, inflight: this.inflight, queued: this.queue.length, failures: this.failures, enabled: this.enabled, quota: { day: this.usage.day, used: Math.round(this.usage.used * 10) / 10, scan: Math.round(this.usage.scan * 10) / 10, limit: this.dailyLimit, refused: this.usage.refused } }; }
