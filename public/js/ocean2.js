@@ -364,26 +364,40 @@ void main() {
   #include <colorspace_fragment>
   #include <fog_fragment>
 }`;
-// Last resort: a flat, lit sea colour — a handful of uniforms, nothing that can fail. Never a black / missing sea.
+// Last resort: no uniform arrays, no loops, no textures, nothing that depends on precision (the varyings are small
+// numbers; the sines fade out beyond 2 km). Three gentle waves, fresnel between the sea colour and the sky colour.
+// Never a black / missing sea.
 const BASIC_VERT = /* glsl */`
-uniform vec2 uC; uniform float uLevel;
-varying vec3 vWorld;
+uniform vec2 uC; uniform float uLevel; uniform float uTime; uniform vec2 uWindDir; uniform float uHs;
+varying float vUp; varying float vH;
 #include <fog_pars_vertex>
 void main() {
-  vec3 pos = vec3(uC.x + position.x, uLevel, uC.y + position.z);
-  vWorld = pos;
+  vec2 rel = position.xz;
+  float a = min(uHs, 2.0) * 0.25 * (1.0 - smoothstep(1500.0, 4000.0, max(abs(rel.x), abs(rel.y))));
+  vec2 wx = vec2(-uWindDir.y, uWindDir.x);
+  float p1 = dot(rel, uWindDir) * 0.11 - uTime * 1.0;
+  float p2 = dot(rel, uWindDir * 0.7 + wx * 0.7) * 0.19 - uTime * 1.3;
+  float p3 = dot(rel, uWindDir * 0.3 - wx) * 0.05 - uTime * 0.6;
+  float hgt = a * (0.5 * sin(p1) + 0.3 * sin(p2) + 0.4 * sin(p3));
+  vec3 pos = vec3(uC.x + rel.x, uLevel + hgt, uC.y + rel.y);
+  vec3 toCam = cameraPosition - pos;
+  vUp = toCam.y / max(length(toCam), 1.0);
+  vH = hgt / max(a, 0.01);
   vec4 mvPosition = viewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 const BASIC_FRAG = /* glsl */`
-uniform vec3 uDeep; uniform vec3 uSkyHorizon; uniform float uNight;
-varying vec3 vWorld;
+uniform vec3 uDeep; uniform vec3 uSkyHorizon; uniform vec3 uSkyTop; uniform float uNight;
+varying float vUp; varying float vH;
 #include <fog_pars_fragment>
 void main() {
-  vec3 V = normalize(cameraPosition - vWorld);
-  float f = 0.02 + 0.98 * pow(1.0 - clamp(V.y, 0.0, 1.0), 5.0);
-  vec3 col = mix(uDeep * 1.3, uSkyHorizon * 0.85, f) * (1.0 - 0.8 * uNight);
+  float up = clamp(vUp, 0.0, 1.0);
+  float om = 1.0 - up; float om2 = om * om;
+  float f = 0.02 + 0.98 * om2 * om2 * om;
+  vec3 sky = mix(min(uSkyHorizon, vec3(1.5)), min(uSkyTop, vec3(1.5)), up * 0.6);
+  vec3 water = uDeep * (1.15 + 0.25 * vH);
+  vec3 col = mix(water, sky, f) * (1.0 - 0.8 * uNight);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -1031,12 +1045,14 @@ export class Ocean {
     // and actually draws with is used (see init / selfTest); a slow GPU drops to lite through setQuality.
     const cut = (f) => f.replace('void main() {', CUT_GLSL + 'void main() {\n  if (inCut(vWorld.xz)) discard;');
     this.mats = [
-      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: BASIC_VERT, fragmentShader: BASIC_FRAG, fog: true }),
-      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: LITE_VERT, fragmentShader: cut(LITE_FRAG), fog: true }),
-      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: cut(FRAG), fog: true }),
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: BASIC_VERT, fragmentShader: BASIC_FRAG, fog: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }),
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: LITE_VERT, fragmentShader: cut(LITE_FRAG), fog: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }),
+      new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: cut(FRAG), fog: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }),
     ];
     this.mats.forEach((m, i) => { m.name = `ocean-${['basic', 'lite', 'full'][i]}`; });
-    this.matCap = 2; this.matLevel = 2; this.matOk = [null, null, null]; this.matWatch = 0;
+    this.matCap = 2; this.matLevel = 2; this.matOk = [null, null, null]; this.matWatch = 0; this.tierLog = []; this.matSince = 0; this.matChecks = 0;
+    // phones start on the lite tier (always drawn) and move to full only after the full shader passed the offscreen self-test
+    this.safeStart = defaultQuality() < 1; this.bornAt = nowMs(); this.sceneAt = 0; this.gov = { ema: 1 / 60, last: 0, slowSince: 0, lastDrop: 0, lastChange: 0, pr0: 0 };
     this.material = this.mats[2];
     // ships fed by the game each frame (feedShip) → analytic Kelvin wakes + the local wake simulation
     this.ships = new Map(); this.kel = []; this.wake = null; this.wakeWant = false; this.simShips = [];
@@ -1414,6 +1430,7 @@ export class Ocean {
    */
   shiftOrigin(px, pz) {
     if (!Number.isFinite(px) || !Number.isFinite(pz) || (px === 0 && pz === 0)) return;
+    this.sceneAt = nowMs();
     for (let i = 0; i < NW; i++) this.ph[i] += this.k[i] * (this.dx[i] * px + this.dz[i] * pz);
     this.frameF.x += px; this.frameF.z += pz;
     this.view.x -= px; this.view.z -= pz;
@@ -1518,28 +1535,91 @@ export class Ocean {
     if (!c.isWebGL2 || c.precision !== 'highp' || (c.maxFragmentUniforms || 0) < 200 || (c.maxVertexUniforms || 0) < 128 || (c.maxVaryings || 0) < 8 || (c.maxTextures || 0) < 8 || (c.maxVertexTextures || 0) < 1) cap = 1;
     // lite: ~70 fragment / ~60 vertex uniform vectors, 6 varyings
     if (cap === 1 && ((c.maxFragmentUniforms || 0) < 64 || (c.maxVertexUniforms || 0) < 96 || (c.maxVaryings || 0) < 8)) cap = 0;
-    if (cap < 2) console.warn(`[ocean] GPU limits → ${['basic', 'lite'][cap]} sea shader`, info);
+    if (cap < 2) { const why = `GPU limits: ${JSON.stringify(info)}`; this.tierLog.push(`${['basic', 'lite'][cap]} cap: ${why}`); console.warn(`[ocean] GPU limits → ${['basic', 'lite'][cap]} sea shader`, info); }
     this.matCap = cap;
+    // offscreen self-test (8x8 RGBA8 target, always readable) of the highest tier before anything is drawn
+    for (let lvl = cap; lvl >= 1; lvl--) {
+      let t;
+      try { t = this.selfTest(lvl); } catch (e) { t = { ok: true, why: 'self-test threw: ' + e }; this.tierLog.push(`${['basic', 'lite', 'full'][lvl]}: ${t.why}`); }
+      this.matOk[lvl] = t.ok;
+      if (t.ok) { this.tierLog.push(`${['basic', 'lite', 'full'][lvl]}: self-test ok`); break; }
+      this.tierLog.push(`${['basic', 'lite', 'full'][lvl]}: FAILED ${t.why}`);
+      console.error(`[ocean] the ${['basic', 'lite', 'full'][lvl]} sea shader cannot be used on this GPU (${t.why}) — falling back to ${['basic', 'lite'][lvl - 1]}`, info);
+      this.matCap = lvl - 1;
+    }
     this.applyMaterial(this.tier < 0 ? 2 : this.tier);
+  }
+  /** Diagnostics for the in-game panel (diag.js). */
+  diag() {
+    const names = ['basic', 'lite', 'full'];
+    return {
+      shader: names[this.matLevel], cap: names[this.matCap], selfTests: this.matOk.map((v, i) => `${names[i]}=${v === null ? 'untested' : v ? 'ok' : 'FAILED'}`).join(' '),
+      safeStart: this.safeStart, quality: this.quality, grid: this.gridN, ripples: this.uniforms.uNDet.value, foamRT: !!this.foamRT, wakeSim: this.wake ? (this.wake.ok ? 'on' : 'broken') : (this.wakeOk === false ? 'unsupported' : 'off'),
+      ships: this.ships.size, kelvin: this.kel.length, frames: this.matChecks, upSec: Math.round((nowMs() - this.bornAt) / 1000),
+      governor: { fps: Math.round(1 / Math.max(1e-3, this.gov.ema)), lastDrop: this.gov.lastDrop ? Math.round((nowMs() - this.gov.lastDrop) / 1000) + 's ago' : 'never', lastChange: this.gov.lastChange ? Math.round((nowMs() - this.gov.lastChange) / 1000) + 's ago' : 'never' },
+      gpu: this.gpu || null, tierLog: this.tierLog.slice(-12),
+      sea: { wind: this.wind, hs: +this.hs.toFixed(2), level: this.level, storm: this.storm },
+      meshes: { near: this.mesh.visible, far: this.far.visible, material: this.material?.name, nearTris: this.mesh.geometry?.index ? this.mesh.geometry.index.count / 3 : 0 },
+    };
+  }
+  /**
+   * Frame-rate governor (main.js calls this each frame instead of its own): resolution and ripple count go first, the
+   * shader tier last, with hysteresis — nothing changes in the first 30 s after load or within 20 s of a scene change
+   * (origin shift / teleport); a drop needs 8 s of sustained slow frames; a step back up never comes within 2 minutes
+   * of the last drop. This is what stops the sea flipping between the two looks while tiles load.
+   */
+  govern(now, renderer) {
+    const g = this.gov;
+    if (!g.last) { g.last = now; g.pr0 = renderer ? renderer.getPixelRatio() : 1; return; }
+    const dt = (now - g.last) / 1000; g.last = now;
+    if (dt <= 0 || dt > 3 || (typeof document !== 'undefined' && document.hidden)) { g.slowSince = 0; return; }   // tab switch / hitch
+    g.ema += (dt - g.ema) * 0.05;
+    if (now - this.bornAt < 30000 || now - this.sceneAt < 20000) { g.slowSince = 0; return; }
+    const slow = g.ema > 1 / 24, fast = g.ema < 1 / 55;
+    if (slow) { if (!g.slowSince) g.slowSince = now; } else g.slowSince = 0;
+    const q = this.quality, pr = renderer ? renderer.getPixelRatio() : 1;
+    if (slow && now - g.slowSince > 8000 && now - g.lastChange > 8000) {
+      // ladder: fewer ripples (q 0.75, same shader) → fewer pixels → coarser grid, no wake sim (q 0.5, same shader) → lite shader (q 0.2)
+      if (q > 0.75) this.setQuality(0.75);
+      else if (renderer && pr > 0.6) renderer.setPixelRatio(Math.max(0.6, pr - 0.25));
+      else if (q > 0.5) this.setQuality(0.5);
+      else if (q > 0.2) this.setQuality(0.2);
+      else return;
+      g.lastDrop = now; g.lastChange = now; g.slowSince = 0; g.ema = 1 / 40;
+      this.tierLog.push(`governor: slow (${Math.round(1 / g.ema)} fps) → quality ${this.quality}, pixel ratio ${renderer ? renderer.getPixelRatio() : pr}`);
+    } else if (fast && now - g.lastDrop > 120000 && now - g.lastChange > 30000) {
+      if (q < 0.5) this.setQuality(0.5);
+      else if (q < 0.75) this.setQuality(0.75);
+      else if (renderer && pr < g.pr0) renderer.setPixelRatio(Math.min(g.pr0, pr + 0.25));
+      else if (q < 1 && !this.safeStart) this.setQuality(1);
+      else return;
+      g.lastChange = now; g.ema = 1 / 45;
+    }
   }
   /** Material for a quality tier, capped by what the GPU proved it can run. */
   applyMaterial(tier) {
-    const lvl = Math.min(this.matCap, tier === 0 ? 1 : 2);
+    let lvl = Math.min(this.matCap, tier === 0 ? 1 : 2);
+    if (this.safeStart && this.matOk[2] !== true) lvl = Math.min(lvl, 1);
     if (lvl === this.matLevel && this.material === this.mats[lvl]) return;
     this.matLevel = lvl; this.material = this.mats[lvl];
     this.mesh.material = this.material; this.far.material = this.material;
-    this.matWatch = 0;
+    this.matWatch = 0; this.matSince = nowMs(); this.matChecks = 0;
+    this.tierLog.push(`shader → ${['basic', 'lite', 'full'][lvl]}`);
     if (lvl < 2) { this.uniforms.uFoamOn.value = 0; this.foamPrev = null; }
   }
   /** Self-test / link check of the active tier; on failure step down and say why. */
   checkTier() {
     const r = this._renderer, lvl = this.matLevel;
     if (!r) return;
-    if (this.matOk[lvl] === null) {
+    const age = nowMs() - this.matSince, due = [2000, 5000, 10000, 20000, 30000][this.matChecks] ?? (30000 + 20000 * (this.matChecks - 4));
+    if (this.matOk[lvl] === null || age > due) {
+      this.matChecks++;
       let ok = true, why = '';
       try { const t = this.selfTest(lvl); ok = t.ok; why = t.why; } catch (e) { ok = true; console.warn('[ocean] sea self-test skipped', e); }
-      this.matOk[lvl] = ok;
-      if (!ok) return this.failTier(lvl, why);
+      if (!ok) { this.matOk[lvl] = false; return this.failTier(lvl, why); }
+      if (this.matOk[lvl] === null) this.matOk[lvl] = true;
+      // phones: lite was drawn first; the full shader passed its offscreen test → use it (once, after 3 s of frames)
+      if (this.safeStart && lvl < 2 && this.matCap >= 2 && this.matOk[2] === true && age > 3000) { this.safeStart = false; this.tierLog.push('safe start done: full shader passed'); this.applyMaterial(this.tier); }
     }
     // the screen variant of the program (fog / tone mapping) is a separate link: watch it for a few seconds
     if (this.matWatch < 600) {
@@ -1552,19 +1632,21 @@ export class Ocean {
     const name = ['basic', 'lite', 'full'][lvl];
     if (lvl === 0) { console.error(`[ocean] even the basic sea shader failed (${why}); nothing left to fall back to`, this.gpu); this.matOk[0] = true; return; }
     console.error(`[ocean] the ${name} sea shader cannot be used on this GPU (${why}) — falling back to ${['basic', 'lite'][lvl - 1]}`, this.gpu);
+    this.tierLog.push(`${name}: FAILED ${why}`);
     this.matOk[lvl] = false;
     this.matCap = lvl - 1;
     this.applyMaterial(this.tier);
     if (this.wake) { this.wake.dispose(); this.wake = null; }
   }
-  /** Draw the sea with tier `lvl` into a 24-px corner of the canvas (before the frame is drawn) and read it back. */
+  /** Draw the sea with tier `lvl` into an offscreen 8x8 RGBA8 render target (readable on every GPU) and read it back. */
   selfTest(lvl) {
-    const r = this._renderer, gl = r.getContext();
+    const r = this._renderer;
     if (!this._test) {
       const g = new THREE.PlaneGeometry(400, 400, 8, 8); g.rotateX(-Math.PI / 2);
       const mesh = new THREE.Mesh(g, this.mats[lvl]); mesh.frustumCulled = false;
       const scene = new THREE.Scene(); scene.add(mesh);
-      this._test = { scene, mesh, cam: new THREE.PerspectiveCamera(50, 1, 0.5, 3000) };
+      const rt = new THREE.WebGLRenderTarget(8, 8, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: true, stencilBuffer: false, generateMipmaps: false });
+      this._test = { scene, mesh, cam: new THREE.PerspectiveCamera(50, 1, 0.5, 3000), rt };
     }
     const T = this._test, u = this.uniforms;
     T.mesh.material = this.mats[lvl];
@@ -1572,20 +1654,17 @@ export class Ocean {
     const saved = { c: u.uC.value.clone(), cut: u.uCutN.value, night: u.uNight.value, wake: u.uWakeRect.value.w, kel: u.uKelN.value };
     u.uC.value.set(0, 0); u.uCutN.value = 0; u.uNight.value = 0; u.uWakeRect.value.w = 0; u.uKelN.value = 0;
     T.cam.position.set(0, this.level + 35, 45); T.cam.lookAt(0, this.level, 0); T.cam.updateMatrixWorld();
-    const prevRT = r.getRenderTarget(), vp = new THREE.Vector4(), sc = new THREE.Vector4();
-    r.getViewport(vp); r.getScissor(sc);
-    const scT = r.getScissorTest(), cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha(), ac = r.autoClear;
+    const prevRT = r.getRenderTarget(), cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha(), ac = r.autoClear, xr = r.xr ? r.xr.enabled : false;
     const px = new Uint8Array(8 * 8 * 4);
     let why = '';
     try {
-      r.setRenderTarget(null);
-      r.setViewport(0, 0, 24, 24); r.setScissor(0, 0, 24, 24); r.setScissorTest(true);
+      if (r.xr) r.xr.enabled = false;
+      r.setRenderTarget(T.rt);
       r.setClearColor(0xff00ff, 1); r.autoClear = true;
       r.render(T.scene, T.cam);
-      const d = Math.floor(24 * r.getPixelRatio()), o = Math.max(0, Math.floor(d / 2) - 4);
-      gl.readPixels(o, o, 8, 8, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      r.readRenderTargetPixels(T.rt, 0, 0, 8, 8, px);
     } finally {
-      r.setRenderTarget(prevRT); r.setViewport(vp); r.setScissor(sc); r.setScissorTest(scT); r.setClearColor(cc, ca); r.autoClear = ac;
+      r.setRenderTarget(prevRT); r.setClearColor(cc, ca); r.autoClear = ac; if (r.xr) r.xr.enabled = xr;
       u.uC.value.copy(saved.c); u.uCutN.value = saved.cut; u.uNight.value = saved.night; u.uWakeRect.value.w = saved.wake; u.uKelN.value = saved.kel;
     }
     const prog = r.properties.get(this.mats[lvl])?.currentProgram;
@@ -1778,7 +1857,7 @@ export class Ocean {
     this.mesh.geometry.dispose(); this.far.geometry.dispose(); this.spray.geometry.dispose();
     this.mats.forEach((m) => m.dispose()); this.sprayMat.dispose();
     if (this.wake) this.wake.dispose();
-    if (this._test) { this._test.mesh.geometry.dispose(); } this.depthTex.dispose(); this.shelterTex.dispose();
+    if (this._test) { this._test.mesh.geometry.dispose(); this._test.rt.dispose(); } this.depthTex.dispose(); this.shelterTex.dispose();
     this.foamScene.children[0].geometry.dispose(); this.foamScene.children[0].material.dispose();
     if (this.foamRT) this.foamRT.forEach((r) => r.dispose());
     if (active === this) active = null;
@@ -1786,3 +1865,4 @@ export class Ocean {
 }
 
 function posMod(a, m) { a %= m; return a < 0 ? a + m : a; }
+function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
