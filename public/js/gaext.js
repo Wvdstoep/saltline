@@ -37,7 +37,7 @@ function merge(s, g) {
   const big = g.layout !== 'small';
   const out = { ...s, L: g.L, B: g.B, T: g.T, D: g.D, F: g.F, deckY: g.deckY, Cb: g.Cb, levels: g.levels, goto: g.goto, planGA: g };
   // hull: ga.js lines (breadth everywhere, deck edge, midbody, forecastle, hull-body draught); the stub's contour kinds
-  const twin = g.hull.twin ? { hullB: g.hull.twin.hullB, gap: g.hull.twin.gap } : null;
+  const twin = g.hull.twin ? { hullB: g.hull.twin.hullB, gap: g.hull.twin.gap, ...(g.hull.twin.wetY != null ? { wetY: g.hull.twin.wetY } : {}) } : null;   // wetY: the cross structure's underside (shipgen twinStructure)
   out.hull = { ...s.hull, mid: g.hull.mid, bowFrac: g.hull.bowFrac, fcsle: g.hull.fcsle, poop: g.hull.poop, twin, draftHull: g.Tk,
     ...(g.hull.bow === 'ice' ? { bow: 'ice' } : s.hull.bow === 'axe' ? { bow: g.hull.bow } : {}),   // an X-bow rakes the deck aft of the LOA end; the plan's deck runs to it
     ...(big ? { sheerFwd: 0, sheerAft: 0 } : {}),                    // big ships: flat main deck, as walked

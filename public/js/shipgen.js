@@ -658,9 +658,10 @@ function twinStructure(ctx) {
   const wetY = t.wetY ?? F - 2.2;
   const zTip = hf.zFwd(F) + L * 0.035, zFull = -L / 2 + L * 0.2, zEnd = L / 2 - Math.max(1, L * 0.02);
   // wet deck: the underside of the cross structure between the hulls
-  P.box('hullX', gi * 2 + 0.2, F - wetY, zEnd - zFull, 0, (F + wetY) / 2, (zFull + zEnd) / 2);
+  P.box('hullX', gi * 2 + 0.2, F - wetY, zEnd - zFull + 2, 0, (F + wetY) / 2, (zFull - 2 + zEnd) / 2);
   // centre bow: keel line from under the tip back to the wet deck, sides out to the hulls' inner edges
   const tipTop = [0, F, zTip], tipBot = [0, F - 1.0, zTip], keel = [0, wetY - 1.1, zFull + 4];
+  tri(P, 'deck', tipTop, [-gi - 0.05, F, zFull - 2], [gi + 0.05, F, zFull - 2], [0, 1, 0]);   // the foredeck between the hulls
   for (const s of [-1, 1]) {
     const aTop = [s * gi, F, zFull - 2], aWet = [s * gi, wetY, zFull - 2];
     tri(P, 'hullX', tipTop, aTop, aWet, [s, 0, -0.3]);
@@ -670,6 +671,7 @@ function twinStructure(ctx) {
   }
   // the enclosed vehicle deck: plating up to the first passenger tier, closed at the stern (the door outlined dark)
   const h = ga.house, y1 = h && h.tiers.length ? h.tiers[0].y : F + 2;
+  ctx.twinEncl = twinEnclosure(ga);
   if (y1 - F > 0.4 && h) {
     tierSolid(ctx, h.z0 - 2, zEnd, ga.B, F - 0.05, y1 - F + 0.05, BANDS.blank, BANDS.blank, 0, 'hullX');
     if (ga.deck.sternDoor) P.box('paint', Math.min(10, ga.B * 0.32), (y1 - F) * 0.85, 0.12, 0, F + (y1 - F) * 0.45, zEnd + 0.06, shade(ga.livery.hull, 0.6));
@@ -715,6 +717,12 @@ function ferryStructure(ctx) {
       seam([[-w / 2, yb, zt + 0.06], [w / 2, yb, zt + 0.06], [w / 2, yt, zt + 0.06], [-w / 2, yt, zt + 0.06], [-w / 2, yb, zt + 0.06]]);
     }
   }
+}
+/** the enclosed vehicle deck of a twin-hull ferry: { z0, z1, y (its roof) } or null; fittings and crew there stand on the roof */
+function twinEnclosure(ga) {
+  const h = ga.house, L = ga.L;
+  if (!ga.hull.twin || !h || !h.tiers.length || h.tiers[0].y - ga.deckY <= 0.4) return null;
+  return { z0: h.z0 - 2, z1: L / 2 - Math.max(1, L * 0.02), y: h.tiers[0].y };
 }
 function tri(P, key, a, b, c, out) {
   const g = new THREE.BufferGeometry();
@@ -977,7 +985,7 @@ function buildBridge(ctx) {
     const ww = b.wingTo - w / 2, wl = Math.min(len * 0.7, 4.5), wz = b.z0 + wl / 2 + 0.2;
     for (const s of [-1, 1]) {
       const x = s * (w / 2 + ww / 2);
-      if (b.wings === 'enclosed') { P.facade('house', ww, b.h, wl, x, b.y + b.h / 2, wz, BANDS.blank, BANDS.blank); P.box('glass', ww, b.h * 0.42, 0.12, x, b.y + b.h * 0.62, wz - wl / 2 - 0.04); P.box('glass', 0.12, b.h * 0.42, wl * 0.8, s * b.wingTo + s * 0.04, b.y + b.h * 0.62, wz); }
+      if (b.wings === 'enclosed') { P.facade('house', ww, b.h, wl, x, b.y + b.h / 2, wz, BANDS.blank, BANDS.blank); P.box('paint', ww + 0.1, 0.2, wl + 0.1, x, b.y - 0.1, wz, ctx.primer ? COL.primer : ga.livery.house); P.box('glass', ww, b.h * 0.42, 0.12, x, b.y + b.h * 0.62, wz - wl / 2 - 0.04); P.box('glass', 0.12, b.h * 0.42, wl * 0.8, s * b.wingTo + s * 0.04, b.y + b.h * 0.62, wz); }
       else { P.box('paint', ww, 0.25, wl, x, b.y + 0.12, wz, ctx.primer ? COL.primer : ga.livery.house); P.box('paint', ww, 1.1, 0.12, x, b.y + 0.65, wz - wl / 2, ctx.primer ? COL.primer : ga.livery.house); P.box('paint', 1.2, 1.2, 1.0, s * (b.wingTo - 0.7), b.y + 0.85, wz - wl / 2 + 0.8, COL.dark); }
       // wing supports on big ships
       if (!b.embedded && ww > 3 && ga.L > 80) P.rod('metal', s * (b.wingTo - 0.6), b.y, wz, s * (w / 2 + 0.2), b.y - Math.min(6, ww * 0.8), wz, 0.12, COL.light, 5);
@@ -1356,15 +1364,16 @@ function buildDeckGear(ctx) {
   }
   if (d.compressor && lod < 2) { const c = d.compressor, y = c.onTrunk ? dy + 3.6 : dy; P.facade('house', c.w, 4.2, c.z1 - c.z0, 0, y + 2.1, (c.z0 + c.z1) / 2, BANDS.blank, BANDS.blank); }
   // mooring: windlasses forward, winches aft (drums), bollards
-  if (lod < 2 && ga.L >= 30 && ga.gen !== 'motor_yacht') for (const mo of d.mooring) {
+  if (lod < 2 && ga.L >= 30 && ga.gen !== 'motor_yacht') for (const mo0 of d.mooring) {
+    const mo = twinMooring(ctx, mo0), mx = hf.twin ? Math.abs(hf.demi[0].cx) : B * 0.18;
     const y = mo.y ?? yAt(mo.z), s = clamp(0.5, 2.2, B * 0.04);
-    for (const sx of [-1, 1]) { P.box('paint', s * 1.4, s * 0.9, s * 1.4, sx * B * 0.18, y + s * 0.45, mo.z, mo.kind === 'windlass' ? COL.dark : 0x3d5266); if (lod === 0) P.cyl('paint', s * 0.45, s * 1.4, sx * B * 0.18 + sx * s, y + s * 0.6, mo.z, COL.red, s * 0.45, 10, 0, 0, Math.PI / 2); }
+    for (const sx of [-1, 1]) { P.box('paint', s * 1.4, s * 0.9, s * 1.4, sx * mx, y + s * 0.45, mo.z, mo.kind === 'windlass' ? COL.dark : 0x3d5266); if (lod === 0) P.cyl('paint', s * 0.45, s * 1.4, sx * mx + sx * s, y + s * 0.6, mo.z, COL.red, s * 0.45, 10, 0, 0, Math.PI / 2); }
     if (lod > 0) continue;
     // warping drums outboard of the winch, bollards at the deck edge; the anchor chain runs from the gypsy to the hawse pipe
-    for (const sx of [-1, 1]) P.icyl('paint', s * 0.35, s * 0.9, sx * (B * 0.18 + s * 1.6), y + s * 0.5, mo.z, 0x8a9199, 0, 0, Math.PI / 2);
+    for (const sx of [-1, 1]) P.icyl('paint', s * 0.35, s * 0.9, sx * (mx + s * 1.6), y + s * 0.5, mo.z, 0x8a9199, 0, 0, Math.PI / 2);
     bollards(ctx, mo.z + (mo.z < 0 ? 4 : -4), y, ga.L > 120 ? 2 : 1);
     const hw = ctx.hawse;
-    if (mo.kind === 'windlass' && hw) for (const sx of [-1, 1]) P.ibeam('metal', sx * B * 0.18, y + s * 0.5, mo.z, sx * Math.max(1, hw.x - 1.2), y + 0.15, hw.z, 0.22, 0.12, 0x2a2c2e);
+    if (mo.kind === 'windlass' && hw) for (const sx of [-1, 1]) P.ibeam('metal', sx * mx, y + s * 0.5, mo.z, sx * Math.max(1, hw.x - 1.2), y + 0.15, hw.z, 0.22, 0.12, 0x2a2c2e);
   }
   // spring-line bollards amidships on big ships (not between container bays or on passenger ships)
   if (lod === 0 && ga.L >= 60 && !['motor_yacht', 'cruise', 'ferry'].includes(ga.gen)) for (const z of [-L * 0.22, L * 0.18]) bollards(ctx, z, yAt(z), 1);
@@ -1494,6 +1503,14 @@ function workGear(ctx, yAt) {
     const tl = clamp(3, 6.5, L * 0.13), zMax = L / 2 - platformLen(ga) - tl * 0.55, zt = Math.max((ga.house?.z1 ?? 0) + tl * 0.6, zMax - tl);
     if (zt <= zMax) P.iboat('paint', tl, tl * 0.2, 0, yAt(zt) + tl * 0.17, zt, 0xf2f2ee);
   }
+}
+/** a mooring station of a twin hull: kept on the demihull decks (inside the wave-piercer's deck tip) and lifted onto the
+ * vehicle-deck roof where the enclosure covers the deck; monohulls unchanged */
+function twinMooring(ctx, mo) {
+  const { hf, ga } = ctx;
+  if (!hf.twin) return mo;
+  const zMin = hf.zFwd(ga.deckY) + 2.5, zMax = hf.zAft(ga.deckY) - 2.5, z = clamp(zMin, zMax, mo.z), e = ctx.twinEncl;
+  return { ...mo, z, y: e && z >= e.z0 && z <= e.z1 ? e.y : hf.deckAt(z) };
 }
 /** mooring bollards (double bitts on a base plate, instanced) on both sides of a mooring station */
 function bollards(ctx, z, y, n = 2) {
@@ -1655,7 +1672,8 @@ function crewSpots(ga) {
   const b = ga.bridge;
   if (b && b.wings !== 'none' && b.wingTo > 1) out.push([b.wingTo - 0.8, b.y, b.z0 + 1.2]);
   if (ga.hull.fcsle) out.push([ga.B * 0.15, ga.deckY + ga.hull.fcsle.h, -ga.L / 2 + ga.hull.fcsle.len * 0.5]);
-  out.push([ga.B * 0.3, ga.deckY, ga.L / 2 - Math.max(1.5, ga.L * 0.04)]);
+  const zs = ga.L / 2 - Math.max(1.5, ga.L * 0.04), e = twinEnclosure(ga);
+  out.push([ga.B * 0.3, e && zs >= e.z0 && zs <= e.z1 ? e.y : ga.deckY, zs]);
   return out;
 }
 

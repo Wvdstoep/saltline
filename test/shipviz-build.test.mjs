@@ -115,3 +115,21 @@ test('ships2: cruise balconies and boats in davits; the fast cat house spans its
   assert.ok(fits(buildFromGA(generalArrangement('tug'), { lod: 0 }).group)['fit-tyre:paint'] > 10, 'tug tyre fenders');
   assert.ok(fits(buildFromGA(generalArrangement('mpp160'), { lod: 0 }).group)['fit-box:paint'] > 50, 'lattice crane jibs');
 });
+test('ships2: hsc112 (game GA) — crew spots stand on a floor, the house covers the gap between the hulls', async () => {
+  const { exteriorGA } = await import('../public/js/gaext.js');
+  const ga = exteriorGA('hsc112');
+  assert.ok(ga.hull.twin.wetY > 0, 'gaext keeps twin.wetY');
+  const r = buildFromGA(ga, { lod: 0 }); r.group.updateMatrixWorld(true);
+  const meshes = []; r.group.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  const rc = new THREE.Raycaster(), down = new THREE.Vector3(0, -1, 0);
+  for (const [x, y, z] of r.info.crewSpots) {
+    rc.set(new THREE.Vector3(x, y + 0.5, z), down);
+    const h = rc.intersectObjects(meshes, false)[0];
+    assert.ok(h && Math.abs(h.point.y - y) < 0.25, `crew spot ${x.toFixed(1)},${y},${z.toFixed(1)} floor ${h ? h.point.y.toFixed(2) : 'none'}`);
+  }
+  for (const x of [0, 4, 12]) {   // amidships: the passenger deck's roof and the cross structure at every x, not a 6.6 m box over a gap
+    rc.set(new THREE.Vector3(x, 60, 0), down);
+    const ys = rc.intersectObjects(meshes, false).map((h) => h.point.y);
+    assert.ok(ys.some((y) => Math.abs(y - 13.8) < 0.2) && ys.some((y) => Math.abs(y - ga.deckY) < 0.1), `x ${x}: ${ys.map((y) => y.toFixed(2)).join(' ')}`);
+  }
+});
