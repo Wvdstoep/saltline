@@ -7,6 +7,7 @@
 // interior, no ship simulation while ashore, no casting off from the quay), chase camera sized to the hull.
 import { installDiag } from './diag.js';   // DIAG: first import so the console hook sees every later module's errors
 import * as THREE from 'three';
+import { Lighting } from './lighting.js';   // LIGHT: must evaluate before any program compiles (patches lights_fragment_begin for cascaded shadows)
 import { GEO, SIM, SHIP_CLASSES, INTERACT, LAYERS, WARP } from '/shared/constants.js';
 import { toLocal, fromLocal, haversine, bearing, destination, unitsBetween, angleDiff, normDeg, fmtDistance } from '/shared/geo.js';
 import { stepShip, currentAt } from '/shared/physics.js';
@@ -100,6 +101,7 @@ class App {
     this.weatherFx = new WeatherFX(this.scene, this.camera);
     this.skySys = new SkySystem({ scene: this.scene, camera: this.camera, renderer: this.renderer, sun: this.sun, hemi: this.hemi, phone: isTouch(), weatherFx: this.weatherFx });
     this.sky = this.skySys.dome; this.celestial = this.skySys.celestial;
+    try { this.lighting = new Lighting(this, { phone: isTouch() }); } catch (e) { console.error('[lighting] unavailable, plain render', e); this.lighting = null; }   // LIGHT: CSM shadows, bloom, GTAO (lighting.js); ?light=off|low|medium|high
     import('./shiplights.js').then((m) => { this.shipLights = new m.ShipLights(this); }).catch((e) => console.warn('[shiplights] unavailable', e));   // deck floodlights + searchlight (Shift+L)
     window.saltlineSky = (x) => this.skySys.setOverride(x);   // debug / screenshots: 'clear'|'fair'|'overcast'|'rain'|'storm'|'fog'|'snow'|{...}|null; also ?wx=storm
     this.weatherFx.onThunder = (k, delayS) => setTimeout(() => this.sound?.event('thunder', k), delayS * 1000);   // light first, then the sound
@@ -1402,11 +1404,18 @@ class App {
   }
 
   // ------------------------------------------------------------------ loop
+  /** LIGHT: shadows + post chain (lighting.js); a failure there falls back to the plain render for good. */
+  renderFrame() {
+    if (this.lighting) {
+      try { this.lighting.render(); return; } catch (e) { console.error('[lighting] render failed, plain render from now on', e); this.lighting = null; this.renderer.setRenderTarget(null); }
+    }
+    this.renderer.render(this.scene, this.camera);
+  }
   loop() {
     requestAnimationFrame(() => this.loop());
     const dt = Math.min(0.25, this.clock.getDelta()); this.time += dt;
     const now = performance.now();
-    if (!this.ready || !this.ship) { this.renderer.render(this.scene, this.camera); return; }
+    if (!this.ready || !this.ship) { this.renderFrame(); return; }
     const ashore = !!this.ashore?.active;
     if (!ashore) this.simulate(dt); // ashore the ship lies moored: nothing to integrate, no helm
     this.recentre(false);
@@ -1448,7 +1457,7 @@ class App {
     else { if (this.raft && !this.you.rescue) { this.drop(this.raft); this.raft = null; } this.updateCamera(dt); }
     this.updateDayNight(dt);
     this.weatherFx.update?.(dt, this.camera.position, this.time);
-    this.renderer.render(this.scene, this.camera);
+    this.renderFrame();
     // HUD
     if (now - this.lastTelemetry > 120) { this.lastTelemetry = now; this.updateHud(now); }
     if (now - this.lastRadar > 100) { this.lastRadar = now; this.drawRadar(now); }
