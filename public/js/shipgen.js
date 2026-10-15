@@ -17,6 +17,7 @@ import { MODELS } from '../../shared/ships/index.js';
 import { loftHull, hullForm, bayStacks, lodDistances } from './shipgeom.js';
 import { hashStr, rng } from './models.js';
 import { cruiseProfile } from '../../shared/ships/cruiseprofile.js';
+import { PRESETS, hullModeOf, deckModeOf } from './shipskinfmt.js';
 
 const HAS_DOM = typeof document !== 'undefined' && typeof document.createElement === 'function';
 const clamp = (lo, hi, v) => Math.max(lo, Math.min(hi, v));
@@ -25,41 +26,84 @@ const COL = {
   grey: 0x9ea3a8, rubber: 0x17191c, blue: 0x2a6fb0, green: 0x2e6b4f, teak: 0xb08a5a, pool: 0x3fb7d9, helideck: 0x3f5a46, primer: 0x9aa0a6,
   redOxide: 0x7a3b2e, bronze: 0xb08d57, deckGreen: 0x4d6b55, deckRed: 0x7b3a33, hatchRed: 0x8c3b2f, hatchGrey: 0x6f757c, catwalk: 0xd8c23a,
 };
+/** a colour darkened (k < 1) or lightened (k > 1) */
+function shade(hex, k) { const r = Math.min(255, ((hex >> 16) & 255) * k) | 0, g = Math.min(255, ((hex >> 8) & 255) * k) | 0, b = Math.min(255, (hex & 255) * k) | 0; return (r << 16) | (g << 8) | b; }
 const CONTAINER_PALETTE = [0xb5372b, 0x2e6fa8, 0x2f8a55, 0xd99a2b, 0x7d4f9e, 0x8a8f94, 0xc8622a, 0x23867a, 0xe0e0dc, 0x1f3a5f, 0x9c2f45, 0x5a6b2f];
 
 // ------------------------------------------------------------------------------------------------ shared textures (browser)
-let FACADE = null, CONTAINERS = null;
+let CONTAINERS = null;
+const FACADES = new Map();   // atlas size → texture
 const BANDS = { cabins: 0, balcony: 1, glass: 2, blank: 3 };
-const BAND_TILE = [6, 8.4, 6, 10];
-/** 4-band facade atlas: merchant cabins, cruise balconies, big windows / bridge glass, blank wall */
-function facadeTexture() {
+/** metres of facade one atlas width covers, per band (cabins, balconies, glass band, blank wall) */
+const BAND_TILE = [18, 8.4, 12, 10];
+/**
+ * 4-band facade atlas in metres: merchant cabins (framed windows at irregular spacing, a door, vent grilles, weep
+ * streaks), cruise balconies, the big-window / bridge glass band with mullions, blank plated wall. The ALPHA channel
+ * is a mask the skin shader reads: 1 wall, 0.75 glass, 0.5 glass that is lit at night (so windows reflect the sky by
+ * day and glow by night without another texture). size: 1024 desktop, 512 phones.
+ */
+function facadeTexture(size = 1024) {
   if (!HAS_DOM) return null;
-  if (FACADE) return FACADE;
-  const W = 512, H = 512, c = document.createElement('canvas'); c.width = W; c.height = H;
-  const g = c.getContext('2d');
-  const band = (k) => H - (k + 1) * (H / 4);           // canvas top of band k (flipY: band 0 at the bottom)
-  const bh = H / 4;
-  // band 0: wall with three square windows
-  let y0 = band(0); g.fillStyle = '#f4f5f2'; g.fillRect(0, y0, W, bh);
-  g.fillStyle = '#d9dcda'; g.fillRect(0, y0 + bh - 6, W, 6);
-  for (let i = 0; i < 2; i++) { const x = 64 + i * (W / 2); g.fillStyle = '#b8bec2'; g.fillRect(x - 4, y0 + 36, 84, 50); g.fillStyle = '#1e3449'; g.fillRect(x, y0 + 40, 76, 42); g.fillStyle = 'rgba(160,200,230,0.35)'; g.fillRect(x + 4, y0 + 42, 28, 12); }
-  // band 1: balconies (glass doors, dividers, rail)
-  y0 = band(1); g.fillStyle = '#f2f3f0'; g.fillRect(0, y0, W, bh);
-  g.fillStyle = '#26394c'; g.fillRect(0, y0 + 18, W, bh - 30);
-  for (let i = 0; i < 3; i++) { const x = i * (W / 3); g.fillStyle = '#e9ebe8'; g.fillRect(x, y0 + 12, 10, bh - 18); g.fillStyle = 'rgba(150,190,220,0.25)'; g.fillRect(x + 20, y0 + 24, 60, 30); }
-  g.fillStyle = '#cfd5d8'; g.fillRect(0, y0 + bh * 0.62, W, 5); g.fillStyle = 'rgba(220,230,235,0.5)'; g.fillRect(0, y0 + bh * 0.62, W, bh * 0.3);
-  // band 2: continuous glass band with mullions
-  y0 = band(2); g.fillStyle = '#f2f3f0'; g.fillRect(0, y0, W, bh);
-  g.fillStyle = '#1b2f42'; g.fillRect(0, y0 + 24, W, bh - 52);
-  g.fillStyle = '#b7c0c6'; for (let x = 0; x < W; x += 64) g.fillRect(x, y0 + 24, 5, bh - 52);
-  g.fillStyle = 'rgba(170,210,240,0.22)'; g.fillRect(0, y0 + 28, W, 18);
-  // band 3: blank wall with faint seams
-  y0 = band(3); g.fillStyle = '#f3f4f1'; g.fillRect(0, y0, W, bh);
-  g.fillStyle = 'rgba(0,0,0,0.06)'; for (let x = 0; x < W; x += 128) g.fillRect(x, y0, 2, bh);
-  FACADE = new THREE.CanvasTexture(c);
-  FACADE.wrapS = THREE.RepeatWrapping; FACADE.wrapT = THREE.ClampToEdgeWrapping; FACADE.colorSpace = THREE.SRGBColorSpace; FACADE.anisotropy = 4;
-  FACADE.userData.shared = true;
-  return FACADE;
+  if (FACADES.has(size)) return FACADES.get(size);
+  const W = size, H = size, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'), bh = H / 4, r = rng(4242);
+  const glass = [];   // [x, y, w, h, lit]
+  const top = (k) => H - (k + 1) * bh;                        // canvas top of band k (flipY: band 0 at the bottom)
+  // band-local coordinates: x in metres along the tile, f = height fraction of the tier (0 deck … 1 deckhead)
+  const X = (k, m) => (m / BAND_TILE[k]) * W;
+  const Y = (k, f) => top(k) + bh * (1 - (0.03 + 0.94 * f));
+  const rect = (k, m0, f0, m1, f1) => [X(k, m0), Y(k, f1), X(k, m1) - X(k, m0), Y(k, f0) - Y(k, f1)];
+  const rr = (x, y, w, h, rad) => { g.beginPath(); g.moveTo(x + rad, y); g.arcTo(x + w, y, x + w, y + h, rad); g.arcTo(x + w, y + h, x, y + h, rad); g.arcTo(x, y + h, x, y, rad); g.arcTo(x, y, x + w, y, rad); g.closePath(); };
+  const wall = (k, base) => {
+    const t = top(k); g.fillStyle = base; g.fillRect(0, t, W, bh);
+    g.fillStyle = 'rgba(0,0,0,0.10)'; g.fillRect(0, Y(k, 0.035), W, bh * 0.035);          // deck line / toe of the bulkhead
+    g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(0, Y(k, 1.0), W, bh * 0.012);       // drip rail at the deckhead
+    g.fillStyle = 'rgba(0,0,0,0.045)'; for (let m = 0; m < BAND_TILE[k]; m += 2.0) g.fillRect(X(k, m), t, Math.max(1, W / 900), bh);   // plate seams
+    for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(${100 + r() * 40 | 0},${90 + r() * 30 | 0},${80 + r() * 20 | 0},${0.02 + r() * 0.03})`; g.fillRect(r() * W, t + r() * bh, W * (0.01 + r() * 0.04), bh * (0.2 + r() * 0.6)); }   // grime
+  };
+  const window_ = (k, m0, f0, m1, f1, lit, frame = '#c3c9cd') => {
+    const [x, y, w, h] = rect(k, m0, f0, m1, f1), fw = Math.max(2, W * 0.07 / BAND_TILE[k]);
+    g.fillStyle = 'rgba(0,0,0,0.18)'; rr(x - fw * 1.2, y - fw * 1.2 + 1, w + fw * 2.4, h + fw * 2.4, fw * 1.5); g.fill();   // shadow line round the frame
+    g.fillStyle = frame; rr(x - fw, y - fw, w + fw * 2, h + fw * 2, fw * 1.4); g.fill();
+    const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, '#3a5670'); gr.addColorStop(0.45, '#1d3247'); gr.addColorStop(1, '#0f1c29');
+    g.fillStyle = gr; g.fillRect(x, y, w, h);
+    if (r() < 0.45) { g.fillStyle = r() < 0.5 ? 'rgba(214,200,168,0.55)' : 'rgba(150,160,170,0.5)'; g.fillRect(x + w * (r() < 0.5 ? 0 : 0.6), y, w * 0.4, h); }   // curtains
+    glass.push([x, y, w, h, lit]);
+    // rust weeping from the lower corners
+    g.fillStyle = 'rgba(120,64,30,0.10)'; for (const sx of [x - fw, x + w + fw * 0.4]) if (r() < 0.6) g.fillRect(sx, y + h + fw, Math.max(1, fw * 0.6), bh * (0.08 + r() * 0.18));
+  };
+  // band 0: merchant cabins — windows ~0.95 × 0.85 m in pairs and singles, a steel door, vent grilles
+  wall(0, '#f2f3f0');
+  for (const m of [1.2, 2.5, 5.3, 6.6, 8.9, 12.0, 13.3, 15.6, 16.9]) window_(0, m - 0.47, 0.38, m + 0.47, 0.7, r() < 0.5);
+  { const [x, y, w, h] = rect(0, 10.15, 0.04, 10.95, 0.78); g.fillStyle = '#d6dadc'; rr(x, y, w, h, w * 0.12); g.fill(); g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = Math.max(1, W / 700); g.stroke();
+    g.fillStyle = '#9aa1a6'; g.fillRect(x + w * 0.78, y + h * 0.5, w * 0.1, h * 0.04); }
+  for (const m of [3.9, 14.45]) { const [x, y, w, h] = rect(0, m - 0.25, 0.78, m + 0.25, 0.9); g.fillStyle = '#d0d4d6'; g.fillRect(x, y, w, h); g.fillStyle = 'rgba(0,0,0,0.4)'; for (let i = 1; i < 5; i++) g.fillRect(x + 2, y + h * i / 5, w - 4, Math.max(1, h * 0.06)); }
+  // band 1: balconies — divider walls, glass doors, a glass balustrade
+  wall(1, '#f2f3f0');
+  for (let i = 0; i < 3; i++) {
+    const m = i * 2.8;
+    window_(1, m + 0.35, 0.08, m + 2.45, 0.86, r() < 0.55, '#aab3b9');
+    const [bx, by, bw, bhh] = rect(1, m + 0.1, 0.06, m + 2.7, 0.4); g.fillStyle = 'rgba(205,222,230,0.55)'; g.fillRect(bx, by, bw, bhh); g.fillStyle = '#d9dee0'; g.fillRect(bx, by - 3, bw, Math.max(2, W / 400));
+    const [dx, dy, dw, dh] = rect(1, m, 0.0, m + 0.12, 1.0); g.fillStyle = '#e4e7e5'; g.fillRect(dx, dy, dw, dh);
+  }
+  // band 2: continuous window band with mullions (bridge front, public rooms)
+  wall(2, '#f2f3f0');
+  for (let m = 0; m < BAND_TILE[2] - 0.01; m += 1.2) window_(2, m + 0.06, 0.28, m + 1.14, 0.86, r() < 0.75, '#b9c1c6');
+  // band 3: blank wall with seams, a vent and a lamp
+  wall(3, '#f3f4f1');
+  { const [x, y, w, h] = rect(3, 6.0, 0.55, 6.6, 0.8); g.fillStyle = '#cfd3d5'; g.fillRect(x, y, w, h); g.fillStyle = 'rgba(0,0,0,0.35)'; for (let i = 1; i < 6; i++) g.fillRect(x + 2, y + h * i / 6, w - 4, Math.max(1, h * 0.05)); }
+  // alpha mask: glass 0.75 (unlit) / 0.5 (lit at night)
+  const img = g.getImageData(0, 0, W, H), d = img.data;
+  for (const [x, y, w, h, lit] of glass) {
+    const a = lit ? 128 : 191;
+    for (let yy = Math.max(0, Math.ceil(y)); yy < Math.min(H, Math.floor(y + h)); yy++) for (let xx = Math.max(0, Math.ceil(x)); xx < Math.min(W, Math.floor(x + w)); xx++) d[(yy * W + xx) * 4 + 3] = a;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; t.premultiplyAlpha = false;
+  t.userData.shared = true;
+  FACADES.set(size, t);
+  return t;
 }
 /** container stack atlas: 16 columns × 16 slots, random company colours, corrugated sides */
 function containerTexture() {
@@ -102,6 +146,26 @@ function decalTexture(name, livery) {
     g.fillText(livery.mark.startsWith('icon:') ? '★' : livery.mark, cx, cy + 6);
   }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+
+const MARKS = new Map();
+/** company mark for the funnel only (disc in the funnel band colour, letters in the funnel colour), shared per livery */
+function markTexture(livery) {
+  if (!HAS_DOM || !livery.mark) return null;
+  const disc = livery.funnelBand ?? livery.band ?? 0xffffff;
+  const key = `${livery.mark}|${disc}|${livery.funnel}`;
+  if (MARKS.has(key)) return MARKS.get(key);
+  const S = 256, c = document.createElement('canvas'); c.width = S; c.height = S;
+  const g = c.getContext('2d'), hex = (v) => '#' + (v >>> 0).toString(16).padStart(6, '0');
+  g.fillStyle = hex(disc); g.beginPath(); g.arc(S / 2, S / 2, S * 0.46, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = S * 0.015; g.stroke();
+  g.fillStyle = hex(livery.funnel === disc ? 0x1b1b1b : livery.funnel); g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = `800 ${livery.mark.length > 1 ? 104 : 150}px "Segoe UI", Arial, sans-serif`;
+  g.fillText(livery.mark.startsWith('icon:') ? '\u2605' : livery.mark, S / 2, S / 2 + 6);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; t.userData.shared = true;
+  if (MARKS.size > 32) { for (const v of MARKS.values()) v.dispose(); MARKS.clear(); }
+  MARKS.set(key, t);
   return t;
 }
 
@@ -210,18 +274,21 @@ function defaultMakeMat(kind, color, p = {}) {
 function makeMaterials(ga, opts, primer) {
   const lv = ga.livery, mk = opts.makeMat || defaultMakeMat;
   const P = primer ? { hull: COL.primer, boot: COL.redOxide, band: COL.primer, house: COL.primer, funnel: COL.primer, deck: 0x7d8186 } : null;
+  const yacht = hullModeOf(ga.gen) === 1;
+  // PBR presets (shipskinfmt.js): painted steel is a dielectric (metalness 0); yachts are gelcoat; decks non-slip / teak
+  const hullP = primer ? { roughness: 0.7, metalness: 0 } : yacht ? PRESETS.gelcoat : PRESETS.paint;
   const mats = {
-    hull: mk('hull', P ? P.hull : lv.hull, { roughness: 0.5, metalness: 0.25 }),
-    boot: mk('boot', P ? P.boot : lv.boot, { roughness: 0.6, metalness: 0.15 }),
-    band: mk('band', P ? P.band : lv.band ?? lv.hull, { roughness: 0.5, metalness: 0.2 }),
+    hull: mk('hull', P ? P.hull : lv.hull, { ...hullP, preset: yacht ? 'gelcoat' : 'paint' }),
+    boot: mk('boot', P ? P.boot : lv.boot, { roughness: 0.62, metalness: 0, preset: 'paint' }),
+    band: mk('band', P ? P.band : lv.band ?? lv.hull, { ...hullP, preset: yacht ? 'gelcoat' : 'paint' }),
     hullX: null,
-    deck: mk('deck', P ? P.deck : DECK[ga.gen] ?? 0x666b70, { roughness: 0.85, metalness: 0.1 }),
-    house: mk('house', P ? P.house : lv.house, { roughness: 0.62, metalness: 0.1, map: primer ? null : facadeTexture() }),
-    glass: mk('glass', 0x1b3148, { roughness: 0.18, metalness: 0.65, emissive: 0xffd890, emissiveIntensity: 0 }),
-    paint: mk('paint', primer ? COL.primer : 0xffffff, { roughness: 0.65, metalness: 0.15, vertexColors: !primer }),
-    metal: mk('metal', primer ? COL.primer : 0xffffff, { roughness: 0.4, metalness: 0.6, vertexColors: !primer }),
-    funnel: mk('funnel', P ? P.funnel : lv.funnel, { roughness: 0.55, metalness: 0.2 }),
-    cargo: mk('cargo', 0xffffff, { roughness: 0.75, metalness: 0.15, vertexColors: true, map: containerTexture() }),
+    deck: mk('deck', P ? P.deck : DECK[ga.gen] ?? 0x666b70, deckModeOf(ga.gen, DECK[ga.gen]) ? { ...PRESETS.teak, preset: 'teak' } : { ...PRESETS.deckPaint, preset: 'deckPaint' }),
+    house: mk('house', P ? P.house : lv.house, { ...PRESETS.housePaint, map: primer ? null : facadeTexture(opts.phone ? 512 : 1024) }),
+    glass: mk('glass', 0x16283a, { ...PRESETS.glass, emissive: 0xffd890, emissiveIntensity: 0 }),
+    paint: mk('paint', primer ? COL.primer : 0xffffff, { ...PRESETS.fittings, vertexColors: !primer }),
+    metal: mk('metal', primer ? COL.primer : 0xffffff, { roughness: 0.45, metalness: 0.35, vertexColors: !primer }),
+    funnel: mk('funnel', P ? P.funnel : lv.funnel, { ...PRESETS.funnel }),
+    cargo: mk('cargo', 0xffffff, { roughness: 0.75, metalness: 0.1, vertexColors: true, map: containerTexture() }),
     decal: null,
   };
   mats.hullX = mats.hull;
@@ -264,7 +331,11 @@ export function buildFromGA(ga, opts = {}) {
     }
     const meshes = P.build(g, mats, new Set(['cargo']));
     // name + company mark decals (browser, LOD0 only, full livery)
-    if (lod === 0 && !primer && opts.decals !== false && HAS_DOM && (opts.name || ga.livery.mark)) {
+    if (lod === 0 && !primer && opts.decals === 'mark' && HAS_DOM && ga.livery.mark) {
+      // the hull lettering is drawn by the skin shader (ship.js): only the funnel mark is a decal, its texture shared
+      const t = markTexture(ga.livery);
+      if (t) { const d = buildDecals(ctx, t, null, true); if (d) { g.add(d); meshes.push(d); } }
+    } else if (lod === 0 && !primer && opts.decals !== false && opts.decals !== 'mark' && HAS_DOM && (opts.name || ga.livery.mark)) {
       decalTex = decalTex || decalTexture(opts.name || '', ga.livery);
       if (decalTex) { const d = buildDecals(ctx, decalTex, opts.name); if (d) { g.add(d); meshes.push(d); } }
     }
@@ -367,10 +438,45 @@ function buildHull(ctx, mats) {
   if (H.poop && lod < 2) raisedDeck(ctx, L / 2 - H.poop.len, L / 2, H.poop.h);
   if (H.bulwark && lod === 0) bulwark(ctx, H.bulwark);
   if (H.fender && lod < 2) fenders(ctx);
+  const hawse = hawseSpot(ga, hf);
+  if (hawse && lod < 2) anchors(ctx, hawse);
+  if (lod === 0 || !ctx.info.skin) ctx.info.skin = skinInfo(ga, hf, loft, hawse);
   if (H.tube) ribTube(ctx);
   if ((ga.gen === 'cruise' || (ga.gen === 'ferry' && ga.model !== 'ferry50' && !hf.twin)) && lod < 2 && ctx.stage >= 0.65) hullWindows(ctx);
   if (ga.deck.swimPlatform && lod < 2) { const pl = platformLen(ga); P.box('deck', B * 0.78, 0.25, pl, 0, 0.35, L / 2 - pl / 2, null); }
   return mesh;
+}
+/** where the hawse pipes leave the hull (both sides, mirrored): { x (half-breadth), y, z, r, a (anchor size) } or null */
+export function hawseSpot(ga, hf) {
+  if (ga.L < 30 || hf.twin || ['motor_yacht', 'small_fast'].includes(ga.gen) || ga.hull?.bow === 'planing') return null;
+  const y = ga.deckY - clamp(1.2, 4.5, ga.deckY * 0.3);
+  const a = Math.min(clamp(0.6, 3.6, ga.L * 0.012), y / 1.25);   // low-freeboard bulkers: the anchor still clears the waterline
+  if (a < 0.5) return null;
+  const z = hf.zFwd(y) + clamp(2, 14, ga.L * 0.045);
+  const x = Math.max(hf.halfBreadth(z, y), hf.halfBreadth(z, y - a * 1.1));
+  if (!(x > 0.6)) return null;
+  return { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000, z: Math.round(z * 1000) / 1000, r: Math.round(a * 0.3 * 1000) / 1000, a };
+}
+/** stockless anchors housed in the hawse pockets at both bows (LOD0: ring, shank, crown, flukes; LOD1: shank only) */
+function anchors(ctx, h) {
+  const { P, lod } = ctx, a = h.a, dark = 0x2a2c2e;
+  for (const s of [-1, 1]) {
+    const x = s * (h.x + 0.14 * a), top = h.y - h.r;
+    P.box('metal', 0.22 * a, a * 0.85, 0.18 * a, x, top - a * 0.42, h.z, dark);
+    if (lod > 0) continue;
+    P.cyl('metal', h.r * 1.3, 0.3, s * (h.x + 0.08), h.y, h.z, 0x1c1e20, h.r * 1.3, 12, 0, 0, Math.PI / 2);
+    P.box('metal', 0.26 * a, 0.2 * a, 0.95 * a, x, top - a * 0.85, h.z, dark);
+    for (const sz of [-1, 1]) P.box('metal', 0.24 * a, 0.55 * a, 0.26 * a, x, top - a * 0.62, h.z + sz * 0.42 * a, dark, 0, sz * 0.45);
+  }
+}
+/** hull facts the skin shader needs (ship.js turns them into uniforms) */
+function skinInfo(ga, hf, loft, hawse) {
+  const L = ga.L, yS = ga.deckY * 0.55;
+  return {
+    hawse, bootH: loft.bootH, zStemAt: (y) => hf.zFwd(y), zAftAt: (y) => hf.zAft(y),
+    zMid: [L / 2 - (hf.xif ?? 0.7) * L, L / 2 - (hf.xia ?? 0.3) * L],
+    transomHalf: hf.twin ? 0 : hf.halfBreadth(hf.zAft(yS) - 0.3, yS),
+  };
 }
 function m2(ctx) { return ctx.m; }
 /** rows of cabin windows on the hull sides of passenger ships (crew decks), where the side is near vertical */
@@ -627,6 +733,13 @@ function buildBridge(ctx) {
     P.box('glass', w * 0.98, gh, 0.12, cx, gy, b.z0 - 0.04, null, 0, -0.12);
     P.box('glass', 0.12, gh, len * 0.85, cx - w / 2 - 0.04, gy, zc); P.box('glass', 0.12, gh, len * 0.85, cx + w / 2 + 0.04, gy, zc);
     if (b.allRound || b.aftConsole) P.box('glass', w * 0.9, gh, 0.12, cx, gy, b.z1 + 0.04);
+    if (lod === 0 && !ctx.primer) {
+      // window frames: mullions across the raked front and along the sides, a sun visor over the front
+      const hc = ga.livery.house;
+      for (let x = -w / 2 + 1.25; x < w / 2 - 0.3; x += 1.25) P.box('paint', 0.1, gh * 1.02, 0.2, cx + x, gy, b.z0 - 0.06, hc, 0, -0.12);
+      for (const sx of [-1, 1]) for (let z = b.z0 + 1.2; z < b.z0 + len * 0.9; z += 1.25) P.box('paint', 0.2, gh * 1.02, 0.1, cx + sx * (w / 2 + 0.06), gy, z, hc);
+      P.box('paint', w, 0.08, 0.7, cx, gy + gh / 2 + 0.14, b.z0 - 0.3, hc);
+    }
     // roof (compass deck) overhang + sun visor
     P.box('paint', w + 0.6, 0.3, len + 0.8, cx, b.y + b.h + 0.15, zc - 0.2, ctx.primer ? COL.primer : (ga.livery.house));
   } else {
@@ -709,7 +822,13 @@ function buildFunnel(ctx) {
     // black top and exhaust pipes
     P.box('paint', a * 1.9, Math.min(1.6, hh * 0.1), b * 1.9, x, top - Math.min(0.8, hh * 0.05), f.z + hh * 0.12 - 0.1, COL.dark);
     if (lod === 0) for (const dx of [-a * 0.35, a * 0.35]) P.cyl('metal', a * 0.18, 1.6, x + dx, top + 0.6, f.z + hh * 0.12, COL.steel, a * 0.18, 8);
-    if (ga.livery.band != null && !ctx.primer && lod === 0) P.box('paint', a * 2.02, hh * 0.12, b * 2.02, x, base + hh * 0.66, f.z + hh * 0.08, ga.livery.band);
+    const fb = ga.livery.funnelBand ?? ga.livery.band;
+    if (fb != null && !ctx.primer && lod === 0) {
+      // the company band; with a mark it is as tall as the mark's disc and centred on it (decal at f.y + 0.62 h)
+      const my = f.y + f.h * 0.62, bh = ga.livery.mark ? Math.max(hh * 0.12, clamp(0.8, 9, f.r * 1.6) * 1.12) : hh * 0.12, by = ga.livery.mark ? my : base + hh * 0.66;
+      const k = 1 - 0.08 * ((by - base) / hh), rk = 1 - 0.05 * ((by - base) / hh);
+      P.box('paint', a * 2.02 * k, bh, b * 2.02 * rk, x, by, f.z + (by - base) * rake, fb);
+    }
   }
   if (ga.gen === 'lng' || ga.gen === 'special') { /* twin uptakes inside one wide casing */ }
 }
@@ -729,6 +848,18 @@ function buildCargo(ctx) {
         // side-rolling / folding covers: two panels with a ridge
         for (const s of [-1, 1]) P.box('paint', z.w / 2, 0.7, zl, s * z.w / 4, y0 + z.coaming + 0.35, zc, hatch, 0, 0, s * -0.06);
         if (lod === 0 && zl > 10) for (let k = 1; k < 4; k++) P.box('paint', z.w + 0.1, 0.18, 0.35, 0, y0 + z.coaming + 0.72, z.z0 + zl * k / 4, 0x4a4f55);
+        if (lod === 0) {
+          // cover top: transverse stiffener ribs (~1.7 m), edge girders and the centre ridge; coaming top bar + cleats
+          const rib = shade(hatch, 0.82), n = Math.max(3, Math.round(zl / 1.7)), ty = y0 + z.coaming + 0.7;
+          for (const s of [-1, 1]) {
+            const cx = s * z.w / 4, tilt = s * -0.06;
+            for (let k = 1; k < n; k++) P.box('paint', z.w / 2 - 0.3, 0.2, 0.22, cx, ty + 0.09, z.z0 + zl * k / n, rib, 0, 0, tilt);
+            P.box('paint', 0.28, 0.32, zl - 0.2, s * (z.w / 2 - 0.12), ty - 0.02 - z.w / 4 * 0.06, zc, rib);
+          }
+          P.box('paint', 0.3, 0.16, zl, 0, ty + z.w / 4 * 0.06 + 0.04, zc, rib);
+          P.box('paint', z.w + 0.6, 0.12, 0.3, 0, y0 + z.coaming + 0.06, z.z0 - 0.05, 0x7a8086); P.box('paint', z.w + 0.6, 0.12, 0.3, 0, y0 + z.coaming + 0.06, z.z1 + 0.05, 0x7a8086);
+          for (const s of [-1, 1]) P.box('paint', 0.3, 0.12, zl + 0.6, s * (z.w / 2 + 0.15), y0 + z.coaming + 0.06, zc, 0x7a8086);
+        }
       }
       break;
     }
@@ -784,8 +915,15 @@ function buildCargo(ctx) {
       } else if (lod < 2) {
         // tank deck: pipe rack, expansion trunks / gas domes, deck pipes
         const za = zs[0].z0, zb = zs[zs.length - 1].z1, B = ga.B;
-        const nPipes = lod === 0 ? 5 : 2;
-        for (let k = 0; k < nPipes; k++) P.rod('metal', -B * 0.08 + k * 0.6, dy + 1.3, za, -B * 0.08 + k * 0.6, dy + 1.3, zb, 0.18 + ga.L * 0.0006, COL.light, 6);
+        // pipe rack on stools: cargo lines (largest), stripping / vapour lines, the red fire main and foam line along the side
+        const sc = 0.18 + ga.L * 0.0006, py = dy + 1.3;
+        const pipes = lod === 0 ? [[-B * 0.08, sc * 1.5, COL.light], [-B * 0.08 + 0.75 * sc / 0.25, sc * 1.5, COL.light], [-B * 0.08 + 1.5 * sc / 0.25, sc * 1.3, COL.light], [-B * 0.08 + 2.15 * sc / 0.25, sc * 0.8, 0xbfc4c6], [-B * 0.08 + 2.65 * sc / 0.25, sc * 0.6, 0x8d9296]] : [[-B * 0.04, sc * 1.5, COL.light], [B * 0.04, sc * 1.2, COL.light]];
+        for (const [x, r, c] of pipes) P.rod('metal', x, py, za, x, py, zb, r, c, 6);
+        if (lod === 0) {
+          const x0 = pipes[0][0] - sc * 2, x1 = pipes[pipes.length - 1][0] + sc * 2;
+          for (let z = za + 2; z < zb; z += 6) { P.box('paint', x1 - x0, 0.18, 0.3, (x0 + x1) / 2, py - sc * 1.6, z, 0x6d7276); P.box('paint', 0.25, py - sc * 1.6 - dy, 0.25, x0 + 0.2, (py - sc * 1.6 + dy) / 2, z, 0x6d7276); P.box('paint', 0.25, py - sc * 1.6 - dy, 0.25, x1 - 0.2, (py - sc * 1.6 + dy) / 2, z, 0x6d7276); }
+          for (const s of [-1, 1]) { const x = s * (B / 2 - 2.7); P.rod('metal', x, dy + 0.55, za, x, dy + 0.55, zb, 0.09 + ga.L * 0.0002, COL.red, 6); for (let z = za + 3; z < zb; z += 9) P.box('paint', 0.2, 0.45, 0.2, x, dy + 0.22, z, 0x6d7276); }
+        }
         for (const z of zs) {
           const zc = (z.z0 + z.z1) / 2;
           if (z.domes) { P.cyl('paint', B * 0.08, 2.4, 0, dy + 1.2, zc, 0xd8dadb, B * 0.08, 12); P.cyl('paint', 0.6, 1.5, B * 0.15, dy + 0.75, zc, COL.light, 0.6, 8); }
@@ -988,9 +1126,9 @@ function buildRails(ctx) {
 }
 
 // ------------------------------------------------------------------------------------------------ decals
-function buildDecals(ctx, tex, name) {
+function buildDecals(ctx, tex, name, markOnly = false) {
   const { ga, hf } = ctx;
-  const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, alphaTest: 0.25, roughness: 0.6, metalness: 0.1, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, depthWrite: false });
+  const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, alphaTest: 0.25, roughness: 0.55, metalness: 0, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, depthWrite: false });
   mat.name = 'decal';
   const geos = [];
   const addPlane = (w, h, x, y, z, ry, u0, v0, u1, v1) => {
@@ -1010,7 +1148,7 @@ function buildDecals(ctx, tex, name) {
   if (ga.livery.mark && f && f.kind !== 'none' && f.kind !== 'side' && f.kind !== 'mast' && f.h > 2) {
     const s = clamp(0.8, 9, f.r * 1.6), y = f.y + f.h * 0.62, xs = f.kind === 'twin' && ga.gen !== 'lng' ? [-f.r * 1.15, f.r * 1.15] : [0];
     const r = f.kind === 'twin' && xs.length === 2 ? f.r * 0.85 : f.r;
-    for (const x of xs) for (const sd of [-1, 1]) addPlane(s, s, x + sd * (r * (1 - 0.08 * 0.62) + 0.08), y, f.z + f.h * 0.62 * 0.12, sd * Math.PI / 2, 0, 0, 0.5, 0.5);
+    for (const x of xs) for (const sd of [-1, 1]) addPlane(s, s, x + sd * (r * (1 - 0.08 * 0.62) + 0.08), y, f.z + f.h * 0.62 * 0.12, sd * Math.PI / 2, 0, 0, markOnly ? 1 : 0.5, markOnly ? 1 : 0.5);
   }
   if (!geos.length) return null;
   const mesh = new THREE.Mesh(merge(geos, false), mat); mesh.name = 'decals'; mesh.userData.matKey = 'decal'; mesh.renderOrder = 2;

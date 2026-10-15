@@ -1072,6 +1072,7 @@ export class Fleet {
     return {
       aboard: p.aboard, vesselName: p.vessel?.name ?? null, home: p.office?.home ?? null, homeName: h ? h.name : null,
       livery: p.vessel?.spec?.livery ?? null,         // SHIPYARD H9: the own ship is drawn in her livery
+      built: Number.isFinite(p.vessel?.hist?.built) ? p.vessel.hist.built : null,   // ship skin: weathering by age
       fleet: { n: fl.length, atSea: fl.filter((v) => v.status === 'active' && !v.docked).length, laidUp: fl.filter((v) => v.status === 'laidup').length, owed: p.office?.owed || 0, unread: p.office?.unread || 0 },
     };
   }

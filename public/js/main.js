@@ -373,7 +373,7 @@ class App {
       if (hard) { this.input.throttleCmd = you.docked ? 0 : s.throttle; this.input.rudderCmd = 0; this.selfSamples = []; }
       if (!this.myMesh || prev?.ship.cls !== s.cls || prev?.aboard !== you.aboard) {
         if (this.myMesh) { if (this.interior.active) this.interior.exit(); this.drop(this.myMesh); }
-        this.myMesh = buildShip(s.cls, you.name, 7, { livery: you.livery || undefined }); this.scene.add(this.myMesh);   // SHIPYARD H9: own livery (vessel.spec)
+        this.myMesh = buildShip(s.cls, you.name, 7, { livery: you.livery || undefined, hullName: you.vesselName || '', port: you.homeName || '', own: true }); this.scene.add(this.myMesh);   // SHIPYARD H9: own livery (vessel.spec)
         this.sailHud?.setClass(s.cls); this.touchHelm?.setButtons?.(rigOf(s.cls) ? ['stop', 'auto', 'sails', 'tack'] : ['stop', 'auto']);
         this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false);
         // a new hull: chase camera sized to it (docs/V4-CONTRACTS.md §4)
@@ -389,6 +389,7 @@ class App {
     if (!prev?.assist && you.assist) { this.input.throttleCmd = 0; this.input.rudderCmd = 0; this.autopilot = false; this.touchHelm?.setThrottle?.(0); }
     if (prev?.name !== you.name) this.myMesh?.userData.label?.userData.setText(you.name);
     this.myMesh?.userData.setWear(1 - you.cond / 100); this.myMesh?.userData.setFlood(you.flooding);
+    this.myMesh?.userData.setHullName?.(you.vesselName || '', you.homeName || ''); if (Number.isFinite(you.built)) this.myMesh?.userData.setAge?.(new Date().getUTCFullYear() - you.built);   // ship skin: name, port, age
     if (prev?.sailsUp !== you.sailsUp) { this.hud.setSailsButton?.(!!SHIP_CLASSES[s.cls]?.sail, you.sailsUp !== false); this.lastSails = 0; }
     // environment: tide level + stream, local weather for sea state / particles / fog
     if (you.tide || you.water) { if (you.tide) this.tide = you.tide; this.tideLevel = you.water && Number.isFinite(you.water.h) ? you.water.h : Number(you.tide?.height) || 0; this.ocean.setLevel?.(this.tideLevel); }   // BRIDGES & LOCKS: canal pounds have their own level
@@ -473,8 +474,8 @@ class App {
       const own = f.ownerId === this.you?.id, cls = SHIP_CLASSES[f.cls] ? f.cls : 'coaster';
       const label = `${f.name} · ${f.state === 'laid_up' ? 'laid up' : own ? 'yours' : f.owner}`;
       let o = this.fleetShips.get(f.id);
-      if (!o) { o = { id: f.id, cls, mesh: buildShip(cls, label, hashStr(f.id) % 97 + 1), samples: [], cur: { lat: f.lat, lon: f.lon, hdg: f.hdg, spd: f.spd }, vis: { heave: 0, pitch: 0, roll: 0 }, label }; this.scene.add(o.mesh); o.mesh.userData.setLights?.(!!this.lightsOn); this.fleetShips.set(f.id, o); }
-      else if (o.cls !== cls) { this.drop(o.mesh); o.cls = cls; o.mesh = buildShip(cls, label, 5); this.scene.add(o.mesh); o.mesh.userData.setLights?.(!!this.lightsOn); }
+      if (!o) { o = { id: f.id, cls, mesh: buildShip(cls, label, hashStr(f.id) % 97 + 1, { hullName: f.name }), samples: [], cur: { lat: f.lat, lon: f.lon, hdg: f.hdg, spd: f.spd }, vis: { heave: 0, pitch: 0, roll: 0 }, label }; this.scene.add(o.mesh); o.mesh.userData.setLights?.(!!this.lightsOn); this.fleetShips.set(f.id, o); }
+      else if (o.cls !== cls) { this.drop(o.mesh); o.cls = cls; o.mesh = buildShip(cls, label, 5, { hullName: f.name }); this.scene.add(o.mesh); o.mesh.userData.setLights?.(!!this.lightsOn); }
       if (o.label !== label) { o.label = label; o.mesh.userData.label?.userData.setText(label); }
       Object.assign(o, { name: f.name, owner: f.owner, ownerId: f.ownerId, state: f.state, cond: f.cond, fishing: !!f.fishing, towing: !!f.towing, towCls: f.towCls || null });
       o.mesh.userData.setWear?.(1 - (f.cond ?? 100) / 100);
@@ -492,7 +493,7 @@ class App {
       this.scene.add(o.mesh); this.others.set(p.id, o);
     } else if (o.cls !== p.cls || (p.vid && o.vid && o.vid !== p.vid)) { this.drop(o.mesh); o.cls = p.cls; o.mesh = buildShip(p.cls, p.name, 3); this.scene.add(o.mesh); o.samples = []; o.vname = undefined; } // v6: switched ships — no glide across the map
     o.vid = p.vid;
-    if (o.vname !== p.vname) { o.vname = p.vname; o.mesh.userData.label?.userData.setText(p.vname ? `${p.name} — ${p.vname}` : p.name); }
+    if (o.vname !== p.vname) { o.vname = p.vname; o.mesh.userData.label?.userData.setText(p.vname ? `${p.name} — ${p.vname}` : p.name); o.mesh.userData.setHullName?.(p.vname || ''); }
     Object.assign(o, { name: p.name, cond: p.cond, flooding: p.flooding, convoyId: p.convoyId, wanted: p.wanted, docked: p.docked, sinking: p.sinking, towing: p.towing, towCls: p.towCls || null, fishing: !!p.fishing, offline: p.offline, warp: WARP_LEVELS.includes(Number(p.warp)) ? Number(p.warp) : 1 });
     o.samples.push({ t: now, lat: p.lat, lon: p.lon, hdg: p.hdg, spd: p.spd }); if (o.samples.length > 4) o.samples.shift();
     o.mesh.userData.setWear(1 - p.cond / 100); o.mesh.userData.setFlood(p.flooding);
@@ -509,9 +510,9 @@ class App {
     let o = this.ai.get(a.id);
     const label = `${a.name} · ${a.destName || a.dest || '—'}`;
     if (!o) {
-      o = { id: a.id, name: a.name, cls: SHIP_CLASSES[a.cls] ? a.cls : 'coaster', mesh: buildShip(SHIP_CLASSES[a.cls] ? a.cls : 'coaster', label, hashStr(a.id) % 97 + 1), samples: [], cur: { lat: a.lat, lon: a.lon, hdg: a.hdg, spd: a.spd }, vis: { heave: 0, pitch: 0, roll: 0 }, label };
+      o = { id: a.id, name: a.name, cls: SHIP_CLASSES[a.cls] ? a.cls : 'coaster', mesh: buildShip(SHIP_CLASSES[a.cls] ? a.cls : 'coaster', label, hashStr(a.id) % 97 + 1, { hullName: a.name, traffic: true }), samples: [], cur: { lat: a.lat, lon: a.lon, hdg: a.hdg, spd: a.spd }, vis: { heave: 0, pitch: 0, roll: 0 }, label };
       this.scene.add(o.mesh); this.ai.set(a.id, o);
-    } else if (o.cls !== a.cls && SHIP_CLASSES[a.cls]) { this.drop(o.mesh); o.cls = a.cls; o.mesh = buildShip(a.cls, label, 5); this.scene.add(o.mesh); }
+    } else if (o.cls !== a.cls && SHIP_CLASSES[a.cls]) { this.drop(o.mesh); o.cls = a.cls; o.mesh = buildShip(a.cls, label, 5, { hullName: a.name, traffic: true }); this.scene.add(o.mesh); }
     if (o.label !== label) { o.label = label; o.mesh.userData.label?.userData.setText(label); }
     Object.assign(o, { name: a.name, flag: a.flag, dest: a.dest, destName: a.destName, state: a.state, eta: a.eta });
     o.samples.push({ t: now, lat: a.lat, lon: a.lon, hdg: a.hdg, spd: a.spd }); if (o.samples.length > 4) o.samples.shift();

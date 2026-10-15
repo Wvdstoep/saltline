@@ -17,55 +17,20 @@ import { autoTrimView } from './sailshared.js';
 import { buildFromGA } from './shipgen.js';                                      // SHIPYARD H9 (docs/SHIPS-LANEB-PHASE2.md)
 import { exteriorGA } from './gaext.js';                                          // Lane C's shared/ships/ga.js in shipgen's shape
 import { gaReady, baseOf, defaultLivery } from '/shared/ships/index.js';
+import { makeSkinMaterial, skinUniforms, acquireLettering, releaseLettering, glyphTexture, guardSkin } from './shipskin.js';
+import { plateGrid, weathering, nameLayout, draftStations, walkwayFor, deckLanes, texSizes, markColorFor, hullModeOf, deckModeOf, trafficLivery } from './shipskinfmt.js';
 
-// ----------------------------------------------------------------------------------------------- wear shader
-// shipPos: per-vertex position in the SHIP group's frame, baked at build time (fixed to the plating, y = up, so the
-// wear noise does not crawl with heave/motion). uWaterY: the ship group's world y (main.js: userData.setWaterY), so
-// vLocalY is the height above the waterline whatever the part's own geometry axes are (the hull is an extrusion).
-const WEAR_VERT_PARS = /* glsl */`attribute vec3 shipPos; uniform float uWaterY; varying vec3 vShipPos; varying float vLocalY;`;
-const WEAR_VERT = /* glsl */`vShipPos = shipPos; vLocalY = (modelMatrix * vec4(transformed, 1.0)).y - uWaterY;`;
-const WEAR_FRAG_PARS = /* glsl */`
-uniform float uWear; uniform float uFlood; varying vec3 vShipPos; varying float vLocalY;
-float wh(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
-float wnoise(vec3 p) { vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f);
-  float a = mix(mix(wh(i), wh(i+vec3(1,0,0)), f.x), mix(wh(i+vec3(0,1,0)), wh(i+vec3(1,1,0)), f.x), f.y);
-  float b = mix(mix(wh(i+vec3(0,0,1)), wh(i+vec3(1,0,1)), f.x), mix(wh(i+vec3(0,1,1)), wh(i+vec3(1,1,1)), f.x), f.y);
-  return mix(a, b, f.z); }`;
-const WEAR_FRAG = /* glsl */`
-{
-  vec3 lp = vShipPos;
-  float n1 = wnoise(lp * 0.9) * 0.55 + wnoise(lp * 3.1) * 0.45;
-  float streak = wnoise(vec3(lp.x * 4.0, lp.y * 0.35, lp.z * 4.0));
-  float w = clamp(uWear, 0.0, 1.0);
-  // antifouling red below the waterline
-  if (vLocalY < 0.0) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.12, 0.08), 0.9);
-  // rust: patches grow with wear, streaks run down from edges
-  float rust = smoothstep(1.0 - w * 1.15, 1.0 - w * 1.15 + 0.22, n1) * (0.6 + 0.4 * streak);
-  rust += smoothstep(1.0 - w * 0.9, 1.0 - w * 0.9 + 0.1, streak) * 0.5 * w;
-  rust = clamp(rust, 0.0, 1.0);
-  vec3 rustCol = mix(vec3(0.46, 0.21, 0.08), vec3(0.25, 0.1, 0.05), n1);
-  diffuseColor.rgb = mix(diffuseColor.rgb, rustCol, rust * 0.95);
-  // barnacles and weed around the waterline band
-  float band = smoothstep(2.6, 0.2, abs(vLocalY + 0.6)) * w;
-  float barn = smoothstep(0.35, 0.75, wnoise(lp * 2.3)) * band;
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.26, 0.16), barn);
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.2, 0.1), band * 0.3);
-  // flaking paint darkening
-  diffuseColor.rgb *= 1.0 - 0.25 * w * n1;
-}`;
-
+// ----------------------------------------------------------------------------------------------- skin (wear) materials
+// The exterior paint, plates, rust, lettering and draft marks come from shipskin.js (one shader patch, specialised per
+// surface class). shipPos: per-vertex position in the SHIP group's frame (shipgen geometry: the position attribute
+// itself, shared; legacy parts: baked at build time), so nothing crawls with heave / motion. One uniform set per ship.
+const IS_TOUCH = typeof window !== 'undefined' && (('ontouchstart' in window) || (typeof navigator !== 'undefined' && (navigator.maxTouchPoints || 0) > 0));
+const IS_PHONE = IS_TOUCH && typeof window !== 'undefined' && window.innerWidth < 900;
+/** Legacy name kept: a skin material (opts { kind: 'hull'|'deck'|'house'|…, uniforms, roughness, metalness, extra }). */
 export function makeWearMaterial(color, opts = {}) {
-  const m = new THREE.MeshStandardMaterial({ color, roughness: opts.roughness ?? 0.55, metalness: opts.metalness ?? 0.25, ...opts.extra });
-  m.userData.uniforms = { uWear: { value: 0 }, uFlood: { value: 0 }, uWaterY: { value: 0 } };
-  m.onBeforeCompile = (shader) => {
-    shader.uniforms.uWear = m.userData.uniforms.uWear; shader.uniforms.uFlood = m.userData.uniforms.uFlood; shader.uniforms.uWaterY = m.userData.uniforms.uWaterY;
-    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + WEAR_VERT_PARS)
-      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + WEAR_VERT);
-    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\n' + WEAR_FRAG_PARS)
-      .replace('#include <color_fragment>', '#include <color_fragment>\n' + WEAR_FRAG)
-      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = min(1.0, roughnessFactor + 0.45 * uWear);');
-  };
-  return m;
+  const kind = opts.kind || 'hull';
+  return makeSkinMaterial(kind, color, { roughness: opts.roughness ?? (kind === 'hull' ? 0.5 : 0.6), metalness: opts.metalness ?? 0, ...(opts.extra || {}),
+    uniforms: opts.uniforms, physical: kind === 'hull' && !IS_TOUCH, preset: kind === 'hull' ? 'paint' : undefined, lite: IS_PHONE });
 }
 
 // ----------------------------------------------------------------------------------------------- shared palette
@@ -138,21 +103,76 @@ function extrudeHull(shape, depth, mats, y0, bevel = false) {
 function detRand(seed) { let s = seed * 9301 + 49297; return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; }; }
 /** SHIPYARD H9: build the exterior from the general arrangement (shipgen.js) into ship.js' ctx, with wear materials */
 function genBuilder(ctx, cls, opts = {}) {
-  const ga = exteriorGA(cls, { livery: opts.livery || defaultLivery(cls), stage: opts.stage ?? 1 });
+  let ga = exteriorGA(cls, { livery: opts.livery || defaultLivery(cls), stage: opts.stage ?? 1 });
   if (!ga) throw new Error(`no general arrangement for ${cls}`);
-  const touch = typeof window !== 'undefined' && (('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0);
-  const wear = {};
+  // AI traffic without a livery of its own: a made-up operator's funnel band + mark (never a real company)
+  if (opts.traffic && !opts.livery && !ga.livery.mark && ga.funnel && ga.funnel.kind !== 'none') ga = { ...ga, livery: { ...ga.livery, ...trafficLivery(ctx.seed ?? 1) } };
+  const U = ctx.skinU;
+  const skinned = [];
   const makeMat = (kind, color, p) => {
-    if (!['hull', 'boot', 'band', 'deck', 'house'].includes(kind)) return new THREE.MeshStandardMaterial({ color, roughness: p.roughness ?? 0.6, metalness: p.metalness ?? 0.2, vertexColors: !!p.vertexColors, map: p.map || null, emissive: p.emissive ?? 0x000000, emissiveIntensity: p.emissiveIntensity ?? 0 });
-    return (wear[kind] = makeWearMaterial(color, { roughness: p.roughness, metalness: p.metalness, extra: { map: p.map || null, vertexColors: !!p.vertexColors } }));
+    const m = makeSkinMaterial(kind, color, { ...p, uniforms: U, physical: !IS_TOUCH && (kind === 'hull' || kind === 'band'), lite: IS_PHONE });
+    if (m.userData.uniforms) skinned.push(m);
+    return m;
   };
-  const r = buildFromGA(ga, { seed: ctx.seed ?? 1, phone: touch && window.innerWidth < 900, stage: opts.stage ?? 1, makeMat, decals: false });
+  const r = buildFromGA(ga, { seed: ctx.seed ?? 1, phone: IS_PHONE, stage: opts.stage ?? 1, makeMat, decals: 'mark' });
   r.group.userData.shipgen = true;                 // interior.js keeps its hull plating visible while you walk the deck plan
   ctx.g.add(r.group);
   Object.assign(ctx, { deckY: ga.deckY, freeboard: ga.deckY, bowFrac: ga.hull.bowFrac, lights: r.info.lights, windowMat: r.mats.glass, shipgen: r });
-  ctx.mats = Object.values(wear);                    // setWear / setFlood / setWaterY reach the generated hull, deck and houses
+  ctx.mats = skinned;                                // setWear / setFlood / setWaterY / setLights reach every skinned part
   ctx.crewSpots.push(...r.info.crewSpots);
+  // skin facts of this hull (shipskinfmt.js layout in metres)
+  const sk = r.info.skin || {};
+  const hullHex = ga.livery.hull;
+  ctx.skinSpec = {
+    L: ga.L, B: ga.B, T: ga.T, deckY: ga.deckY, bootH: sk.bootH ?? 0.4, zStemAt: sk.zStemAt, zAftAt: sk.zAftAt, transomHalf: sk.transomHalf,
+    mode: ga.gen === 'sail' ? 2 : hullModeOf(ga.gen), deckMode: deckModeOf(ga.gen, r.mats.deck?.color?.getHex?.()), hawse: sk.hawse,
+    lanes: deckLanes({ L: ga.L, B: ga.B, zMid0: sk.zMid?.[0] ?? -ga.L * 0.3, zMid1: sk.zMid?.[1] ?? ga.L * 0.3, houseZ0: ga.house?.z0, houseZ1: ga.house?.z1, aftHouse: ga.house?.pos !== 'fwd' }),
+    walk: walkwayFor(r.mats.deck?.color?.getHex?.() ?? 0x666b70, ga.gen), gen: ga.gen,
+    funnel: ga.funnel && ga.funnel.kind !== 'none' ? [ga.funnel.y + ga.funnel.h, ga.funnel.h] : [0, 0],
+    nameColor: ga.livery.nameColor ?? markColorFor(hullHex), markColor: markColorFor(hullHex), primer: (opts.stage ?? 1) < 0.9,
+  };
   return r.info.labelY;
+}
+
+/** fill the ship's skin uniforms from ctx.skinSpec (layout in metres; see shipskinfmt.js) */
+function applySkin(ctx, opts) {
+  const U = ctx.skinU, S = ctx.skinSpec || { L: ctx.L, B: ctx.B, T: ctx.draft, deckY: ctx.deckY, bootH: 0.35, mode: LEGACY_YACHT.has(ctx.cls) ? 1 : 0,
+    deckMode: deckModeOf(null, ctx.deckMat?.color?.getHex?.()), lanes: null, walk: 0x4f7a5a, funnel: [0, 0], nameColor: markColorFor(ctx.C.hullColor ?? 0x2d4a6b), markColor: markColorFor(ctx.C.hullColor ?? 0x2d4a6b) };
+  if (ctx.yacht) S.mode = 2;
+  const pg = plateGrid(S.L, S.mode ? 1 : 0);
+  U.uDims.value.set(S.L, S.B, S.T, S.deckY);
+  U.uPlate.value.set(pg.strake, pg.butt, pg.seam, pg.scupper);
+  U.uMode.value = S.mode;
+  const h = S.hawse; U.uHawse.value.set(h ? h.x : 0, h ? h.y : 0, h ? h.z : 0, h ? h.r : 0);
+  const ln = S.lanes; U.uLanes.value.set(ln ? ln.z0 : 0, ln ? ln.z1 : 0, ln ? ln.inset : 0, ln ? ln.width : 0);
+  U.uWalk.value.setHex(S.walk ?? 0x4f7a5a);
+  U.uFunnel.value.set(S.funnel?.[0] ?? 0, S.funnel?.[1] ?? 0);
+  U.uMarkCol.value.setHex(S.markColor); U.uNameCol.value.setHex(S.nameColor);
+  U.uGlyph.value = glyphTexture();
+  const ds = draftStations(S); U.uDraft.value.set(ds.zF, ds.zM, ds.zA, S.mode === 1 || S.L < 15 ? 0 : ds.top);
+  U.uAge.value = weathering({ cond: 100, ageYears: opts.ageYears, seed: ctx.seed ?? 1 });
+  ctx.skinDeckMode = S.deckMode; U.uDeckMode.value = S.deckMode ? 1 : 0;
+  fadeClearcoat(ctx);
+  setLettering(ctx, opts.hullName, opts.port, opts.own);
+}
+/** fresh paint keeps its clear gloss; an old hull's coat is dull (never 0: that would switch the shader variant) */
+function fadeClearcoat(ctx) { for (const m of ctx.mats || []) if (m.isMeshPhysicalMaterial && m.userData.cc0) m.clearcoat = Math.max(0.03, m.userData.cc0 * (1 - 0.85 * ctx.skinU.uAge.value)); }
+const LEGACY_YACHT = new Set(['myacht', 'superyacht', 'sloop', 'ketch', 'catamaran', 'schooner', 'rib', 'skiff', 'lifeboat']);
+/** (re)draw the bow / transom lettering of a ship: name + port of registry (texture cached per name, ref-counted) */
+function setLettering(ctx, name, port, own) {
+  const U = ctx.skinU, S = ctx.skinSpec;
+  if (ctx.letterKey) { releaseLettering(ctx.letterKey); ctx.letterKey = null; }
+  U.uLetter.value = null; U.uNameBow.value.set(0, 0, 0, 0); U.uNameStern.value.set(0, 0, 0, 0);
+  const n = String(name || '').trim();
+  if (!n || (S && S.primer) || ctx.lightsOff) return;
+  const sz = texSizes(IS_PHONE, !!own);
+  const e = acquireLettering(n.slice(0, 32), String(port || '').slice(0, 32), S?.nameColor ?? 0xffffff, sz.letterW, sz.letterH);
+  if (!e) return;
+  ctx.letterKey = e.key; U.uLetter.value = e.tex;
+  const dims = S || { L: ctx.L, B: ctx.B, T: ctx.draft, deckY: ctx.deckY, bootH: 0.35 };
+  const lay = nameLayout(dims, { aspect: e.aspect, fill: e.fill, rows: 2 });
+  U.uNameBow.value.set(lay.bow.zc, lay.bow.yc, lay.bow.w, lay.bow.h);
+  U.uNameStern.value.set(lay.stern.zt, lay.stern.yc, lay.stern.w, lay.stern.h);
 }
 
 // ----------------------------------------------------------------------------------------------- wake system
@@ -381,14 +401,15 @@ function makeBowStrips(L, B, bowFrac, yWater = 0.25) {
 // ----------------------------------------------------------------------------------------------- part helpers
 function makeCtx(g, C, cls, seed) {
   const L = C.length, B = C.beam, draft = C.draft, freeboard = C.freeboard || Math.max(3, L * 0.045);
-  const hullMat = makeWearMaterial(C.hullColor);
-  const deckMat = makeWearMaterial(cls === 'schooner' || cls === 'ketch' ? 0xb08a5a : 0x6b7076, { roughness: 0.8, metalness: 0.1 });
-  const superMat = makeWearMaterial(cls === 'myacht' || cls === 'superyacht' || cls === 'cruiser' ? 0xf7f7f4 : 0xe9ebe6, { roughness: 0.6, metalness: 0.1 });
-  const windowMat = new THREE.MeshStandardMaterial({ color: 0x1b3650, roughness: 0.25, metalness: 0.6, emissive: 0xffd890, emissiveIntensity: 0 });
+  const skinU = skinUniforms();
+  const hullMat = makeWearMaterial(C.hullColor, { kind: 'hull', uniforms: skinU });
+  const deckMat = makeWearMaterial(cls === 'schooner' || cls === 'ketch' ? 0xb08a5a : 0x6b7076, { kind: 'deck', uniforms: skinU, roughness: 0.85, metalness: 0 });
+  const superMat = makeWearMaterial(cls === 'myacht' || cls === 'superyacht' || cls === 'cruiser' ? 0xf7f7f4 : 0xe9ebe6, { kind: 'house', uniforms: skinU, roughness: 0.55, metalness: 0 });
+  const windowMat = new THREE.MeshStandardMaterial({ color: 0x16283a, roughness: 0.06, metalness: 0.3, emissive: 0xffd890, emissiveIntensity: 0 });
   const navMats = { red: new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff2020, emissiveIntensity: 0.4 }), green: new THREE.MeshStandardMaterial({ color: 0x20ff40, emissive: 0x20ff40, emissiveIntensity: 0.4 }), white: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.4 }) };
   const pb = new PartBuilder();
   const ctx = {
-    g, C, cls, L, B, draft, freeboard, deckY: freeboard + 0.05, rnd: detRand(seed), pb,
+    g, C, cls, L, B, draft, freeboard, deckY: freeboard + 0.05, rnd: detRand(seed), pb, skinU,
     hullMat, deckMat, superMat, windowMat, navMats, mats: [hullMat, deckMat, superMat], sails: [], rotor: null, lightsOff: false,
     box: (w, h, d, mat, x, y, z, rx = 0, ry = 0, rz = 0) => pb.box(w, h, d, mat, x, y, z, rx, ry, rz),
     cyl: (r, h, mat, x, y, z, rt = r, seg = 12, rx = 0, ry = 0, rz = 0) => pb.cyl(r, h, mat, x, y, z, rt, seg, rx, ry, rz),
@@ -515,7 +536,7 @@ function superstructureBlock(ctx, x, z, w, d, decks, deckH = 2.9, withBridge = t
 function warship(ctx) {
   const { L, B, deckY, box, win, mast, pb, funnel } = ctx;
   const big = L >= 60, huge = L >= 100;
-  const sup = makeWearMaterial(0x848d94, { roughness: 0.7, metalness: 0.15 }); ctx.mats.push(sup);
+  const sup = makeWearMaterial(0x848d94, { kind: 'house', uniforms: ctx.skinU, roughness: 0.7, metalness: 0 }); ctx.mats.push(sup);
   merchantHull(ctx, big ? 0.33 : 0.4, 0.8);
   const sz = -L / 2 + L * (big ? 0.5 : 0.46), sw = B * 0.64, sd = L * (big ? 0.36 : 0.3), h1 = big ? 4 : 2.6;
   box(sw, h1, sd, sup, 0, deckY + h1 / 2, sz);
@@ -993,7 +1014,7 @@ function yachtBuilder(ctx) {
 }
 // ----------------------------------------------------------------------------------------------- buildShip
 /** Build a ship. Returns a THREE.Group with the userData API (see the contract §6). */
-export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: opts { livery, stage, shipgen }
+export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: opts { livery, stage, shipgen }; skin: { hullName, port, own, ageYears, traffic }
   const C = SHIP_CLASSES[cls] || EXTRA_CLASSES[cls] || SHIP_CLASSES[baseOf(cls)] || SHIP_CLASSES.coaster;   // H1 resolves model and variant ids
   const useGen = !BUILDERS[cls] && (gaReady(cls) || (opts.shipgen === true && !!exteriorGA(cls)));               // §6.1: generator once its gen passed its tests
   const key = BUILDERS[cls] ? cls : BUILDERS[baseOf(cls)] ? baseOf(cls) : 'coaster';                            // interim: the base builder at the model's own dimensions
@@ -1024,7 +1045,10 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
   // Bake each wear-shaded part's vertex positions in the ship frame (full local matrix chain; g itself is untransformed
   // at build time) for the `shipPos` attribute the wear shader samples.
   bakeShipPos(g);
+  ctx.hullName = opts.hullName; ctx.hullPort = opts.port;
+  try { applySkin(ctx, { hullName: opts.hullName, port: opts.port, own: !!opts.own, ageYears: opts.ageYears }); } catch (e) { console.warn('[ship] skin setup failed', cls, e); }
   const mats = ctx.mats, windowMat = ctx.windowMat, navMats = ctx.navMats;
+  guardSkin(g, mats);
   let sailsUp = true, sailAngle = 0;
   Object.assign(g.userData, {
     cls, length: L, beam: B, draft, freeboard, mats, wake: bow, wakeGroup: wake ? wake.group : null, hover: ctx.hover || 0, isSail: SAIL_CLASSES.has(cls),
@@ -1067,12 +1091,17 @@ export function buildShip(cls, name, seed = 1, opts = {}) {   // SHIPYARD H9: op
       lightState.level = n;
       for (const nl of navs) nl.setLevel(n);
       windowMat.emissiveIntensity = 1.7 * n;
+      ctx.skinU.uNight.value = n;                    // lit cabin windows in the facade (skin shader)
     },
+    /** weathering from age in years (built year) and hull condition % — streaks, staining, dull paint */
+    setAge(ageYears, cond = 100) { ctx.skinU.uAge.value = weathering({ cond, ageYears, seed: ctx.seed ?? 1 }); fadeClearcoat(ctx); },
+    /** paint a (new) name and port of registry on the bows and the transom ('' = none) */
+    setHullName(name, port = '') { if (ctx.hullName === name && ctx.hullPort === port) return; ctx.hullName = name; ctx.hullPort = port; try { setLettering(ctx, name, port, !!opts.own); } catch (e) { console.warn('[ship] lettering failed', e); } },
     /** the COLREGS lights (port, starboard, masthead ×1–2, stern) — sprites with userData.kind / userData.arc */
     navLights: navs.map((nl) => nl.sprite),
     /** helicopter rotor spin (t = seconds) */
     setRotor(t) { if (ctx.rotor) { ctx.rotor.main.rotation.y = t * 28; ctx.rotor.tail.rotation.x = t * 50; } },
-    dispose() { wake?.dispose(); disposeGroup(g); },
+    dispose() { wake?.dispose(); disposeGroup(g); if (ctx.letterKey) { releaseLettering(ctx.letterKey); ctx.letterKey = null; } },
   });
   if (ctx.yacht) {                                   // sailing yachts: the RigView API (§4.1); setSails kept for ais.js / thumbs.js
     const y = ctx.yacht;
@@ -1175,6 +1204,7 @@ function navLight(g, kind, x, y, z, state) {
   return { sprite, lens, housing, setLevel(n) { sprite.visible = n > 0.01; if (n <= 0.01) lensMat.emissiveIntensity = 0; } };
 }
 
+function isIdentity(m) { const e = m.elements; for (let i = 0; i < 16; i++) if (Math.abs(e[i] - (i % 5 === 0 ? 1 : 0)) > 1e-6) return false; return true; }
 /** Bake `shipPos` (vertex position in the group frame) into every geometry rendered with a wear material. */
 function bakeShipPos(g) {
   g.updateMatrixWorld(true);
@@ -1184,7 +1214,9 @@ function bakeShipPos(g) {
     const ms = Array.isArray(o.material) ? o.material : [o.material];
     if (!ms.some((x) => x && x.userData.uniforms)) return;
     m.multiplyMatrices(inv, o.matrixWorld);
-    const p = o.geometry.attributes.position, a = new Float32Array(p.count * 3);
+    const p = o.geometry.attributes.position;
+    if (isIdentity(m)) { o.geometry.setAttribute('shipPos', p); return; }   // shipgen parts are built in the ship frame: share the buffer
+    const a = new Float32Array(p.count * 3);
     for (let i = 0; i < p.count; i++) sp.fromBufferAttribute(p, i).applyMatrix4(m).toArray(a, i * 3);
     o.geometry.setAttribute('shipPos', new THREE.BufferAttribute(a, 3));
   });

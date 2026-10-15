@@ -641,7 +641,7 @@ export class AisLayer {
     const arr = this._pool.get(cls);
     if (arr?.length) { m = arr.pop(); this._poolCount--; this._stats.reused++; m.userData.aisFresh = false; }
     else {
-      try { m = buildShip(cls, '', v.seed); } catch (e) { console.warn('[ais] buildShip failed', cls, e); v.noModel = cls; v.lod = 1; v.want = 1; return false; }
+      try { m = buildShip(cls, '', v.seed, { traffic: true }); } catch (e) { console.warn('[ais] buildShip failed', cls, e); v.noModel = cls; v.lod = 1; v.want = 1; return false; }
       const box = new THREE.Box3().setFromObject(m);
       m.userData.aisTop = Number.isFinite(box.max.y) ? box.max.y : (m.userData.freeboard || 4) + 10;
       m.userData.aisCls = cls; m.userData.aisFresh = true; this._stats.builds++;
@@ -653,6 +653,7 @@ export class AisLayer {
     if (!v.root.parent) this.group.add(v.root);
     this._applyScale(v);
     ud.setWear?.(v.wear); ud.setLights?.(this._lightsOn ? 1 : 0);
+    ud.setHullName?.(cleanAisText(v.data?.name) || '');                                 // ship skin: the pooled hull carries this vessel's name
     if (ud.wakeGroup) { ud.wakeGroup.visible = this.visible; if (!ud.wakeGroup.parent) this.app.scene.add(ud.wakeGroup); }
     v.vis.heave = this.app.ocean?.level ?? 0; v.vis.pitch = 0; v.vis.roll = 0; v.sailT = 0;
     return true;
