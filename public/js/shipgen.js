@@ -11,6 +11,9 @@
 //
 // Frame as ship.js: forward = −z, starboard = +x, y = 0 at the design waterline. Static parts are merged per material
 // (one mesh per material, vertex colours for the painted bits), so a ship is 8–14 draw calls at LOD0 whatever its size.
+// Repeated fittings (rail stanchions and bars, balcony dividers, lifeboats, davits, bollards, tyres, lattice bracing,
+// whips) are instanced on desktop — one InstancedMesh per fitting type and material (Parts.imat) — and baked into
+// the merged meshes on phones (their 16-call budget), at half the count.
 // The hull is lofted (shipgeom.js) from L/B/T/depth/Cb; houses use a procedural facade texture (window rows, balconies,
 // bridge glass), container stacks one textured box per stack. Sail classes are not built here (SAILING's rigmesh.js).
 // Build stages for the yard preview (§4.7): stage < 0.25 keel blocks, < 0.65 hull only (clip plane set by the
@@ -92,13 +95,13 @@ function facadeTexture(size = 1024) {
   { const [x, y, w, h] = rect(0, 10.15, 0.04, 10.95, 0.78); g.fillStyle = '#d6dadc'; rr(x, y, w, h, w * 0.12); g.fill(); g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = Math.max(1, W / 700); g.stroke();
     g.fillStyle = '#9aa1a6'; g.fillRect(x + w * 0.78, y + h * 0.5, w * 0.1, h * 0.04); }
   for (const m of [3.9, 14.45]) { const [x, y, w, h] = rect(0, m - 0.25, 0.78, m + 0.25, 0.9); g.fillStyle = '#d0d4d6'; g.fillRect(x, y, w, h); g.fillStyle = 'rgba(0,0,0,0.4)'; for (let i = 1; i < 5; i++) g.fillRect(x + 2, y + h * i / 5, w - 4, Math.max(1, h * 0.06)); }
-  // band 1: balconies — divider walls, glass doors, a glass balustrade
-  wall(1, '#f2f3f0');
+  // band 1: the cabin wall behind a balcony (the balcony itself — floor, glass balustrade, dividers — is geometry, see
+  // balconyRow): a full-height sliding glass door in a dark frame with a mullion, a narrow wall pier between cabins
+  wall(1, '#eceeeb');
   for (let i = 0; i < 3; i++) {
     const m = i * 2.8;
-    window_(1, m + 0.35, 0.08, m + 2.45, 0.86, r() < 0.55, '#aab3b9');
-    const [bx, by, bw, bhh] = rect(1, m + 0.1, 0.06, m + 2.7, 0.4); g.fillStyle = 'rgba(205,222,230,0.55)'; g.fillRect(bx, by, bw, bhh); g.fillStyle = '#d9dee0'; g.fillRect(bx, by - 3, bw, Math.max(2, W / 400));
-    const [dx, dy, dw, dh] = rect(1, m, 0.0, m + 0.12, 1.0); g.fillStyle = '#e4e7e5'; g.fillRect(dx, dy, dw, dh);
+    window_(1, m + 0.3, 0.05, m + 1.38, 0.9, r() < 0.55, '#5d666d');
+    window_(1, m + 1.42, 0.05, m + 2.5, 0.9, r() < 0.4, '#5d666d');
   }
   // band 2: continuous window band with mullions (bridge front, public rooms)
   wall(2, '#f2f3f0');
@@ -187,9 +190,65 @@ function markTexture(livery) {
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
 function xf(x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) { _p.set(x, y, z); _e.set(rx, ry, rz, 'YXZ'); _q.setFromEuler(_e); _s.set(sx, sy, sz); return _m.compose(_p, _q, _s); }
 const _c = new THREE.Color();
+/**
+ * Unit geometries for the instanced fittings (one InstancedMesh per fitting type and material per ship): box 1 × 1 × 1,
+ * cylinder Ø1 × 1 (axis y), lifeboat 1 m long (axis z, canopy up), tyre fender Ø1 (axis x). White vertex colours so the
+ * vertex-coloured fittings materials take the instance colour as is.
+ */
+const UNIT = {
+  box: () => new THREE.BoxGeometry(1, 1, 1),
+  cyl: () => new THREE.CylinderGeometry(0.5, 0.5, 1, 8, 1),
+  boat: () => {
+    // enclosed lifeboat: a rounded hull (capsule, beam 0.36 L), a canopy of two thirds the length, a white sheer band
+    const h = new THREE.CapsuleGeometry(0.18, 0.62, 3, 8); h.rotateX(Math.PI / 2); h.scale(1, 0.85, 1);
+    const c = new THREE.CapsuleGeometry(0.14, 0.38, 2, 8); c.rotateX(Math.PI / 2); c.scale(1.05, 0.9, 1); c.translate(0, 0.12, 0.02);
+    return mergeUnit([h, c]);
+  },
+  tyre: () => { const g = new THREE.TorusGeometry(0.38, 0.13, 5, 10); g.rotateY(Math.PI / 2); return g; },
+  // a thin plate (divider, stanchion flat bar) as two back-to-back quads in the xy plane: 4 triangles instead of a box's 12
+  fin: () => { const a = new THREE.PlaneGeometry(1, 1), b = new THREE.PlaneGeometry(1, 1); b.rotateY(Math.PI); return mergeUnit([a, b]); },
+};
+function mergeUnit(geos) { const g = merge(geos.map((x) => (x.index ? x.toNonIndexed() : x)), false); return g; }
+function unitGeo(kind) {
+  const g = UNIT[kind]();
+  const n = g.attributes.position.count;
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+  return g;
+}
+const _iq = new THREE.Quaternion(), _iv = new THREE.Vector3(), _iz = new THREE.Vector3(0, 0, 1);
 /** Collects geometry per material key, with per-part vertex colours; build() emits one Mesh per key. */
 class Parts {
-  constructor(seg = 14) { this.buckets = new Map(); this.seg = seg; this.tris = 0; }
+  /**
+   * seg: cylinder segments; instanced: fittings become InstancedMeshes (desktop) — false bakes them into the merged
+   * buckets instead (phones: every extra draw call costs more than the triangles, and their budget is 16 calls)
+   */
+  constructor(seg = 14, instanced = true) { this.buckets = new Map(); this.seg = seg; this.tris = 0; this.inst = new Map(); this.instanced = instanced; }
+  /** one instance of fitting `kind` ('box' | 'cyl' | 'boat' | 'tyre') with material `key`, from a matrix */
+  imat(kind, key, matrix, color = 0xffffff) {
+    if (!this.instanced) { const g = unitGeo(kind); g.deleteAttribute('color'); g.applyMatrix4(matrix); return this.put(key, g, color); }
+    const id = kind + ':' + key;
+    let b = this.inst.get(id); if (!b) { b = { kind, key, m: [], c: [] }; this.inst.set(id, b); }
+    b.m.push(matrix.clone()); b.c.push(color);
+    return this;
+  }
+  /** an instanced box w × h × d at (x, y, z), rotated (ry, rx, rz as box()) */
+  ibox(key, w, h, d, x, y, z, color = 0xffffff, ry = 0, rx = 0, rz = 0) { return this.imat('box', key, xf(x, y, z, rx, ry, rz, Math.max(0.01, w), Math.max(0.01, h), Math.max(0.01, d)), color); }
+  /** an instanced square-section bar from a to b (w across, h up) */
+  ibeam(key, ax, ay, az, bx, by, bz, w, h, color = 0xffffff) {
+    const dx = bx - ax, dy = by - ay, dz = bz - az, len = Math.hypot(dx, dy, dz); if (len < 1e-3) return this;
+    _iv.set(dx / len, dy / len, dz / len);
+    // keep the bar's "up" vertical for near-horizontal bars (rails lie flat), whatever the run's heading
+    if (Math.abs(_iv.y) < 0.95) { _e.set(Math.asin(-_iv.y), Math.atan2(_iv.x, _iv.z), 0, 'YXZ'); _iq.setFromEuler(_e); } else _iq.setFromUnitVectors(_iz, _iv);
+    return this.imat('box', key, _m.compose(_p.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2), _iq, _s.set(w, h, len)), color);
+  }
+  /** an instanced two-sided plate w wide (x) and h high, facing ±z before the turn ry */
+  ifin(key, w, h, x, y, z, color = 0xffffff, ry = 0) { return this.imat('fin', key, xf(x, y, z, 0, ry, 0, Math.max(0.01, w), Math.max(0.01, h), 1), color); }
+  /** an instanced cylinder (axis y unless rotated) of radius r and height h */
+  icyl(key, r, h, x, y, z, color = 0xffffff, rx = 0, ry = 0, rz = 0) { return this.imat('cyl', key, xf(x, y, z, rx, ry, rz, r * 2, h, r * 2), color); }
+  /** an instanced lifeboat len metres long and 2 r in beam, heading along z (ry turns it) */
+  iboat(key, len, r, x, y, z, color, ry = 0) { const k = r / 0.18; return this.imat('boat', key, xf(x, y, z, 0, ry, 0, k, k, len), color); }
+  /** an instanced tyre fender (diameter dia) hanging on a side, axis athwartships */
+  ityre(key, dia, x, y, z, color = 0x17191c) { return this.imat('tyre', key, xf(x, y, z, 0, 0, 0, dia, dia, dia), color); }
   put(key, geo, color = null, tag = null) {
     const g = geo.index ? geo.toNonIndexed() : geo;
     if (g !== geo) geo.dispose();
@@ -250,6 +309,18 @@ class Parts {
       group.add(mesh); out.push(mesh);
     }
     this.buckets.clear();
+    for (const [id, b] of this.inst) {
+      const mat = mats[b.key]; if (!mat || !b.m.length) continue;
+      const geo = unitGeo(b.kind);
+      if (!mat.vertexColors) geo.deleteAttribute('color');
+      const mesh = new THREE.InstancedMesh(geo, mat, b.m.length);
+      for (let i = 0; i < b.m.length; i++) { mesh.setMatrixAt(i, b.m[i]); if (mat.vertexColors) mesh.setColorAt(i, _c.setHex(b.c[i])); }
+      mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere(); mesh.computeBoundingBox();
+      mesh.name = 'fit-' + id; mesh.userData.matKey = b.key; mesh.userData.parts = ['fittings']; mesh.userData.fitting = b.kind;
+      group.add(mesh); out.push(mesh);
+    }
+    this.inst.clear();
     return out;
   }
 }
@@ -329,9 +400,9 @@ export function buildFromGA(ga, opts = {}) {
   let decalTex = null;
   for (const lod of want) {
     const g = new THREE.Group(); g.name = `ship-lod${lod}`;
-    const P = new Parts(phone ? (lod === 0 ? 8 : 6) : lod === 0 ? 14 : lod === 1 ? 8 : 6);
+    const P = new Parts(phone ? (lod === 0 ? 8 : 6) : lod === 0 ? 14 : lod === 1 ? 8 : 6, !phone && lod < 2);
     const ctx = { ga, m, hf, P, lod, phone, rnd: rng(seed), L: ga.L, B: ga.B, T: ga.T, deckY: ga.deckY, lv: ga.livery, info, stage, opts, hd: !!opts.hd && lod === 0,
-      rails: lod === 0 && !phone && opts.rails !== false, cargo: opts.cargo !== false && stage >= 1, primer };
+      rails: lod === 0 && opts.rails !== false, cargo: opts.cargo !== false && stage >= 1, primer };
     let hullMesh = null;
     if (stage < 0.25) buildBlocks(ctx);
     else {
@@ -356,7 +427,7 @@ export function buildFromGA(ga, opts = {}) {
     let tris = 0, calls = 0, cargoTris = 0;
     g.traverse((o) => {
       if (!o.isMesh) return;
-      const n = (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+      const n = (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3 * (o.isInstancedMesh ? o.count : 1);
       const groups = o.geometry.groups?.length || 1;
       if (o.userData.cargo) cargoTris += n; else tris += n;
       calls += Array.isArray(o.material) ? groups : 1;
@@ -454,9 +525,12 @@ function buildHull(ctx, mats) {
   if (H.bulwark && lod === 0) bulwark(ctx, H.bulwark);
   if (H.fender && lod < 2) fenders(ctx);
   const hawse = hawseSpot(ga, hf);
+  ctx.hawse = hawse;
   if (hawse && lod < 2) anchors(ctx, hawse);
   if (lod === 0 || !ctx.info.skin) ctx.info.skin = skinInfo(ga, hf, loft, hawse);
   if (H.tube) ribTube(ctx);
+  if (hf.twin && lod < 2) twinStructure(ctx);
+  else if (ga.gen === 'ferry' && ga.model !== 'ferry50' && lod < 2) ferryStructure(ctx);
   if ((ga.gen === 'cruise' || (ga.gen === 'ferry' && ga.model !== 'ferry50' && !hf.twin)) && lod < 2 && ctx.stage >= 0.65) hullWindows(ctx);
   if (ga.deck.swimPlatform && lod < 2) { const pl = platformLen(ga); P.box('deck', B * 0.78, 0.25, pl, 0, 0.35, L / 2 - pl / 2, null); }
   return mesh;
@@ -514,6 +588,12 @@ function hullWindows(ctx) {
 export function platformLen(ga) { return ga.deck?.swimPlatform ? Math.max(1.2, ga.L * 0.045) : 0; }
 /** half-breadth at the deck edge at z (0 outside the hull) */
 function hbDeck(ctx, z) { const y = ctx.hf.deckAt(z); return ctx.hf.halfBreadth(z, y); }
+/** half-breadth of the whole ship at the deck at z: a twin hull's cross structure spans both demihulls (0 outside) */
+function hbOuter(ctx, z) {
+  const hb = hbDeck(ctx, z), t = ctx.hf.twin;
+  if (!t) return hb;
+  return hb > 0.05 ? Math.abs(ctx.hf.demi[0].cx) + hb : 0;
+}
 /** outline points (port→bow→starboard) of the deck between z0 and z1, inset by `inset` metres */
 function outline(ctx, z0, z1, n, inset = 0, cx = 0) {
   const pts = [];
@@ -567,6 +647,84 @@ function bulwark(ctx, h) {
   // aft crash rails / bulwark across the stern on workboats: none (open stern for the roller); fishing: transom wall
   if (ga.gen === 'fishing' && ga.hull.stern !== 'ramp') { const z = L / 2 - 0.3, hb = hbDeck(ctx, z) - 0.05, y = hf.deckAt(z); quad(P, 'hullX', [-hb, y, z], [hb, y, z], [hb, y + h, z], [-hb, y + h, z], [0, 0, 1]); quad(P, 'hullX', [-hb, y, z - 0.1], [hb, y, z - 0.1], [hb, y + h, z - 0.1], [-hb, y + h, z - 0.1], [0, 0, -1]); }
 }
+/**
+ * The bridging structure of a wave-piercing catamaran (hsc112): the wet deck between the demihulls, the centre bow
+ * (a V wedge under the fore end of the cross deck that meets the waves the hulls pierce), and the enclosed vehicle
+ * deck — hull plating from the deck up to the passenger deck over the length of the house, with the stern door.
+ */
+function twinStructure(ctx) {
+  const { ga, P, hf, L } = ctx;
+  const t = hf.twin, F = ga.deckY, cx = Math.abs(hf.demi[0].cx), gi = cx - hf.Bd / 2;   // inner edge of each demihull
+  const wetY = t.wetY ?? F - 2.2;
+  const zTip = hf.zFwd(F) + L * 0.035, zFull = -L / 2 + L * 0.2, zEnd = L / 2 - Math.max(1, L * 0.02);
+  // wet deck: the underside of the cross structure between the hulls
+  P.box('hullX', gi * 2 + 0.2, F - wetY, zEnd - zFull, 0, (F + wetY) / 2, (zFull + zEnd) / 2);
+  // centre bow: keel line from under the tip back to the wet deck, sides out to the hulls' inner edges
+  const tipTop = [0, F, zTip], tipBot = [0, F - 1.0, zTip], keel = [0, wetY - 1.1, zFull + 4];
+  for (const s of [-1, 1]) {
+    const aTop = [s * gi, F, zFull - 2], aWet = [s * gi, wetY, zFull - 2];
+    tri(P, 'hullX', tipTop, aTop, aWet, [s, 0, -0.3]);
+    tri(P, 'hullX', tipTop, aWet, tipBot, [s, 0, -0.3]);
+    tri(P, 'hullX', tipBot, aWet, keel, [s * 0.4, -1, -0.3]);
+    tri(P, 'hullX', keel, aWet, [s * gi, wetY, zFull + 4], [0, -1, 0]);
+  }
+  // the enclosed vehicle deck: plating up to the first passenger tier, closed at the stern (the door outlined dark)
+  const h = ga.house, y1 = h && h.tiers.length ? h.tiers[0].y : F + 2;
+  if (y1 - F > 0.4 && h) {
+    tierSolid(ctx, h.z0 - 2, zEnd, ga.B, F - 0.05, y1 - F + 0.05, BANDS.blank, BANDS.blank, 0, 'hullX');
+    if (ga.deck.sternDoor) P.box('paint', Math.min(10, ga.B * 0.32), (y1 - F) * 0.85, 0.12, 0, F + (y1 - F) * 0.45, zEnd + 0.06, shade(ga.livery.hull, 0.6));
+  }
+}
+/**
+ * A ro-ro / ro-pax ferry's hull above the main deck: the side plating rises over the upper vehicle deck to the first
+ * passenger deck, with a row of vehicle-deck openings along each side; the bow visor's seams and the stern door
+ * outlined on the transom (dark seams: what tells a ferry from a cargo ship at a glance).
+ */
+function ferryStructure(ctx) {
+  const { ga, P, hf, L, lod } = ctx;
+  const F = ga.deckY, h = ga.house, y1 = h && h.tiers.length ? h.tiers[0].y : F, dark = 0x1d2124;
+  const zA = -L / 2 + L * 0.03, zB = L / 2 - 0.3;
+  if (y1 - F > 0.4) {
+    tierSolid(ctx, zA, zB, ga.B, F - 0.05, y1 - F + 0.05, BANDS.blank, BANDS.blank, 0, 'hullX');
+    if (y1 - F > 2.5) {
+      // vehicle-deck openings (ventilation / mooring ports): 4 × 1.8 m, every 7 m along the parallel middle body
+      const oy = F + (y1 - F) * 0.55, step = ctx.phone ? 14 : 7;
+      for (let z = -L * 0.3; z < L * 0.36; z += step) {
+        const hw = Math.min(ga.B / 2, hbOuter(ctx, z) - 0.35); if (hw < ga.B * 0.4) continue;
+        for (const s of [-1, 1]) P.ibox('paint', 0.1, Math.min(1.8, (y1 - F) * 0.4), 4, s * (hw + 0.03), oy, z, dark);
+      }
+    }
+  }
+  if (lod > 0) return;
+  const seam = (pts) => { for (let i = 0; i < pts.length - 1; i++) P.beam('paint', ...pts[i], ...pts[i + 1], 0.09, 0.09, dark); };
+  if (ga.deck.bowDoor) {
+    // bow visor: the seam runs aft along both sides at the lower edge and up the visor's after edge
+    const yv = F * 0.45, zs = hf.zFwd(yv), zv = zs + L * 0.06, ytop = Math.max(y1, F) - 0.3;
+    for (const s of [-1, 1]) {
+      const pts = []; for (let i = 0; i <= 4; i++) { const z = zs + 0.3 + (zv - zs - 0.3) * i / 4; pts.push([s * (hf.halfBreadth(z, yv) + 0.04), yv, z]); }
+      seam(pts);
+      const up = []; for (let i = 0; i <= 3; i++) { const y = yv + (ytop - yv) * i / 3; up.push([s * (Math.max(hf.halfBreadth(zv, y), hbOuter(ctx, zv) - 0.35) + 0.04), y, zv]); }
+      seam(up);
+    }
+  }
+  if (ga.deck.sternDoor) {
+    // stern door / ramp: a framed panel on the transom from the lower vehicle deck up to the main deck
+    const zt = hf.zAft(F * 0.6) + 0.08, w = Math.min(ga.B * 0.45, 16), yb = Math.max(0.9, F * 0.3), yt = F - 0.3;
+    if (hf.halfBreadth(zt - 0.3, (yb + yt) / 2) > w / 2) {
+      P.box('paint', w, yt - yb, 0.1, 0, (yb + yt) / 2, zt, shade(ga.livery.hull, 0.82));
+      seam([[-w / 2, yb, zt + 0.06], [w / 2, yb, zt + 0.06], [w / 2, yt, zt + 0.06], [-w / 2, yt, zt + 0.06], [-w / 2, yb, zt + 0.06]]);
+    }
+  }
+}
+function tri(P, key, a, b, c, out) {
+  const g = new THREE.BufferGeometry();
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+  const front = (uy * vz - uz * vy) * out[0] + (uz * vx - ux * vz) * out[1] + (ux * vy - uy * vx) * out[2] >= 0;
+  g.setAttribute('position', new THREE.Float32BufferAttribute(front ? [...a, ...b, ...c] : [...a, ...c, ...b], 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1], 2));
+  g.computeVertexNormals();
+  P.put(key, g);
+}
 function fenders(ctx) {
   const { P, hf, L, ga } = ctx;
   const n = ctx.lod === 0 ? 24 : 10, r = clamp(0.12, 0.45, ga.B * 0.03);
@@ -601,6 +759,9 @@ function buildHouse(ctx) {
   const h = ga.house; if (!h) return;
   const cruise = ga.gen === 'cruise', yacht = ga.gen === 'motor_yacht', ferry = ga.gen === 'ferry';
   const n = h.tiers.length;
+  const bi = h.tiers.findIndex((t) => t.use === 'bridge');
+  const nLido = h.tiers.filter((t) => t.use === 'lido').length;
+  let prevBalc = null;
   for (let i = 0; i < n; i++) {
     const t = h.tiers[i];
     let z0 = t.z0 ?? h.z0, z1 = t.z1 ?? h.z1, w = t.w ?? h.w;
@@ -608,16 +769,34 @@ function buildHouse(ctx) {
       // the top decks step back a little forward; the aft end is terraced (classic cruise-ship stern)
       if (i >= n - 2) z0 += (i - (n - 3)) * 3.0;
       if (i > n * 0.5) z1 -= (i - n * 0.5) * Math.max(2.5, ga.L * 0.012);
+      // above the bridge the front steps back deck by deck, and the top cabin decks and the lido step inward going up
+      // (the silhouette of a real cruise ship is a stepped wedge, never one box)
+      if (bi >= 0 && i > bi && t.use !== 'bridge') z0 += (i - bi) * Math.max(1.2, ga.L * 0.006);
+      const fromTop = n - nLido - 1 - i;   // 0 = the highest cabin deck
+      if (t.use !== 'lido' && fromTop >= 0 && fromTop < 3 && n > 6) w -= 2 * (3 - fromTop) * Math.max(0.6, ga.B * 0.02);
+      if (t.use === 'lido') w -= 2 * 4 * Math.max(0.6, ga.B * 0.02);
     } else if (ferry && n > 2) {
       if (i >= n - 2) z1 -= (i - (n - 3)) * ga.L * 0.05;
     }
     if (cruise && t.use === 'lido') { buildLido(ctx, t, z0, z1, w, n); continue; }
-    if (cruise && ga.deck.boats.some((b) => b.deck === t.id && b.kind === 'davit')) { const rb = Math.min(9, clamp(6, 9, ga.L * 0.05) * 0.19); w = Math.min(w, 2 * (hbDeck(ctx, (z0 + z1) / 2) - 2 * rb - 0.5)); }   // the house of the boat deck stands back from the hull: the boats hang in the recess   // the open pool deck (docs/CRUISE-CONTRACT.md §5)
+    if ((cruise || (ferry && !ctx.hf.twin)) && ga.deck.boats.some((b) => b.deck === t.id && b.kind === 'davit')) { const rb = Math.min(9, clamp(6, 9, ga.L * 0.05) * 0.19); w = Math.min(w, 2 * (hbDeck(ctx, (z0 + z1) / 2) - 2 * rb - 0.5)); }   // the house of the boat deck stands back from the hull: the boats hang in the recess   // the open pool deck (docs/CRUISE-CONTRACT.md §5)
     if (lod === 2) continue;
     const band = BANDS[USE_BAND[t.use] || 'cabins'];
     const endBand = cruise || yacht || ferry ? BANDS.glass : band;
-    const nose = yacht ? Math.min((z1 - z0) * 0.35, w * 1.1) : 0;
-    tierSolid(ctx, z0, z1, w, t.y, t.h, band, endBand, nose);
+    // yachts: a tapered nose; the fast catamaran: a rounded front to the passenger cabin
+    const nose = yacht ? Math.min((z1 - z0) * 0.35, w * 1.1) : ferry && ctx.hf.twin ? Math.min((z1 - z0) * 0.12, w * 0.3) * (1 - i / Math.max(1, n)) : 0;
+    (ctx.tierBoxes ||= []).push({ z0, z1, w, y: t.y, h: t.h, use: t.use });
+    if (t.use === 'balcony' && (cruise || ferry) && w > 12) {
+      // a balcony deck: the cabin wall stands back by the balcony's depth; the floor slab, glass balustrades and the
+      // dividers between cabins stand out at the ship's side — rows of real balconies, not a painted grid
+      const dB = clamp(1.2, 2.0, w * 0.035);
+      tierSolid(ctx, z0, z1, w - 2 * dB, t.y, t.h, band, endBand, 0);
+      balconyRow(ctx, z0, z1, w, t.y, t.h, dB, !(prevBalc && prevBalc.w >= w - 0.01 && prevBalc.z0 <= z0 + 0.01 && prevBalc.z1 >= z1 - 0.01));
+      prevBalc = { w, z0, z1 };
+    } else {
+      tierSolid(ctx, z0, z1, w, t.y, t.h, band, endBand, nose);
+      prevBalc = null;
+    }
     // deck edge lips (yachts, ferries, cruise): a white slab slightly proud of the tier below
     if ((cruise || ferry || yacht) && lod === 0) tierSolid(ctx, z0 - 0.15, z1 + 0.15, w + 0.5, t.y + t.h - 0.12, 0.24, BANDS.blank, BANDS.blank, nose, 'paint', ctx.primer ? COL.primer : 0xf4f4f2);
   }
@@ -645,7 +824,7 @@ function buildLido(ctx, t, z0, z1, w, nTiers) {
   const y = t.y, top = y + 0.3, white = ctx.primer ? COL.primer : COL.white;
   tierSolid(ctx, z0, z1, w, y - 0.1, 0.4, BANDS.blank, BANDS.blank, 0, 'paint', ctx.primer ? COL.primer : 0xb7966a);
   if (lod === 2) { P.box('house', w * 0.5, 3, Math.max(4, (z1 - z0) * 0.25), 0, top + 1.5, z1 - (z1 - z0) * 0.2); return; }
-  const hwAt = (z) => Math.min(w / 2, hbDeck(ctx, clamp(-ctx.L / 2, ctx.L / 2, z)) - 0.35);
+  const hwAt = (z) => Math.min(w / 2, hbOuter(ctx, clamp(-ctx.L / 2, ctx.L / 2, z)) - 0.35);
   for (const s of [-1, 1]) for (let z = z0 + 2; z < z1 - 2; z += 18) { const zb = Math.min(z1 - 2, z + 18); P.box('glass', 0.05, 1.25, zb - z - 0.3, s * (hwAt((z + zb) / 2) - 0.1), top + 0.65, (z + zb) / 2); }
   const pz = pool ? (pool.z0 + pool.z1) / 2 : (z0 + z1) / 2, plen = Math.min(34, pool ? pool.z1 - pool.z0 : 20), pw = Math.min(B * 0.3, 13);
   // pool, coaming, two hot tubs
@@ -695,6 +874,32 @@ function buildLido(ctx, t, z0, z1, w, nTiers) {
   void nTiers;
 }
 /**
+ * The outer part of a balcony deck (both sides): the floor slab (unless the deck-edge lip of the deck below already is
+ * one), a glass balustrade with its top rail along the ship's side and a divider every cabin (2.8 m; 5.6 m on phones,
+ * LOD0 only). The cabin wall itself is the tier, set back by dB.
+ */
+function balconyRow(ctx, z0, z1, w, y, h, dB, floor) {
+  const { P, lod } = ctx;
+  const white = ctx.primer ? COL.primer : 0xf4f4f2;
+  const hwAt = (z) => Math.min(w / 2, hbOuter(ctx, clamp(-ctx.L / 2, ctx.L / 2, z)) - 0.35);
+  if (floor) tierSolid(ctx, z0 - 0.15, z1 + 0.15, w + 0.5, y - 0.12, 0.24, BANDS.blank, BANDS.blank, 0, 'paint', white);
+  const cab = (ctx.hd ? 2.8 : 5.6) * (ctx.phone ? 2 : 1);   // own ship: every cabin; traffic: every second (half the instances)
+  for (const s of [-1, 1]) {
+    const pts = sideLine(z0 + 0.4, z1 - 0.4, hwAt, s, lod === 0 ? 10 : 5, dB + 0.6);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [xa, za] = pts[i], [xb, zb] = pts[i + 1], ia = xa - s * 0.12, ib = xb - s * 0.12;
+      P.beam('glass', ia, y + 0.62, za, ib, y + 0.62, zb, 0.03, 0.95);                       // the glass panels
+      P.beam('paint', ia, y + 1.12, za, ib, y + 1.12, zb, 0.12, 0.07, ctx.primer ? COL.primer : 0xc9cdd0);   // handrail
+      if (lod > 0) continue;
+      const len = Math.hypot(xb - xa, zb - za), nd = Math.max(1, Math.round(len / cab));
+      for (let k = 0; k <= nd; k++) {
+        const f = k / nd, x = xa + (xb - xa) * f, z = za + (zb - za) * f;
+        P.ifin('paint', dB, h - 0.24, x - s * dB / 2, y + h / 2 - 0.06, z, white);           // divider between cabins
+      }
+    }
+  }
+}
+/**
  * One superstructure tier as a solid that follows the deck outline (so a forward house never hangs over the bow flare):
  * half-width(z) = min(w / 2, deck half-breadth − 0.35 m), tapered to a point over `nose` metres (yachts).
  * Faces map the facade atlas: sides → `band`, ends → `endBand`, top blank.
@@ -702,7 +907,7 @@ function buildLido(ctx, t, z0, z1, w, nTiers) {
 function tierSolid(ctx, z0, z1, w, y, h, band, endBand, nose = 0, key = 'house', color = null) {
   const { P } = ctx;
   const hwAt = (z) => {
-    let hw = Math.min(w / 2, hbDeck(ctx, clamp(-ctx.L / 2, ctx.L / 2, z)) - 0.35);
+    let hw = Math.min(w / 2, hbOuter(ctx, clamp(-ctx.L / 2, ctx.L / 2, z)) - 0.35);
     if (nose > 0 && z < z0 + nose) hw *= 0.32 + 0.68 * Math.sqrt(Math.max(0, (z - z0) / nose));
     return hw;
   };
@@ -740,7 +945,10 @@ function tierSolid(ctx, z0, z1, w, y, h, band, endBand, nose = 0, key = 'house',
 }
 function buildBridge(ctx) {
   const { ga, P, lod } = ctx;
-  const b = ga.bridge, h = ga.house; if (!b || lod === 2) return;
+  const b0 = ga.bridge, h = ga.house; if (!b0 || lod === 2) return;
+  // an 'embedded' bridge needs a tier that holds it; without one (hsc112) it is a wheelhouse of its own on the top deck
+  const held = !b0.embedded || (h && h.tiers.some((t) => t.y <= b0.y + 0.1 && t.y + t.h >= b0.y + b0.h - 0.3 && (t.z0 ?? h.z0) <= b0.z0 + 0.5));
+  const b = held ? b0 : { ...b0, embedded: false, w: Math.min(b0.w ?? h.w, ga.B * 0.62) };
   const cx = 0, zc = (b.z0 + b.z1) / 2, len = b.z1 - b.z0, w = b.w ?? h.w;
   if (b.console) { // RIB: centre console with windscreen
     P.box('paint', 0.9, 1.0, 1.0, 0, b.y + 0.5, zc, COL.white); P.box('glass', 0.85, 0.45, 0.05, 0, b.y + 1.2, b.z0 + 0.1, null, 0, -0.5); return;
@@ -785,14 +993,45 @@ function buildBridge(ctx) {
     P.beam('paint', -w * 0.24, topY + mast.h, mz - 0.3, w * 0.24, topY + mast.h, mz - 0.3, 0.35, 0.3, COL.white);
     P.box('paint', 1.6, 0.18, 0.4, 0, topY + mast.h + 0.35, mz - 0.3, COL.white);
   } else if (ga.gen !== 'small_fast' && b.y > 0) {
-    P.rod('metal', 0, topY, mz, 0, topY + mh, mz, 0.12 + ga.L * 0.0008, COL.light, ctx.phone ? 5 : 7);
-    P.beam('metal', -Math.min(3.5, w * 0.3), topY + mh * 0.7, mz, Math.min(3.5, w * 0.3), topY + mh * 0.7, mz, 0.18, 0.18, COL.light);
-    P.box('paint', Math.min(3.2, 1 + ga.L * 0.01), 0.18, 0.35, 0, topY + mh * 0.45, mz - 0.6, COL.dark);
-    P.box('paint', Math.min(2.4, 0.8 + ga.L * 0.008), 0.15, 0.3, 0, topY + mh + 0.2, mz, COL.dark);
-    if (lod === 0) for (const s of [-1, 1]) { P.cyl('paint', 0.35, 0.5, s * w * 0.3, topY + 0.25, b.z1 - 1, COL.white, 0.35, 8); P.ellipsoid('paint', 0.45, 0.45, 0.45, s * w * 0.3, topY + 0.6, b.z1 - 1, COL.white, 8); }
+    radarMast(ctx, topY, mz, mh, w, b.z1);
   } else {
     P.rod('metal', 0, topY, mz, 0, topY + 1.6, mz, 0.06, COL.light, 5); P.box('paint', 0.9, 0.12, 0.25, 0, topY + 1.0, mz, COL.dark);
   }
+}
+/**
+ * The radar mast on the compass deck (every ship with a wheelhouse): a pole braced by two raked legs, two platforms
+ * with the X-band and S-band scanners on pedestals (the S-band the longer, higher one), the yardarm, whip antennas
+ * at the deck corners and the satcom domes aft. Cruise ships carry a white, heavier mast with bigger domes.
+ */
+function radarMast(ctx, topY, mz, mh, w, zAft) {
+  const { ga, P, lod } = ctx;
+  const cruise = ga.gen === 'cruise' || ga.gen === 'ferry';
+  const mc = ctx.primer ? COL.primer : cruise ? 0xf0f1ee : COL.light, dark = COL.dark;
+  const pr = 0.12 + ga.L * 0.0008;
+  P.rod(cruise ? 'paint' : 'metal', 0, topY, mz, 0, topY + mh, mz, pr * (cruise ? 1.6 : 1), mc, ctx.phone ? 5 : 7);
+  if (lod === 0) for (const s of [-1, 1]) P.rod(cruise ? 'paint' : 'metal', s * Math.min(1.6, w * 0.12), topY, mz + Math.min(2.2, mh * 0.3), 0, topY + mh * 0.62, mz, pr * 0.6, mc, 5);
+  // yardarm with the masthead / all-round lights
+  P.beam('metal', -Math.min(3.5, w * 0.3), topY + mh * 0.82, mz, Math.min(3.5, w * 0.3), topY + mh * 0.82, mz, 0.18, 0.18, mc);
+  // scanners: X-band on the lower platform forward, S-band on top
+  const sx = Math.min(3.2, 1 + ga.L * 0.01), ss = Math.min(4.2, 1.2 + ga.L * 0.012);
+  const yA = topY + mh * 0.48, yB = topY + mh;
+  P.box('paint', Math.min(2.6, sx * 0.8), 0.12, 1.4, 0, yA, mz - 0.5, mc);                          // platform (grating)
+  P.box('paint', 0.35, 0.45, 0.35, 0, yA + 0.28, mz - 0.6, dark);                                   // turning unit
+  P.box('paint', sx, 0.2, 0.32, 0, yA + 0.6, mz - 0.6, dark);                                        // X-band antenna
+  P.box('paint', Math.min(2.2, ss * 0.6), 0.12, 1.2, 0, yB, mz, mc);
+  P.box('paint', 0.4, 0.5, 0.4, 0, yB + 0.3, mz, dark);
+  P.box('paint', ss, 0.26, 0.34, 0, yB + 0.68, mz, dark);                                            // S-band antenna
+  if (lod > 0) return;
+  // satcom domes on pedestals aft on the compass deck (bigger on passenger ships)
+  const dr = cruise ? clamp(0.6, 2.2, ga.B * 0.04) : 0.45;
+  for (const s of [-1, 1]) { P.cyl('paint', dr * 0.6, dr * 1.4, s * w * 0.3, topY + dr * 0.7, zAft - 1 - dr, mc, dr * 0.6, 8); P.ellipsoid('paint', dr, dr, dr, s * w * 0.3, topY + dr * 1.4 + dr * 0.8, zAft - 1 - dr, COL.white, 10); }
+  // whip antennas: deck corners and the yardarm ends
+  const wh = clamp(2.5, 6, ga.L * 0.025);
+  for (const s of [-1, 1]) {
+    P.icyl('metal', 0.04, wh, s * (w / 2 - 0.4), topY + wh / 2, zAft - 0.5, COL.light);
+    P.icyl('metal', 0.035, wh * 0.6, s * Math.min(3.4, w * 0.29), topY + mh * 0.82 + wh * 0.3, mz, COL.light);
+  }
+  P.icyl('metal', 0.035, wh * 0.7, 0, yB + 1 + wh * 0.35, mz + 0.4, COL.light);
 }
 
 // ------------------------------------------------------------------------------------------------ funnel
@@ -823,6 +1062,22 @@ function buildFunnel(ctx) {
   }
   const base = Math.min(f.y, supportY(ctx, f.z));
   const xs = f.kind === 'twin' && ga.gen !== 'lng' && ga.gen !== 'special' ? [-f.r * 1.15, f.r * 1.15] : [0];
+  if (ga.gen === 'cruise' && lod < 2 && f.h > 3) {
+    // a modern cruise funnel: a wide streamlined casing (white, the livery's colour at the top) wraps the uptakes; the
+    // exhaust stacks rise from it, with a wind-deflecting fin round its top edge
+    const a = Math.max(f.r * 2.4, ga.B * 0.12), bb = a * 1.7, ch = (f.y + f.h - base) * 0.62;
+    const sh = new THREE.Shape(), rc = a * 0.9;
+    sh.moveTo(-a + rc, -bb); sh.lineTo(a - rc, -bb); sh.quadraticCurveTo(a, -bb, a, -bb + rc); sh.lineTo(a * 0.75, bb - rc * 0.4); sh.quadraticCurveTo(a * 0.6, bb, 0, bb); sh.quadraticCurveTo(-a * 0.6, bb, -a * 0.75, bb - rc * 0.4); sh.lineTo(-a, -bb + rc); sh.quadraticCurveTo(-a, -bb, -a + rc, -bb);
+    const g = new THREE.ExtrudeGeometry(sh, { depth: ch, bevelEnabled: false, curveSegments: lod === 0 ? 4 : 2 });
+    g.rotateX(-Math.PI / 2);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) { const yy = p.getY(i), k = yy / ch; p.setXYZ(i, p.getX(i) * (1 - 0.12 * k), yy, p.getZ(i) * (1 - 0.1 * k) + yy * 0.18); }
+    g.computeVertexNormals(); g.translate(0, base, f.z);
+    P.put('paint', g, ctx.primer ? COL.primer : ga.livery.house);
+    const ty = base + ch;
+    P.box('funnel', a * 1.85, Math.min(1.4, ch * 0.12), bb * 1.7, 0, ty - Math.min(0.7, ch * 0.06), f.z + ch * 0.18, null);   // livery band at the casing top
+    if (lod === 0) P.box('paint', a * 2.1, 0.25, bb * 0.8, 0, ty + 0.4, f.z + ch * 0.18 + bb * 0.75, COL.dark);              // the fin aft
+  }
   const r = f.kind === 'twin' && xs.length === 2 ? f.r * 0.85 : f.r;
   for (const x of xs) {
     if (lod === 2) { P.box('funnel', r * 2, top - base, r * 3, x, (top + base) / 2, f.z); continue; }
@@ -921,6 +1176,9 @@ function buildCargo(ctx) {
           P.box('paint', 0.3, 0.16, zl, 0, ty + z.w / 4 * 0.06 + 0.04, zc, rib);
           P.box('paint', z.w + 0.6, 0.12, 0.3, 0, y0 + z.coaming + 0.06, z.z0 - 0.05, 0x7a8086); P.box('paint', z.w + 0.6, 0.12, 0.3, 0, y0 + z.coaming + 0.06, z.z1 + 0.05, 0x7a8086);
           for (const s of [-1, 1]) P.box('paint', 0.3, 0.12, zl + 0.6, s * (z.w / 2 + 0.15), y0 + z.coaming + 0.06, zc, 0x7a8086);
+          // coaming stays: bracket plates every ~2.4 m along the sides (instanced; half as many on phones)
+          const nst = Math.max(2, Math.round(zl / (ctx.phone ? 4.8 : 2.4)));
+          for (let k = 0; k <= nst; k++) for (const s of [-1, 1]) P.ifin('paint', 0.7, z.coaming * 0.9, s * (z.w / 2 + 0.55), y0 + z.coaming * 0.45, z.z0 + zl * k / nst, 0x5d6268, Math.PI / 2);
         }
       }
       break;
@@ -1076,32 +1334,54 @@ function buildDeckGear(ctx) {
     const dir = heavy || (knuckle && c.z < 0) ? 1 : -1, ang = heavy ? 0.18 : knuckle ? 0.5 : 0.25;
     const bx = c.x, by = y + c.h + (heavy ? 3 : 1.8), bz = c.z + dir * hw * 0.5;
     const tx = bx, ty = by + Math.sin(ang) * c.boom, tz = bz + dir * Math.cos(ang) * c.boom;
-    if (heavy) { for (const s of [-1, 1]) P.beam('paint', bx + s * 1.2, by, bz, tx + s * 0.4, ty, tz, 0.9, 1.2, col); }
+    if (heavy) { for (const s of [-1, 1]) latticeJib(ctx, bx + s * 1.2, by, bz, tx + s * 0.4, ty, tz, 1.4, 1.8, col); }
     else if (knuckle) {   // knuckle boom folded: main boom up, outer boom folded back down
       const k1 = c.boom * 0.5, kx = bx, ky = by + Math.sin(1.0) * k1, kz = bz + dir * Math.cos(1.0) * k1;
       P.beam('paint', bx, by, bz, kx, ky, kz, 0.55, 0.65, col);
       P.beam('paint', kx, ky, kz, kx, by + 0.6, kz + dir * c.boom * 0.42, 0.45, 0.5, col);
       continue;
-    } else P.beam('paint', bx, by, bz, tx, ty, tz, clamp(0.9, 1.6, c.swl / 25), clamp(1.1, 1.9, c.swl / 20), col);
+    } else if (lod === 0) latticeJib(ctx, bx, by, bz, tx, ty, tz, clamp(0.9, 1.8, c.swl / 22), clamp(1.1, 2.1, c.swl / 18), col);
+    else P.beam('paint', bx, by, bz, tx, ty, tz, clamp(0.9, 1.6, c.swl / 25), clamp(1.1, 1.9, c.swl / 20), col);
     if (!knuckle && !heavy && lod === 0) { P.box('paint', 1.2, 0.4, 1.2, tx, yAt(tz) + ty - yAt(tz) - 0.4, tz, COL.dark); P.box('paint', 0.5, ty - yAt(tz) - 0.3, 0.5, tx, yAt(tz) + (ty - yAt(tz)) / 2 - 0.4, tz, col); }
     if (lod === 0) P.rod('metal', tx, ty, tz, tx, ty - Math.min(4, c.boom * 0.15), tz, 0.04, COL.dark, 4);
   }
   for (const h of d.hoseCranes || []) { const y = dy; P.cyl('paint', 0.45, 3, h.x, y + 1.5, h.z, COL.yellow, 0.4, 8); if (lod < 2) P.beam('paint', h.x, y + 3.2, h.z, h.x, y + 6, h.z + 9, 0.4, 0.5, COL.yellow); }
   if (d.manifold && lod < 2) { const z = d.manifold.z; P.box('paint', B * 0.9, 1.0, 2.2, 0, dy + 0.9, z, 0x8d9296); if (lod === 0) for (let k = -3; k <= 3; k++) for (const s of [-1, 1]) P.rod('metal', s * B * 0.3, dy + 1.2, z + k * 0.6, s * (B / 2 - 0.6), dy + 1.2, z + k * 0.6, 0.2, k % 2 ? 0xc0392b : COL.light, 6); }
-  if (d.catwalk && lod < 2) { const c = d.catwalk; P.box('paint', 1.0, 0.15, c.z1 - c.z0, c.x, dy + c.h, (c.z0 + c.z1) / 2, COL.catwalk); if (lod === 0) for (let z = c.z0; z <= c.z1; z += 8) P.box('paint', 0.15, c.h, 0.15, c.x, dy + c.h / 2, z, COL.light); }
+  if (d.catwalk && lod < 2) {
+    const c = d.catwalk; P.box('paint', 1.0, 0.15, c.z1 - c.z0, c.x, dy + c.h, (c.z0 + c.z1) / 2, COL.catwalk);
+    if (lod === 0) {
+      for (let z = c.z0; z <= c.z1; z += 6) for (const s of [-1, 1]) P.ibox('paint', 0.15, c.h, 0.15, c.x + s * 0.4, dy + c.h / 2, z, COL.catwalk);
+      for (const s of [-1, 1]) railRun(ctx, [[c.x + s * 0.5, c.z0], [c.x + s * 0.5, c.z1]], () => dy + c.h + 0.07, 0.9, COL.catwalk);
+    }
+  }
   if (d.compressor && lod < 2) { const c = d.compressor, y = c.onTrunk ? dy + 3.6 : dy; P.facade('house', c.w, 4.2, c.z1 - c.z0, 0, y + 2.1, (c.z0 + c.z1) / 2, BANDS.blank, BANDS.blank); }
   // mooring: windlasses forward, winches aft (drums), bollards
   if (lod < 2 && ga.L >= 30 && ga.gen !== 'motor_yacht') for (const mo of d.mooring) {
     const y = mo.y ?? yAt(mo.z), s = clamp(0.5, 2.2, B * 0.04);
     for (const sx of [-1, 1]) { P.box('paint', s * 1.4, s * 0.9, s * 1.4, sx * B * 0.18, y + s * 0.45, mo.z, mo.kind === 'windlass' ? COL.dark : 0x3d5266); if (lod === 0) P.cyl('paint', s * 0.45, s * 1.4, sx * B * 0.18 + sx * s, y + s * 0.6, mo.z, COL.red, s * 0.45, 10, 0, 0, Math.PI / 2); }
+    if (lod > 0) continue;
+    // warping drums outboard of the winch, bollards at the deck edge; the anchor chain runs from the gypsy to the hawse pipe
+    for (const sx of [-1, 1]) P.icyl('paint', s * 0.35, s * 0.9, sx * (B * 0.18 + s * 1.6), y + s * 0.5, mo.z, 0x8a9199, 0, 0, Math.PI / 2);
+    bollards(ctx, mo.z + (mo.z < 0 ? 4 : -4), y, ga.L > 120 ? 2 : 1);
+    const hw = ctx.hawse;
+    if (mo.kind === 'windlass' && hw) for (const sx of [-1, 1]) P.ibeam('metal', sx * B * 0.18, y + s * 0.5, mo.z, sx * Math.max(1, hw.x - 1.2), y + 0.15, hw.z, 0.22, 0.12, 0x2a2c2e);
   }
+  // spring-line bollards amidships on big ships (not between container bays or on passenger ships)
+  if (lod === 0 && ga.L >= 60 && !['motor_yacht', 'cruise', 'ferry'].includes(ga.gen)) for (const z of [-L * 0.22, L * 0.18]) bollards(ctx, z, yAt(z), 1);
   // foremast + yacht/other masts
   for (const mm of d.masts) {
     if (mm.arch) continue;
     if (mm.z > (ga.bridge?.z0 ?? 0) - 1 && mm.z < (ga.bridge?.z1 ?? 0) + 1 && mm.y >= (ga.bridge?.y ?? 0)) continue;  // bridge-top masts drawn with the bridge
     const y = mm.y ?? yAt(mm.z);
     P.rod('metal', 0, y, mm.z, 0, y + mm.h, mm.z, 0.12 + mm.h * 0.012, COL.light, ctx.phone ? 5 : 8);
-    if (lod === 0) P.beam('metal', -1.2, y + mm.h * 0.75, mm.z, 1.2, y + mm.h * 0.75, mm.z, 0.12, 0.12, COL.light);
+    if (lod === 0) {
+      P.beam('metal', -1.2, y + mm.h * 0.75, mm.z, 1.2, y + mm.h * 0.75, mm.z, 0.12, 0.12, COL.light);
+      // lookout / light platform with its rail, a ladder up the mast and a whip on top
+      const py = y + mm.h * 0.6; P.box('paint', 1.6, 0.1, 1.6, 0, py, mm.z, COL.light);
+      railRun(ctx, [[-0.75, mm.z - 0.75], [0.75, mm.z - 0.75], [0.75, mm.z + 0.75], [-0.75, mm.z + 0.75], [-0.75, mm.z - 0.75]], () => py, 0.9, COL.light, true);
+      for (const sx of [-0.25, 0.25]) P.ibeam('metal', sx, y, mm.z + 0.35, sx, py, mm.z + 0.35, 0.05, 0.05, COL.light);
+      P.icyl('metal', 0.03, 3, 0, y + mm.h + 1.5, mm.z, COL.light);
+    }
   }
   // Flettner rotors (option rot): tall cylinders with end discs
   for (const r of d.rotors) { const y = yAt(r.z); P.cyl('paint', r.r, r.h, r.x, y + r.h / 2 + 1.5, r.z, 0xf3f3f0, r.r, 16); P.cyl('paint', r.r * 1.5, 0.3, r.x, y + r.h + 1.6, r.z, 0x2a6fb0, r.r * 1.5, 16); P.cyl('paint', r.r * 1.1, 1.5, r.x, y + 0.75, r.z, 0x5d6268, r.r * 1.1, 12); }
@@ -1130,8 +1410,104 @@ function buildDeckGear(ctx) {
   if (d.dragArm && lod < 2) { const a = d.dragArm, x = B / 2 - 0.7, y = yAt(a.z0); P.rod('metal', x, y + 0.8, a.z0, x, y + 0.8, a.z1, 0.6, 0x4c5157, 8); P.box('paint', 2.5, 5, 2.5, B / 2 - 1.5, y + 2.5, a.z0, COL.yellow); P.box('paint', 2.5, 5, 2.5, B / 2 - 1.5, y + 2.5, a.z1, COL.yellow); }
   if (d.sternRamp && lod < 2) { const r = d.sternRamp; if (r.side === 'quarter') { const x = B / 2 - r.w * 0.45, hh = Math.min(r.len, ga.deckY * 0.8); P.box('paint', r.w, hh, 0.6, x, hh / 2 + 0.6, L / 2 - 1.2, 0x5d6268, -0.6); } else P.box('paint', r.w, ga.deckY * 0.8, 0.6, 0, ga.deckY * 0.45, L / 2 - 0.31, 0x5d6268); }
   if (d.sideRamp && lod < 2) P.box('paint', 0.4, 6, 12, B / 2 - 0.05, ga.deckY * 0.45, d.sideRamp.z, 0x5d6268);
+  if (lod === 0) workGear(ctx, yAt);
   if (d.heli) { const h = d.heli; P.cyl('paint', h.r, 0.4, 0, h.y + 0.2, h.z, COL.helideck, h.r, ctx.phone ? 12 : 24); if (lod < 2) { P.cyl('paint', h.r * 0.75, 0.05, 0, h.y + 0.42, h.z, 0xf2f2ee, h.r * 0.75, ctx.phone ? 12 : 24, 0, 0, 0, true); P.box('paint', h.r * 0.12, 0.05, h.r * 0.5, -h.r * 0.15, h.y + 0.43, h.z, 0xf2f2ee); P.box('paint', h.r * 0.12, 0.05, h.r * 0.5, h.r * 0.15, h.y + 0.43, h.z, 0xf2f2ee); P.box('paint', h.r * 0.3, 0.05, h.r * 0.1, 0, h.y + 0.43, h.z, 0xf2f2ee); } if (h.hangar) P.facade('house', ga.B * 0.5, h.y - dy + 0.2, 12, 0, (h.y + dy) / 2, h.hangar.z0 + 6, BANDS.blank, BANDS.blank); }
-  if (ga.deck.bowDoor && lod === 0 && ga.gen === 'ferry' && ga.hull.bow !== 'wavepiercer') { const z = hf.zFwd(ga.deckY * 0.6); P.box('paint', ga.B * 0.18, 0.08, 0.1, 0, ga.deckY * 0.6, z + 0.6, COL.dark); }
+}
+/** deck height under a boat: the tier it is stowed on (cruise / ferry boat decks), else the weather deck */
+function deckUnder(ctx, z, b) {
+  const h = ctx.ga.house, t = b.deck && h ? h.tiers.find((x) => x.id === b.deck) : null;
+  return t ? t.y : Math.min(b.y, ctx.hf.deckAt(z) + (ctx.ga.hull.poop && z > ctx.L / 2 - ctx.ga.hull.poop.len ? ctx.ga.hull.poop.h : 0));
+}
+/**
+ * A lattice crane jib from a to b: four chords tapering towards the head and zig-zag bracing on the sides and the top
+ * (instanced bars) - light shows through it, which is what makes a crane read as a crane and not a plank.
+ */
+function latticeJib(ctx, ax, ay, az, bx, by, bz, w, h, col) {
+  const { P } = ctx;
+  const len = Math.hypot(bx - ax, by - ay, bz - az); if (len < 1) return;
+  const d = [(bx - ax) / len, (by - ay) / len, (bz - az) / len];
+  // the jib's frame: u across (horizontal), v = u x d (up, perpendicular to the jib)
+  let ux = d[2], uz = -d[0]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
+  const v = [-(d[1] * uz), uz * d[0] - ux * d[2], ux * d[1]];
+  if (v[1] < 0) { v[0] = -v[0]; v[1] = -v[1]; v[2] = -v[2]; }
+  const pt = (t, su, sv) => { const k = 1 - 0.55 * t; return [ax + d[0] * len * t + (ux * su * w / 2 + v[0] * sv * h / 2) * k, ay + d[1] * len * t + v[1] * sv * h / 2 * k, az + d[2] * len * t + (uz * su * w / 2 + v[2] * sv * h / 2) * k]; };
+  const bar = Math.max(0.1, Math.min(w, h) * 0.12), br = bar * 0.6;
+  for (const [su, sv] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) P.ibeam('paint', ...pt(0, su, sv), ...pt(1, su, sv), bar, bar, col);
+  const n = Math.max(3, Math.round(len / Math.max(1.6, h * 1.1)));
+  for (let i = 0; i < n; i++) {
+    const t0 = i / n, t1 = (i + 1) / n, f = i % 2 ? 1 : -1;
+    for (const su of [-1, 1]) P.ibeam('paint', ...pt(t0, su, -f), ...pt(t1, su, f), br, br, col);   // side bracing
+    P.ibeam('paint', ...pt(t0, -f, 1), ...pt(t1, f, 1), br, br, col);                                // top bracing
+  }
+}
+/**
+ * Working-boat detail at LOD0 (instanced where it repeats): tugs get tyre fenders along the sheer and across the stern,
+ * flanged tow-winch drums with the hawser led to the bow, towing pins aft; trawlers trawl doors on the gantry legs and
+ * the warps; beam trawlers the beams with their shoes at the derrick heads; pilot / crew boats a roof rail, a
+ * searchlight and whips; motor yachts a tender on the aft deck and a bow rail.
+ */
+function workGear(ctx, yAt) {
+  const { ga, P, hf, L, B } = ctx;
+  const d = ga.deck, dy = ga.deckY, rub = COL.rubber, gen = ga.gen;
+  if (gen === 'tug' && ga.hull.fender) {
+    const step = ctx.phone ? 3.2 : 1.6, dia = clamp(0.7, 1.3, B * 0.09);
+    for (let z = -L * 0.28; z < L * 0.36; z += step) {
+      const hb = hbDeck(ctx, z), y = hf.deckAt(z) - dia * 0.75;
+      if (hb < B * 0.3) continue;
+      for (const s of [-1, 1]) P.ityre('paint', dia, s * (hf.halfBreadth(z, y) - dia * 0.08), y, z, rub);
+    }
+    const zs = L / 2 - 0.2, hs = hbDeck(ctx, zs - 0.5);
+    for (let x = -hs * 0.7; x <= hs * 0.7 + 0.01; x += Math.max(0.9, hs * 0.35)) P.imat('tyre', 'paint', xf(x, dy - dia * 0.7, zs + dia * 0.15, 0, Math.PI / 2, 0, dia, dia, dia), rub);
+  }
+  if (d.towWinch) {
+    const tw = d.towWinch, y = yAt(tw.z), zc = tw.z + (tw.fwd ? -1.4 : 1.4);
+    for (const s of [-1, 1]) P.icyl('paint', 1.35, 0.12, s * tw.w * 0.42, y + 1.4, zc, 0x2b2e31, 0, 0, Math.PI / 2);   // drum flanges
+    // the hawser: from the drum over the bow fairlead (forward winch) or over the stern (aft winch)
+    const zEnd = tw.fwd ? hf.zFwd(dy) + 1.2 : L / 2 - 0.6, yEnd = (tw.fwd ? yAt(zEnd) : dy) + 0.9;
+    P.ibeam('metal', 0, y + 2.3, zc, 0, yEnd, zEnd, 0.09, 0.09, 0x3a3d40);
+    if (!tw.fwd || gen === 'offshore') for (const s of [-1, 1]) P.icyl('paint', 0.22, 1.1, s * 0.9, dy + 0.55, L / 2 - 2.2, COL.yellow);   // towing pins
+  }
+  if (d.aframe && d.aframe.kind === 'gantry') {
+    const a = d.aframe, y = yAt(a.z);
+    for (const s of [-1, 1]) {
+      P.ibox('paint', 0.25, 1.7, 2.6, s * (a.w / 2 + 0.2), y + a.h * 0.55, a.z + 0.3, 0xc8512a, 0, 0, s * 0.12);   // trawl doors
+      P.ibeam('metal', s * a.w / 2.4, y + a.h, a.z, s * a.w / 3, dy - 0.6, L / 2 - 0.3, 0.05, 0.05, 0x3a3d40);       // warps over the ramp
+    }
+  }
+  if (d.derricks) {
+    const dz = d.derricks.z, y = yAt(dz), len = d.derricks.len;
+    for (const s of [-1, 1]) {
+      const tx = s * Math.min(B / 2 - 0.4, len * 0.35), ty = y + 1.5 + len * 0.92, bl = Math.min(12, L * 0.3);
+      P.ibeam('paint', tx, ty - 1.2, dz - bl / 2, tx, ty - 1.2, dz + bl / 2, 0.35, 0.35, 0x6a6f74);                // the beam
+      for (const e of [-1, 1]) P.ibox('paint', 0.3, 1.4, 1.0, tx, ty - 1.6, dz + e * bl / 2, 0x2b2e31);               // trawl heads (shoes)
+      P.ifin('paint', bl * 0.9, 2.2, tx + s * 0.2, ty - 2.9, dz, 0x30443a, Math.PI / 2);                            // the net hanging from it
+    }
+  }
+  if (gen === 'small_fast' && ga.house && ga.house.tiers.length && !ga.hull.tube) {
+    const t = ga.house.tiers[ga.house.tiers.length - 1], b = ga.bridge, top = b && !b.console ? b.y + b.h + 0.3 : t.y + t.h;
+    const z0 = b && !b.console ? b.z0 : ga.house.z0, z1 = b && !b.console ? b.z1 : ga.house.z1, hw = Math.min((b?.w ?? ga.house.w) / 2, B / 2 - 0.4) - 0.15;
+    if (hw > 0.5) railRun(ctx, [[-hw, z0 + 0.2], [hw, z0 + 0.2], [hw, z1 - 0.2], [-hw, z1 - 0.2], [-hw, z0 + 0.2]], () => top, 0.35, COL.light, true);
+    P.icyl('paint', 0.18, 0.3, 0, top + 0.15, z0 + 0.6, COL.dark);
+    for (const s of [-1, 1]) P.icyl('metal', 0.025, 2.4, s * hw * 0.7, top + 1.2, z1 - 0.3, COL.light);
+  }
+  if (gen === 'motor_yacht' && L >= 14 && !d.boats.some((b) => b.kind === 'tender')) {
+    const tl = clamp(3, 6.5, L * 0.13), zMax = L / 2 - platformLen(ga) - tl * 0.55, zt = Math.max((ga.house?.z1 ?? 0) + tl * 0.6, zMax - tl);
+    if (zt <= zMax) P.iboat('paint', tl, tl * 0.2, 0, yAt(zt) + tl * 0.17, zt, 0xf2f2ee);
+  }
+}
+/** mooring bollards (double bitts on a base plate, instanced) on both sides of a mooring station */
+function bollards(ctx, z, y, n = 2) {
+  const { ga, P } = ctx;
+  const r = clamp(0.12, 0.42, ga.B * 0.009), col = ctx.primer ? COL.primer : 0x2b2e31;
+  for (const s of [-1, 1]) {
+    for (let k = 0; k < n; k++) {
+      const zz = z + (k - (n - 1) / 2) * r * 9, hb = hbOuter(ctx, zz);
+      if (hb < r * 7) continue;
+      const x = s * (hb - r * 4.5);
+      P.ibox('paint', r * 2.2, r * 0.5, r * 6, x, y + r * 0.25, zz, col);
+      for (const dz of [-r * 1.6, r * 1.6]) P.icyl('paint', r, r * 2.6, x, y + r * 1.3, zz + dz, col);
+    }
+  }
 }
 function boat(ctx, b) {
   const { P, ga, lod } = ctx;
@@ -1148,12 +1524,24 @@ function boat(ctx, b) {
     const len = b.kind === 'rescue' ? 5 : b.big ? clamp(9, 16, ga.L * 0.045) : b.kind === 'tender' ? clamp(4, 10, ga.L * 0.08) : clamp(6, 9, ga.L * 0.05);
     const r = Math.min(b.big ? 1.8 : 9, len * (b.kind === 'rescue' ? 0.2 : 0.19)), col = b.kind === 'tender' ? (ga.gen === 'motor_yacht' ? 0xf2f2ee : 0xf2f2ee) : orange;
     if (b.garage) return;   // yacht tender garage: closed hatch only
-    const out = ga.gen === 'cruise' && b.kind !== 'rescue' && b.x;   // cruise lifeboats and tenders hang in their davits at the hull's side, in the recess of the boat deck's house (buildHouse)
+    const out = (ga.gen === 'cruise' || (ga.gen === 'ferry' && !ctx.hf.twin && b.deck)) && b.kind !== 'rescue' && b.x;   // cruise lifeboats and tenders hang in their davits at the hull's side, in the recess of the boat deck's house (buildHouse)
     const z = clamp(-ga.L / 2 + len, ga.L / 2 - len / 2 - 0.3, b.z);
-    const x = Math.sign(b.x || 0) * (out ? Math.min(ga.B / 2, hbDeck(ctx, z)) - r - 0.1 : Math.min(Math.abs(b.x), ga.B / 2 - r * 1.1 - 0.15));
-    P.capsule('paint', r, len - 2 * r, x, b.y, z, col, Math.PI / 2);
-    if (b.kind !== 'rescue') P.box('paint', r * 1.4, r * 0.7, len * 0.6, x, b.y + r * 0.9, z, col);
-    if (lod === 0 && b.kind !== 'tender' && x) for (const dz of [-len * 0.35, len * 0.35]) P.beam('metal', x - Math.sign(x) * 1.0, b.y - r, z + dz, x, b.y + r * 2.2, z + dz, 0.25, 0.25, COL.light);
+    const sx = Math.sign(b.x || 0);
+    const x = sx * (out ? Math.min(ga.B / 2, hbDeck(ctx, z)) - r - 0.1 : Math.min(Math.abs(b.x), ga.B / 2 - r * 1.1 - 0.15));
+    // enclosed lifeboat (instanced): rounded hull + canopy; open rescue boats are a low capsule with a console
+    if (b.kind === 'rescue') { P.capsule('paint', r, len - 2 * r, x, b.y + r, z, col, Math.PI / 2); P.box('paint', 0.6, 0.7, 0.6, x, b.y + r * 1.6, z + len * 0.1, COL.white); }
+    else if (lod === 0) P.iboat('paint', len, r, x, b.y, z, col);
+    else P.ibox('paint', r * 2, r * 1.9, len, x, b.y + r * 0.3, z, col);
+    if (b.kind === 'tender' || !x) return;
+    // davits: a post on the deck inboard of the boat and an arm reaching out over it (gravity davits, both ends), falls
+    // down to the boat's hooks; the cruise boats hang in the recess under the overhanging balcony decks
+    const yDeck = deckUnder(ctx, z, b), white = ctx.primer ? COL.primer : 0xe9ebea;
+    const top = b.y + r * 2.6, xi = x - sx * (r + 0.7), post = Math.max(0.25, r * 0.16);
+    for (const dz of [-len * 0.32, len * 0.32]) {
+      P.ibox('paint', post, top - yDeck, post * 1.4, xi, (top + yDeck) / 2, z + dz, white);
+      P.ibeam('paint', xi, top, z + dz, x + sx * 0.2, top + 0.15, z + dz, post * 0.9, post * 1.2, white);
+      if (lod === 0) P.ibeam('metal', x, top, z + dz, x, b.y + r * 1.1, z + dz, 0.05, 0.05, COL.dark);
+    }
   } else if (b.kind === 'raft') {
     const x = Math.sign(b.x || 0) * Math.min(Math.abs(b.x), ga.B / 2 - 0.75);
     for (let i = 0; i < 2; i++) P.capsule('paint', 0.3, 0.6, x, b.y + 0.35, b.z + i * 0.9, 0xf2f2ee, 0, 0, Math.PI / 2);
@@ -1161,27 +1549,62 @@ function boat(ctx, b) {
 }
 
 // ------------------------------------------------------------------------------------------------ handrails (LOD0, desktop)
+/**
+ * A guard rail along a polyline of [x, z] points at deck height yFn(z) (instanced): a flat-bar top rail, one or two
+ * knee rails and flat-bar stanchions every ~1.5 m (3 m on phones). Real rails are thin; what reads from afar is the
+ * rhythm of the stanchions and the top rail catching the light, so the bars are slightly oversized (top 0.08 m).
+ */
+function railRun(ctx, pts, yFn, h = 1.1, col = null, closed = false) {
+  const { P } = ctx;
+  const c = col ?? (ctx.primer ? COL.primer : 0xdfe3e3);
+  const step = ctx.phone ? 3.0 : 1.5, knees = ctx.phone || h < 0.8 ? 1 : 2;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [xa, za] = pts[i], [xb, zb] = pts[i + 1], ya = yFn(za), yb = yFn(zb);
+    const len = Math.hypot(xb - xa, zb - za); if (len < 0.2) continue;
+    P.ibeam('metal', xa, ya + h, za, xb, yb + h, zb, 0.08, 0.05, c);
+    for (let k = 1; k <= knees; k++) { const f = k / (knees + 1); P.ibeam('metal', xa, ya + h * f, za, xb, yb + h * f, zb, 0.035, 0.035, c); }
+    const n = Math.max(1, Math.round(len / step));
+    for (let k = i === 0 && !closed ? 0 : 1; k <= n; k++) { const t = k / n; P.ifin('metal', 0.06, h, xa + (xb - xa) * t, ya + (yb - ya) * t + h / 2, za + (zb - za) * t, c, Math.atan2(xb - xa, zb - za) + Math.PI / 2); }
+  }
+}
+/** the [x, z] polyline of one side (s = ±1) of an outline hw(z) between z0 and z1 (straight runs collapse to their ends) */
+function sideLine(z0, z1, hwFn, s, n = 10, minHw = 0.4) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) { const z = z0 + (z1 - z0) * i / n, hw = hwFn(z); if (hw > minHw) pts.push([s * hw, z]); }
+  if (pts.length > 2 && pts.every(([x]) => Math.abs(x - pts[0][0]) < 0.02)) return [pts[0], pts[pts.length - 1]];
+  return pts;
+}
 function buildRails(ctx) {
-  const { ga, P, hf, L } = ctx;
-  const col = ctx.primer ? COL.primer : 0xdfe3e3;
-  const rail = (pts, yFn, h = 1.1) => {
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [xa, za] = pts[i], [xb, zb] = pts[i + 1], ya = yFn(za), yb = yFn(zb);
-      const len = Math.hypot(xb - xa, zb - za); if (len < 0.2) continue;
-      P.beam('metal', xa, ya + h, za, xb, yb + h, zb, 0.06, 0.06, col);
-      if (h > 0.8) P.beam('metal', xa, ya + h * 0.5, za, xb, yb + h * 0.5, zb, 0.04, 0.04, col);
-      const n = Math.max(1, Math.round(len / 2.4));
-      for (let k = i === 0 ? 0 : 1; k <= n; k++) { const t = k / n; P.box('metal', 0.05, h, 0.05, xa + (xb - xa) * t, ya + (yb - ya) * t + h / 2, za + (zb - za) * t, col); }
-    }
-  };
+  const { ga, hf, L } = ctx;
+  const rail = (pts, yFn, h = 1.1) => railRun(ctx, pts, yFn, h);
   // main deck edge where there is no bulwark
   if (!ga.hull.bulwark && ga.L >= 12 && !ga.hull.tube) {
     const z0 = ga.hull.fcsle ? -L / 2 + ga.hull.fcsle.len : -L / 2 + L * 0.05, z1 = L / 2 - 0.5;
     const n = Math.max(6, Math.round((z1 - z0) / 10));
-    for (const d of hf.demi) for (const s of [-1, 1]) rail(outline(ctx, z0, z1, n, 0.25).map(([x, z]) => [d.cx + s * x, z]), (z) => hf.deckAt(z));
+    for (const d of hf.demi) for (const s of [-1, 1]) if (!hf.twin || s === Math.sign(d.cx)) rail(outline(ctx, z0, z1, n, 0.25).map(([x, z]) => [d.cx + s * x, z]), (z) => hf.deckAt(z));
   }
   // forecastle edge
   if (ga.hull.fcsle) { const f = ga.hull.fcsle, n = 8; const pts = outline(ctx, -L / 2 + 0.3, -L / 2 + f.len, n, 0.3); for (const s of [-1, 1]) rail(pts.map(([x, z]) => [s * x, z]), (z) => hf.deckAt(z) + f.h); }
+  // exposed tops of the house tiers: wherever the deck above stands back (or there is none), a rail along that edge
+  const T = ctx.tierBoxes || [];
+  if (ga.gen !== 'cruise') for (const t of T) {
+    const top = t.y + t.h, hwAt = (z) => Math.min(t.w / 2, hbOuter(ctx, clamp(-L / 2, L / 2, z)) - 0.45);
+    const above = T.filter((u) => Math.abs(u.y - top) < 0.3 && u.z1 > t.z0 && u.z0 < t.z1);
+    const br = ga.bridge && Math.abs(ga.bridge.y - top) < 0.3 ? ga.bridge : null;
+    const cover = (z) => above.some((u) => z >= u.z0 - 0.3 && z <= u.z1 + 0.3 && u.w >= t.w - 1.5) || (br && z >= br.z0 - 0.3 && z <= br.z1 + 0.3 && (br.w ?? t.w) >= t.w - 1.5);
+    // sample the edge, keep the runs that are not covered by the deck above
+    const n = Math.max(4, Math.round((t.z1 - t.z0) / 3)), zs = [];
+    for (let i = 0; i <= n; i++) zs.push(t.z0 + 0.3 + (t.z1 - t.z0 - 0.6) * i / n);
+    for (const s of [-1, 1]) {
+      let run = [];
+      const flush = () => { if (run.length > 1) rail(run, () => top, 1.0); run = []; };
+      for (const z of zs) { const hw = hwAt(z); if (hw > 0.6 && !cover(z)) run.push([s * hw, z]); else flush(); }
+      flush();
+    }
+    // the after end of a tier whose deck above stops short of it (merchant house tops, stepped ferry / yacht decks)
+    const zEnd = t.z1 - 0.3, hwE = hwAt(zEnd);
+    if (hwE > 0.8 && !cover(zEnd) && t.use !== 'lido') rail([[-hwE, zEnd], [hwE, zEnd]], () => top, 1.0);
+  }
   // compass deck
   const b = ga.bridge;
   if (b && !b.embedded && b.h > 2 && ga.L > 20) { const w = (b.w ?? ga.house.w) / 2; rail([[-w, b.z0], [w, b.z0], [w, b.z1], [-w, b.z1], [-w, b.z0]], () => b.y + b.h + 0.3, 1.0); }
@@ -1240,7 +1663,12 @@ function crewSpots(ga) {
 export function shipBounds(obj) {
   const box = new THREE.Box3(), tmp = new THREE.Box3();
   obj.updateMatrixWorld(true);
-  obj.traverse((o) => { if (!o.isMesh || !o.geometry) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); tmp.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld); box.union(tmp); });
+  obj.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    if (o.isInstancedMesh) { if (!o.boundingBox) o.computeBoundingBox(); tmp.copy(o.boundingBox); }
+    else { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); tmp.copy(o.geometry.boundingBox); }
+    tmp.applyMatrix4(o.matrixWorld); box.union(tmp);
+  });
   return box;
 }
 /** Deterministic hash of every vertex position in a group (tests: same inputs → same geometry). */
@@ -1259,6 +1687,7 @@ export function disposeShip(obj) {
   const seen = new Set();
   obj.traverse((o) => {
     if (!o.isMesh) return;
+    if (o.isInstancedMesh) o.dispose();   // per-instance buffers (fittings)
     o.geometry?.dispose();
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) { if (!m || seen.has(m)) continue; seen.add(m); if (m.map && !m.map.userData.shared) m.map.dispose(); m.dispose(); }
   });

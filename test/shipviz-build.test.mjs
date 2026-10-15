@@ -86,3 +86,32 @@ test('makeMat hook (ship.js wear materials) and the generator list', () => {
   for (const g of ['aft_house_dry', 'aft_house_tanker', 'lng', 'container', 'roro_pctc', 'ferry', 'cruise', 'offshore', 'tug', 'fishing', 'small_fast', 'motor_yacht', 'special']) assert.ok(SHIPGEN_GENS.includes(g), g);
   assert.ok(!SHIPGEN_GENS.includes('sail'));
 });
+
+// ships2: silhouette detail at playing distance — instanced fittings (one InstancedMesh per fitting type and material),
+// real balconies and davits on passenger ships, the fast catamaran's full-width house, rails, lattice cranes, tyres
+const fits = (g) => { const o = {}; g.traverse((m) => { if (m.isInstancedMesh) o[m.name] = m.count; }); return o; };
+const meshBox = (g, name) => { const b = new THREE.Box3(); g.traverse((m) => { if (m.name === name && m.isMesh) { m.geometry.computeBoundingBox(); b.union(m.geometry.boundingBox); } }); return b; };
+test('ships2: instanced fittings on desktop LOD0, baked (no InstancedMesh) on phones, within the budgets', () => {
+  for (const id of ['cruise370', 'aframax115', 'coaster', 'tug', 'hsc112']) {
+    const ga = generalArrangement(id);
+    const r = buildFromGA(ga, { lod: 0 }), p = buildFromGA(ga, { lod: 0, phone: true }), h = buildFromGA(ga, { lod: 0, hd: true });
+    const f = fits(r.group);
+    assert.ok(Object.keys(f).length >= 2 && Object.keys(f).every((k) => k.startsWith('fit-')), `${id} instanced fittings ${JSON.stringify(f)}`);
+    assert.equal(Object.keys(fits(p.group)).length, 0, `${id}: phones bake the fittings`);
+    assert.ok(f['fit-fin:metal'] > 20, `${id}: rail stanchions`);
+    assert.ok(r.info.drawCalls[0] <= DRAW_CALLS.desktop && p.info.drawCalls[0] <= DRAW_CALLS.phone, `${id} calls ${r.info.drawCalls[0]} / ${p.info.drawCalls[0]}`);
+    assert.ok(h.info.tris[0] <= 60000, `${id} own ship LOD0 ${h.info.tris[0]}`);
+    assert.ok(r.info.tris[0] <= (ga.gen === 'cruise' ? 50000 : 25000), `${id} traffic LOD0 ${r.info.tris[0]}`);
+  }
+});
+test('ships2: cruise balconies and boats in davits; the fast cat house spans its beam; tug tyres', () => {
+  const c = buildFromGA(generalArrangement('cruise370'), { lod: 0 }), f = fits(c.group);
+  assert.ok(f['fit-fin:paint'] > 500, `balcony dividers ${f['fit-fin:paint']}`);
+  assert.ok(f['fit-boat:paint'] >= 8 && f['fit-box:paint'] >= 4 * f['fit-boat:paint'], 'lifeboats with two davits (post + arm) each');
+  const hsc = generalArrangement('hsc112'), hb = buildFromGA(hsc, { lod: 0 });
+  const house = meshBox(hb.group, 'house');
+  assert.ok(house.max.x - house.min.x > hsc.B * 0.8, `hsc112 house ${(house.max.x - house.min.x).toFixed(1)} m wide (was a 6.6 m centreline box)`);
+  assert.ok(meshBox(hb.group, 'hullX').min.y < hsc.deckY - 1, 'wet deck / centre bow under the cross deck');
+  assert.ok(fits(buildFromGA(generalArrangement('tug'), { lod: 0 }).group)['fit-tyre:paint'] > 10, 'tug tyre fenders');
+  assert.ok(fits(buildFromGA(generalArrangement('mpp160'), { lod: 0 }).group)['fit-box:paint'] > 50, 'lattice crane jibs');
+});
